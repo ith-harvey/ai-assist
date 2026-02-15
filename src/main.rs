@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use ai_assist::agent::{Agent, AgentDeps};
-use ai_assist::channels::{ChannelManager, CliChannel};
+use ai_assist::channels::{ChannelManager, CliChannel, TelegramChannel};
 use ai_assist::config::AgentConfig;
 use ai_assist::llm::{create_provider, LlmBackend, LlmConfig};
 use ai_assist::safety::SafetyLayer;
@@ -50,9 +50,36 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         extension_manager: None,
     };
 
-    // Set up CLI channel
+    // Set up channels
     let mut channels = ChannelManager::new();
+    let mut active_channels = vec!["cli"];
+
+    // Always add CLI
     channels.add(Box::new(CliChannel::new()));
+
+    // Conditionally add Telegram if bot token is set
+    if let Ok(telegram_token) = std::env::var("TELEGRAM_BOT_TOKEN") {
+        let allowed_users: Vec<String> = std::env::var("TELEGRAM_ALLOWED_USERS")
+            .unwrap_or_else(|_| "*".to_string())
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+
+        eprintln!(
+            "   Telegram: enabled (allowed: {})",
+            if allowed_users.iter().any(|u| u == "*") {
+                "everyone".to_string()
+            } else {
+                allowed_users.join(", ")
+            }
+        );
+
+        channels.add(Box::new(TelegramChannel::new(telegram_token, allowed_users)));
+        active_channels.push("telegram");
+    }
+
+    eprintln!("   Channels: {}\n", active_channels.join(", "));
 
     // Create and run agent
     let config = AgentConfig::default();
