@@ -3,7 +3,9 @@
 pub mod channel;
 pub mod cli;
 pub mod manager;
+pub mod telegram;
 
 pub use channel::*;
 pub use cli::CliChannel;
 pub use manager::ChannelManager;
+pub use telegram::TelegramChannel;

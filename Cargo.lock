@@ -32,6 +32,7 @@ dependencies = [
  "futures",
  "rand",
  "regex",
+ "reqwest",
  "rig-core",
  "rust_decimal",
  "rust_decimal_macros",
