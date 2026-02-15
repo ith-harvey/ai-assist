@@ -81,8 +81,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     eprintln!("   Channels: {}\n", active_channels.join(", "));
 
-    // Create and run agent
-    let config = AgentConfig::default();
+    // Create agent config with optional custom system prompt
+    let system_prompt = std::env::var("AI_ASSIST_SYSTEM_PROMPT").ok().or_else(|| {
+        Some(ai_assist::config::DEFAULT_SYSTEM_PROMPT.to_string())
+    });
+
+    let config = AgentConfig {
+        system_prompt,
+        ..AgentConfig::default()
+    };
+
     let agent = Agent::new(config, deps, channels, None);
     agent.run().await?;
 

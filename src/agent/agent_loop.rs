@@ -512,7 +512,7 @@ impl Agent {
         }
 
         // Start the turn and get messages
-        let turn_messages = {
+        let mut turn_messages = {
             let mut sess = session.lock().await;
             let thread = sess
                 .threads
@@ -521,6 +521,15 @@ impl Agent {
             thread.start_turn(content);
             thread.messages()
         };
+
+        // Prepend system prompt if configured and not already present
+        if let Some(ref prompt) = self.config.system_prompt
+            && !turn_messages
+                .iter()
+                .any(|m| m.role == crate::llm::Role::System)
+        {
+            turn_messages.insert(0, ChatMessage::system(prompt));
+        }
 
         // Send thinking status
         let _ = self
@@ -758,6 +767,7 @@ impl Agent {
 
             // Refresh tool definitions each iteration so newly built tools become visible
             let tool_defs = self.tools().tool_definitions().await;
+            let has_tools = !tool_defs.is_empty();
 
             // Call LLM with current context
             let context = ReasoningContext::new()
@@ -780,10 +790,11 @@ impl Agent {
 
             match output.result {
                 RespondResult::Text(text) => {
-                    // If no tools have been executed yet, prompt the LLM to use tools
-                    // This handles the case where the model explains what it will do
-                    // instead of actually calling tools
-                    if !tools_executed && iteration < 3 {
+                    // If no tools have been executed yet AND tools are actually
+                    // available, prompt the LLM to use them. This handles the case
+                    // where the model explains what it will do instead of calling tools.
+                    // When no tools are registered, return the text response immediately.
+                    if !tools_executed && iteration < 3 && has_tools {
                         tracing::debug!(
                             "No tools executed yet (iteration {}), prompting for tool use",
                             iteration
@@ -795,7 +806,8 @@ impl Agent {
                         continue;
                     }
 
-                    // Tools have been executed or we've tried multiple times, return response
+                    // Tools have been executed, no tools available, or we've tried
+                    // multiple times — return the response.
                     return Ok(AgenticLoopResult::Response(text));
                 }
                 RespondResult::ToolCalls {
@@ -1779,5 +1791,113 @@ mod tests {
         let result = truncate_for_preview(input, 8);
         // 'h','e','l','l','o',' ','世','界' = 8 chars
         assert_eq!(result, "hello 世界...");
+    }
+
+    /// Test that system prompt injection works correctly.
+    mod system_prompt_tests {
+        use crate::llm::{ChatMessage, Role};
+
+        /// Simulate the system prompt injection logic from process_user_input.
+        fn inject_system_prompt(
+            messages: &mut Vec<ChatMessage>,
+            system_prompt: Option<&str>,
+        ) {
+            if let Some(prompt) = system_prompt {
+                if !messages.iter().any(|m| m.role == Role::System) {
+                    messages.insert(0, ChatMessage::system(prompt));
+                }
+            }
+        }
+
+        #[test]
+        fn test_system_prompt_prepended() {
+            let mut messages = vec![ChatMessage::user("Hello")];
+            inject_system_prompt(&mut messages, Some("You are helpful."));
+
+            assert_eq!(messages.len(), 2);
+            assert_eq!(messages[0].role, Role::System);
+            assert_eq!(messages[0].content, "You are helpful.");
+            assert_eq!(messages[1].role, Role::User);
+        }
+
+        #[test]
+        fn test_system_prompt_not_duplicated() {
+            let mut messages = vec![
+                ChatMessage::system("Existing system prompt."),
+                ChatMessage::user("Hello"),
+                ChatMessage::assistant("Hi!"),
+                ChatMessage::user("Second message"),
+            ];
+            inject_system_prompt(&mut messages, Some("New prompt"));
+
+            // Should NOT be duplicated — existing system prompt stays
+            assert_eq!(messages.len(), 4);
+            assert_eq!(messages[0].role, Role::System);
+            assert_eq!(messages[0].content, "Existing system prompt.");
+        }
+
+        #[test]
+        fn test_no_system_prompt_configured() {
+            let mut messages = vec![ChatMessage::user("Hello")];
+            inject_system_prompt(&mut messages, None);
+
+            // No system prompt added
+            assert_eq!(messages.len(), 1);
+            assert_eq!(messages[0].role, Role::User);
+        }
+
+        #[test]
+        fn test_system_prompt_on_empty_messages() {
+            let mut messages = Vec::new();
+            inject_system_prompt(&mut messages, Some("You are helpful."));
+
+            assert_eq!(messages.len(), 1);
+            assert_eq!(messages[0].role, Role::System);
+        }
+    }
+
+    /// Test tool nudge skip logic.
+    mod tool_nudge_tests {
+        #[test]
+        fn test_tool_nudge_skipped_when_no_tools() {
+            // Simulate: has_tools=false, tools_executed=false, iteration=1
+            let has_tools = false;
+            let tools_executed = false;
+            let iteration = 1;
+
+            // The condition: !tools_executed && iteration < 3 && has_tools
+            let should_nudge = !tools_executed && iteration < 3 && has_tools;
+            assert!(!should_nudge, "Should NOT nudge when no tools are registered");
+        }
+
+        #[test]
+        fn test_tool_nudge_fires_when_tools_available() {
+            let has_tools = true;
+            let tools_executed = false;
+            let iteration = 1;
+
+            let should_nudge = !tools_executed && iteration < 3 && has_tools;
+            assert!(should_nudge, "SHOULD nudge when tools are available but not used");
+        }
+
+        #[test]
+        fn test_tool_nudge_skipped_after_tools_executed() {
+            let has_tools = true;
+            let tools_executed = true;
+            let iteration = 1;
+
+            let should_nudge = !tools_executed && iteration < 3 && has_tools;
+            assert!(!should_nudge, "Should NOT nudge after tools have been executed");
+        }
+
+        #[test]
+        fn test_tool_nudge_skipped_after_max_iterations() {
+            let has_tools = true;
+            let tools_executed = false;
+            let iteration = 3;
+
+            let should_nudge = !tools_executed && iteration < 3 && has_tools;
+            assert!(!should_nudge, "Should NOT nudge after 3 iterations");
+        }
     }
 }
