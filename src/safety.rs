@@ -55,7 +55,14 @@ impl Default for SafetyLayer {
 #[derive(Debug, Clone)]
 pub struct ValidationResult {
     pub is_valid: bool,
-    pub errors: Vec<String>,
+    pub errors: Vec<ValidationError>,
+}
+
+/// A validation error.
+#[derive(Debug, Clone)]
+pub struct ValidationError {
+    pub field: String,
+    pub message: String,
 }
 
 /// A policy rule matched during input checking.

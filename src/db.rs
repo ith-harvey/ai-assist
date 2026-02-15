@@ -52,4 +52,10 @@ pub trait Database: Send + Sync {
         key: &str,
         value: &serde_json::Value,
     ) -> Result<(), DatabaseError>;
+
+    /// Save a job context to storage.
+    async fn save_job(&self, _ctx: &crate::context::JobContext) -> Result<(), DatabaseError> {
+        // No-op stub
+        Ok(())
+    }
 }

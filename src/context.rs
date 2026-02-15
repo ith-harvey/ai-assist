@@ -70,4 +70,18 @@ impl JobContext {
             ..Default::default()
         }
     }
+
+    /// Create a new job context for a specific user.
+    pub fn with_user(
+        user_id: impl Into<String>,
+        title: impl Into<String>,
+        description: impl Into<String>,
+    ) -> Self {
+        Self {
+            user_id: user_id.into(),
+            title: title.into(),
+            description: description.into(),
+            ..Default::default()
+        }
+    }
 }
