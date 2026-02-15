@@ -35,7 +35,7 @@ impl SafetyLayer {
     }
 
     /// Wrap content before sending to the LLM (e.g., add safety prefixes).
-    pub fn wrap_for_llm(&self, content: &str) -> String {
+    pub fn wrap_for_llm(&self, _tool_name: &str, content: &str, _sanitized: bool) -> String {
         content.to_string()
     }
 
@@ -92,6 +92,14 @@ impl ToolValidator {
         _tool_name: &str,
         _params: &serde_json::Value,
     ) -> ValidationResult {
+        ValidationResult {
+            is_valid: true,
+            errors: vec![],
+        }
+    }
+
+    /// Validate tool parameters (alias used by agent_loop).
+    pub fn validate_tool_params(&self, _params: &serde_json::Value) -> ValidationResult {
         ValidationResult {
             is_valid: true,
             errors: vec![],
