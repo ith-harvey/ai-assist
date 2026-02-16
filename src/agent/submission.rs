@@ -15,134 +15,118 @@ impl SubmissionParser {
         let trimmed = content.trim();
         let lower = trimmed.to_lowercase();
 
-        // Control commands (exact match or prefix)
-        if lower == "/undo" {
-            return Submission::Undo;
-        }
-        if lower == "/redo" {
-            return Submission::Redo;
-        }
-        if lower == "/interrupt" || lower == "/stop" {
-            return Submission::Interrupt;
-        }
-        if lower == "/compact" {
-            return Submission::Compact;
-        }
-        if lower == "/clear" {
-            return Submission::Clear;
-        }
-        if lower == "/heartbeat" {
-            return Submission::Heartbeat;
-        }
-        if lower == "/summarize" || lower == "/summary" {
-            return Submission::Summarize;
-        }
-        if lower == "/suggest" {
-            return Submission::Suggest;
-        }
-        if lower == "/thread new" || lower == "/new" {
-            return Submission::NewThread;
-        }
-        // System commands (bypass thread-state checks)
-        if lower == "/help" || lower == "/?" {
-            return Submission::SystemCommand {
-                command: "help".to_string(),
-                args: vec![],
-            };
-        }
-        if lower == "/version" {
-            return Submission::SystemCommand {
-                command: "version".to_string(),
-                args: vec![],
-            };
-        }
-        if lower == "/tools" {
-            return Submission::SystemCommand {
-                command: "tools".to_string(),
-                args: vec![],
-            };
-        }
-        if lower == "/ping" {
-            return Submission::SystemCommand {
-                command: "ping".to_string(),
-                args: vec![],
-            };
-        }
-        if lower == "/debug" {
-            return Submission::SystemCommand {
-                command: "debug".to_string(),
-                args: vec![],
-            };
-        }
-        if lower.starts_with("/model") {
-            let args: Vec<String> = trimmed
-                .split_whitespace()
-                .skip(1)
-                .map(|s| s.to_string())
-                .collect();
-            return Submission::SystemCommand {
-                command: "model".to_string(),
-                args,
-            };
-        }
-
-        if lower == "/quit" || lower == "/exit" || lower == "/shutdown" {
-            return Submission::Quit;
-        }
-
-        // /thread <uuid> - switch thread
-        if let Some(rest) = lower.strip_prefix("/thread ") {
-            let rest = rest.trim();
-            if rest != "new"
-                && let Ok(id) = Uuid::parse_str(rest)
-            {
-                return Submission::SwitchThread { thread_id: id };
-            }
-        }
-
-        // /resume <uuid> - resume from checkpoint
-        if let Some(rest) = lower.strip_prefix("/resume ")
-            && let Ok(id) = Uuid::parse_str(rest.trim())
-        {
-            return Submission::Resume { checkpoint_id: id };
-        }
-
-        // Try structured JSON approval (from web gateway's /api/chat/approval endpoint)
-        if trimmed.starts_with('{')
-            && let Ok(submission) = serde_json::from_str::<Submission>(trimmed)
-            && matches!(submission, Submission::ExecApproval { .. })
-        {
-            return submission;
-        }
-
-        // Approval responses (simple yes/no/always for pending approvals)
-        // These are short enough to check explicitly
         match lower.as_str() {
-            "yes" | "y" | "approve" | "ok" => {
-                return Submission::ApprovalResponse {
-                    approved: true,
-                    always: false,
-                };
-            }
-            "always" | "yes always" | "approve always" => {
-                return Submission::ApprovalResponse {
-                    approved: true,
-                    always: true,
-                };
-            }
-            "no" | "n" | "deny" | "reject" | "cancel" => {
-                return Submission::ApprovalResponse {
-                    approved: false,
-                    always: false,
-                };
-            }
-            _ => {}
-        }
+            // Control commands
+            "/undo" => Submission::Undo,
+            "/redo" => Submission::Redo,
+            "/interrupt" | "/stop" => Submission::Interrupt,
+            "/compact" => Submission::Compact,
+            "/clear" => Submission::Clear,
+            "/heartbeat" => Submission::Heartbeat,
+            "/summarize" | "/summary" => Submission::Summarize,
+            "/suggest" => Submission::Suggest,
+            "/thread new" | "/new" => Submission::NewThread,
 
-        // Default: user input
-        Submission::UserInput {
-            content: content.to_string(),
+            // System commands (bypass thread-state checks)
+            "/help" | "/?" => Submission::SystemCommand {
+                command: "help".into(),
+                args: vec![],
+            },
+            "/version" => Submission::SystemCommand {
+                command: "version".into(),
+                args: vec![],
+            },
+            "/tools" => Submission::SystemCommand {
+                command: "tools".into(),
+                args: vec![],
+            },
+            "/ping" => Submission::SystemCommand {
+                command: "ping".into(),
+                args: vec![],
+            },
+            "/debug" => Submission::SystemCommand {
+                command: "debug".into(),
+                args: vec![],
+            },
+
+            // Quit
+            "/quit" | "/exit" | "/shutdown" => Submission::Quit,
+
+            // Approval keywords
+            "yes" | "y" | "approve" | "ok" => Submission::ApprovalResponse {
+                approved: true,
+                always: false,
+            },
+            "always" | "yes always" | "approve always" => Submission::ApprovalResponse {
+                approved: true,
+                always: true,
+            },
+            "no" | "n" | "deny" | "reject" | "cancel" => Submission::ApprovalResponse {
+                approved: false,
+                always: false,
+            },
+
+            // Parameterized commands, JSON, and fallback
+            _ => parse_complex(content, trimmed, &lower),
         }
+    }
+}
+
+/// Parse parameterized commands (/model, /thread <uuid>, /resume <uuid>),
+/// structured JSON approval, and fall back to user input.
+fn parse_complex(content: &str, trimmed: &str, lower: &str) -> Submission {
+    parse_model_command(trimmed, lower)
+        .or_else(|| parse_thread_switch(lower))
+        .or_else(|| parse_resume(lower))
+        .or_else(|| parse_json_approval(trimmed))
+        .unwrap_or_else(|| Submission::UserInput {
+            content: content.to_string(),
+        })
+}
+
+/// `/model [args...]` — show or switch model.
+fn parse_model_command(trimmed: &str, lower: &str) -> Option<Submission> {
+    if !lower.starts_with("/model") {
+        return None;
+    }
+    let args: Vec<String> = trimmed
+        .split_whitespace()
+        .skip(1)
+        .map(|s| s.to_string())
+        .collect();
+    Some(Submission::SystemCommand {
+        command: "model".into(),
+        args,
+    })
+}
+
+/// `/thread <uuid>` — switch to an existing thread.
+fn parse_thread_switch(lower: &str) -> Option<Submission> {
+    let rest = lower.strip_prefix("/thread ")?.trim();
+    if rest == "new" {
+        return None;
+    }
+    let id = Uuid::parse_str(rest).ok()?;
+    Some(Submission::SwitchThread { thread_id: id })
+}
+
+/// `/resume <uuid>` — resume from a checkpoint.
+fn parse_resume(lower: &str) -> Option<Submission> {
+    let rest = lower.strip_prefix("/resume ")?.trim();
+    let id = Uuid::parse_str(rest).ok()?;
+    Some(Submission::Resume { checkpoint_id: id })
+}
+
+/// Structured JSON `ExecApproval` (from web gateway).
+fn parse_json_approval(trimmed: &str) -> Option<Submission> {
+    if !trimmed.starts_with('{') {
+        return None;
+    }
+    let submission: Submission = serde_json::from_str(trimmed).ok()?;
+    if matches!(submission, Submission::ExecApproval { .. }) {
+        Some(submission)
+    } else {
+        None
     }
 }
 
@@ -644,5 +628,44 @@ mod tests {
         ));
         assert!(matches!(SubmissionParser::parse("/QUIT"), Submission::Quit));
         assert!(matches!(SubmissionParser::parse("/Exit"), Submission::Quit));
+    }
+
+    #[test]
+    fn test_parser_approval_approve() {
+        for input in ["yes", "y", "approve", "ok", "YES"] {
+            let submission = SubmissionParser::parse(input);
+            assert!(
+                matches!(submission, Submission::ApprovalResponse { approved: true, always: false }),
+                "Expected approve for {:?}, got {:?}",
+                input,
+                submission
+            );
+        }
+    }
+
+    #[test]
+    fn test_parser_approval_always() {
+        for input in ["always", "yes always", "approve always"] {
+            let submission = SubmissionParser::parse(input);
+            assert!(
+                matches!(submission, Submission::ApprovalResponse { approved: true, always: true }),
+                "Expected always-approve for {:?}, got {:?}",
+                input,
+                submission
+            );
+        }
+    }
+
+    #[test]
+    fn test_parser_approval_deny() {
+        for input in ["no", "n", "deny", "reject", "cancel"] {
+            let submission = SubmissionParser::parse(input);
+            assert!(
+                matches!(submission, Submission::ApprovalResponse { approved: false, always: false }),
+                "Expected deny for {:?}, got {:?}",
+                input,
+                submission
+            );
+        }
     }
 }
