@@ -1,2 +1,14 @@
 /target
 .env
+
+# Swift Package Manager
+.build/
+.swiftpm/
+
+# Xcode user data
+xcuserdata/
+*.xcuserstate
+DerivedData/
+
+# macOS
+.DS_Store

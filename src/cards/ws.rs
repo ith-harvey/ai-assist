@@ -16,7 +16,7 @@ use serde::Deserialize;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
-use super::model::{CardAction, WsMessage};
+use super::model::{CardAction, ReplyCard, WsMessage};
 use super::queue::CardQueue;
 
 /// Application state shared across handlers.
@@ -36,6 +36,7 @@ pub fn card_routes(queue: Arc<CardQueue>) -> Router {
         .route("/api/cards/{id}/approve", post(approve_card))
         .route("/api/cards/{id}/dismiss", post(dismiss_card))
         .route("/api/cards/{id}/edit", post(edit_card))
+        .route("/api/cards/test", post(create_test_card))
         .with_state(state)
 }
 
@@ -225,4 +226,45 @@ async fn edit_card(
         Some(card) => (StatusCode::OK, Json(serde_json::json!(card))),
         None => (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "Card not found or not pending"}))),
     }
+}
+
+// ── Debug / Test ────────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct TestCardRequest {
+    #[serde(default = "default_sender")]
+    sender: String,
+    #[serde(default = "default_message")]
+    message: String,
+    #[serde(default = "default_reply")]
+    reply: String,
+    #[serde(default = "default_channel")]
+    channel: String,
+    #[serde(default = "default_confidence")]
+    confidence: f32,
+}
+
+fn default_sender() -> String { "Alice".into() }
+fn default_message() -> String { "Hey, are you free for lunch today?".into() }
+fn default_reply() -> String { "Yeah sounds good! Where were you thinking?".into() }
+fn default_channel() -> String { "telegram".into() }
+fn default_confidence() -> f32 { 0.85 }
+
+async fn create_test_card(
+    State(state): State<AppState>,
+    Json(body): Json<TestCardRequest>,
+) -> impl IntoResponse {
+    let card = ReplyCard::new(
+        "chat_test",
+        body.message,
+        body.sender,
+        body.reply,
+        body.confidence,
+        body.channel,
+        15,
+    );
+    let card_id = card.id;
+    state.queue.push(card).await;
+    info!(card_id = %card_id, "Test card created");
+    (StatusCode::CREATED, Json(serde_json::json!({"card_id": card_id, "status": "created"})))
 }

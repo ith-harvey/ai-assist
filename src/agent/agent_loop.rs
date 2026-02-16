@@ -20,6 +20,7 @@ use crate::agent::session::{Session, ThreadState};
 use crate::agent::session_manager::SessionManager;
 use crate::agent::submission::{Submission, SubmissionParser, SubmissionResult};
 use crate::agent::router::Router;
+use crate::cards::generator::CardGenerator;
 use crate::channels::{ChannelManager, IncomingMessage, OutgoingResponse, StatusUpdate};
 use crate::config::AgentConfig;
 use crate::db::Database;
@@ -63,6 +64,7 @@ pub struct AgentDeps {
     pub tools: Arc<ToolRegistry>,
     pub workspace: Option<Arc<Workspace>>,
     pub extension_manager: Option<Arc<ExtensionManager>>,
+    pub card_generator: Option<Arc<CardGenerator>>,
 }
 
 /// The main agent that coordinates all components.
@@ -115,6 +117,10 @@ impl Agent {
 
     pub(crate) fn workspace(&self) -> Option<&Arc<Workspace>> {
         self.deps.workspace.as_ref()
+    }
+
+    pub(crate) fn card_generator(&self) -> Option<&Arc<CardGenerator>> {
+        self.deps.card_generator.as_ref()
     }
 
     // ── Main loop ───────────────────────────────────────────────────
@@ -451,6 +457,26 @@ impl Agent {
             .any(|rule| rule.action == crate::safety::PolicyAction::Block)
         {
             return Ok(SubmissionResult::error("Input rejected by safety policy."));
+        }
+
+        // Fire-and-forget card generation (non-blocking)
+        if let Some(card_gen) = self.card_generator() {
+            let card_gen = Arc::clone(card_gen);
+            let msg_content = content.to_string();
+            let sender = message
+                .user_name
+                .clone()
+                .unwrap_or_else(|| message.user_id.clone());
+            let chat_id = thread_id.to_string();
+            let channel = message.channel.clone();
+            tokio::spawn(async move {
+                if let Err(e) = card_gen
+                    .generate_cards(&msg_content, &sender, &chat_id, &channel)
+                    .await
+                {
+                    tracing::warn!("Card generation failed: {}", e);
+                }
+            });
         }
 
         // Auto-compact if needed BEFORE adding new turn
