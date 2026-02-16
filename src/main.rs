@@ -62,7 +62,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         expire_minutes: card_expire_min,
         ..Default::default()
     };
-    let _card_generator = Arc::new(CardGenerator::new(
+    let card_generator = Arc::new(CardGenerator::new(
         llm.clone(),
         card_queue.clone(),
         generator_config,
@@ -89,6 +89,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tools: Arc::new(ToolRegistry::new()),
         workspace: None,
         extension_manager: None,
+        card_generator: Some(card_generator),
     };
 
     // Set up channels
