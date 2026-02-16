@@ -4,6 +4,20 @@ Server-side AI agent that manages your messaging. Connects to Telegram (WhatsApp
 
 You never type — just swipe to approve, dismiss, or edit.
 
+## UX North Star
+
+These principles guide every design decision. When in doubt, refer here.
+
+1. **Human UX over functionality.** This system will always trade feature count for accurate responses and useful suggestions. We'd rather do three things flawlessly than ten things with rough edges. Every interaction the user has should feel considered and intentional.
+
+2. **No configuration battles.** The user should never find themselves debugging agent behavior, tweaking prompts, or fighting a system that's spinning out. The harness robustly handles irrational agent output, confused context, and edge cases — silently, without surfacing the mess. If something breaks, the system recovers; the user never notices.
+
+3. **Less is more.** The user can do fewer things on this system than on others — and that's the point. What they *can* do feels flawless and bugless. No half-built features, no "works sometimes" flows. Every surface is polished.
+
+4. **It just works. It feels like magic.** The user is generally unaware of the multiple background models, the failover logic, the context compaction, the safety checks. It all disappears behind a single experience that feels like the system is reading their mind. The suggestions arrive at the right time, with the right tone, about the right thing.
+
+5. **Proactive by default.** The default interaction is the system prompting the human — not the other way around. The system surfaces suggested actions, draft replies, and nudges before the user asks. The user's primary job is to approve, dismiss, or adjust — not to initiate. The system drives; the human steers.
+
 ## Architecture
 
 ```
