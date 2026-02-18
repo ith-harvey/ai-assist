@@ -4,7 +4,8 @@ use ai_assist::agent::{Agent, AgentDeps};
 use ai_assist::cards::generator::{CardGenerator, GeneratorConfig};
 use ai_assist::cards::queue::{self, CardQueue};
 use ai_assist::cards::ws::card_routes;
-use ai_assist::channels::{ChannelManager, CliChannel, TelegramChannel};
+use ai_assist::channels::{ChannelManager, CliChannel, EmailChannel, TelegramChannel};
+use ai_assist::channels::email::EmailConfig;
 use ai_assist::config::AgentConfig;
 use ai_assist::llm::{create_provider, LlmBackend, LlmConfig};
 use ai_assist::safety::SafetyLayer;
@@ -119,6 +120,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         channels.add(Box::new(TelegramChannel::new(telegram_token, allowed_users)));
         active_channels.push("telegram");
+    }
+
+    // Conditionally add Email if IMAP host is set
+    if let Some(email_config) = EmailConfig::from_env() {
+        let senders = &email_config.allowed_senders;
+        eprintln!(
+            "   Email: enabled (IMAP: {}, SMTP: {}, allowed: {})",
+            email_config.imap_host,
+            email_config.smtp_host,
+            if senders.iter().any(|s| s == "*") {
+                "everyone".to_string()
+            } else if senders.is_empty() {
+                "none (deny all)".to_string()
+            } else {
+                senders.join(", ")
+            }
+        );
+        channels.add(Box::new(EmailChannel::new(email_config)));
+        active_channels.push("email");
     }
 
     eprintln!("   Channels: {}\n", active_channels.join(", "));
