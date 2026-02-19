@@ -12,7 +12,7 @@ public enum CardStatus: String, Codable, Sendable {
 
 /// A reply suggestion card.
 /// Mirrors Rust `ReplyCard` struct — all fields use snake_case in JSON.
-public struct ReplyCard: Codable, Identifiable, Sendable {
+public struct ReplyCard: Identifiable, Sendable {
     public let id: UUID
     public let conversationId: String
     public let sourceMessage: String
@@ -24,6 +24,32 @@ public struct ReplyCard: Codable, Identifiable, Sendable {
     public let expiresAt: String
     public let channel: String
     public let updatedAt: String
+    /// Email thread context — previous messages in the conversation.
+    /// Empty array when no thread context is available (backwards compatible).
+    public let thread: [ThreadMessage]
+}
+
+extension ReplyCard: Codable {
+    enum CodingKeys: String, CodingKey {
+        case id, conversationId, sourceMessage, sourceSender, suggestedReply
+        case confidence, status, createdAt, expiresAt, channel, updatedAt, thread
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        conversationId = try container.decode(String.self, forKey: .conversationId)
+        sourceMessage = try container.decode(String.self, forKey: .sourceMessage)
+        sourceSender = try container.decode(String.self, forKey: .sourceSender)
+        suggestedReply = try container.decode(String.self, forKey: .suggestedReply)
+        confidence = try container.decode(Float.self, forKey: .confidence)
+        status = try container.decode(CardStatus.self, forKey: .status)
+        createdAt = try container.decode(String.self, forKey: .createdAt)
+        expiresAt = try container.decode(String.self, forKey: .expiresAt)
+        channel = try container.decode(String.self, forKey: .channel)
+        updatedAt = try container.decode(String.self, forKey: .updatedAt)
+        thread = try container.decodeIfPresent([ThreadMessage].self, forKey: .thread) ?? []
+    }
 }
 
 extension ReplyCard {

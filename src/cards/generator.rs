@@ -51,6 +51,11 @@ impl CardGenerator {
         Self { llm, queue, config }
     }
 
+    /// Get a reference to the card queue.
+    pub fn queue(&self) -> &Arc<CardQueue> {
+        &self.queue
+    }
+
     /// Should we generate a card for this message?
     pub fn should_generate(
         &self,
@@ -83,6 +88,7 @@ impl CardGenerator {
     ///
     /// Creates ONE card with the best reply suggestion (1:1 card-to-message model).
     /// Optionally links the card to a tracked message via `message_id`.
+    /// If `thread` is non-empty, attaches email thread context to the card.
     ///
     /// This is designed to be called asynchronously (tokio::spawn) so it doesn't
     /// block the main message processing flow.
@@ -93,6 +99,7 @@ impl CardGenerator {
         chat_id: &str,
         channel: &str,
         message_id: Option<&str>,
+        thread: Vec<super::model::ThreadMessage>,
     ) -> Result<Vec<ReplyCard>, LlmError> {
         if !self.should_generate(source_message, sender, chat_id) {
             return Ok(vec![]);
@@ -156,6 +163,13 @@ impl CardGenerator {
         if let Some(mid) = message_id {
             for card in &mut cards {
                 card.message_id = Some(mid.to_string());
+            }
+        }
+
+        // Attach email thread context
+        if !thread.is_empty() {
+            for card in &mut cards {
+                card.thread = thread.clone();
             }
         }
 

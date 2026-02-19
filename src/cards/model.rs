@@ -4,6 +4,19 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+/// A message in an email thread — provides context for reply cards.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ThreadMessage {
+    /// Who sent this message.
+    pub sender: String,
+    /// Message body (truncated to 500 chars max).
+    pub content: String,
+    /// When the message was sent.
+    pub timestamp: DateTime<Utc>,
+    /// Whether this message was sent by the user (outgoing) vs received (incoming).
+    pub is_outgoing: bool,
+}
+
 /// Status of a reply card in the queue.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -48,6 +61,9 @@ pub struct ReplyCard {
     /// ID of the tracked message this card is linked to (if any).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message_id: Option<String>,
+    /// Email thread context — previous messages in the conversation.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub thread: Vec<ThreadMessage>,
 }
 
 impl ReplyCard {
@@ -75,7 +91,14 @@ impl ReplyCard {
             channel: channel.into(),
             updated_at: now,
             message_id: None,
+            thread: Vec::new(),
         }
+    }
+
+    /// Set the email thread context on this card.
+    pub fn with_thread(mut self, thread: Vec<ThreadMessage>) -> Self {
+        self.thread = thread;
+        self
     }
 
     /// Set the linked message ID.
@@ -166,5 +189,128 @@ mod tests {
             }
             _ => panic!("Expected NewCard"),
         }
+    }
+
+    // ── ThreadMessage tests ─────────────────────────────────────────
+
+    #[test]
+    fn thread_message_serde_roundtrip() {
+        let msg = ThreadMessage {
+            sender: "alice@example.com".into(),
+            content: "Hey, following up on our discussion".into(),
+            timestamp: Utc::now(),
+            is_outgoing: false,
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        let parsed: ThreadMessage = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.sender, "alice@example.com");
+        assert_eq!(parsed.content, "Hey, following up on our discussion");
+        assert!(!parsed.is_outgoing);
+    }
+
+    #[test]
+    fn reply_card_with_thread_serializes() {
+        let thread = vec![
+            ThreadMessage {
+                sender: "alice@example.com".into(),
+                content: "Original question".into(),
+                timestamp: Utc::now() - chrono::Duration::hours(2),
+                is_outgoing: false,
+            },
+            ThreadMessage {
+                sender: "me@example.com".into(),
+                content: "My reply".into(),
+                timestamp: Utc::now() - chrono::Duration::hours(1),
+                is_outgoing: true,
+            },
+        ];
+
+        let card = ReplyCard::new("chat_1", "Latest msg", "alice@example.com", "Sounds good!", 0.85, "email", 15)
+            .with_thread(thread);
+
+        let json = serde_json::to_string(&card).unwrap();
+        assert!(json.contains("\"thread\""));
+        assert!(json.contains("\"is_outgoing\":false"));
+        assert!(json.contains("\"is_outgoing\":true"));
+        assert!(json.contains("Original question"));
+        assert!(json.contains("My reply"));
+
+        // Roundtrip
+        let parsed: ReplyCard = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.thread.len(), 2);
+        assert_eq!(parsed.thread[0].sender, "alice@example.com");
+        assert!(parsed.thread[1].is_outgoing);
+    }
+
+    #[test]
+    fn reply_card_without_thread_omits_field() {
+        let card = ReplyCard::new("chat_1", "hello", "Bob", "hi!", 0.9, "email", 15);
+        let json = serde_json::to_string(&card).unwrap();
+        // skip_serializing_if = "Vec::is_empty" should omit the thread field
+        assert!(!json.contains("\"thread\""));
+    }
+
+    #[test]
+    fn reply_card_without_thread_field_deserializes() {
+        // JSON from an older server that doesn't include thread field
+        let json = r#"{
+            "id": "550e8400-e29b-41d4-a716-446655440000",
+            "conversation_id": "chat_1",
+            "source_message": "hello",
+            "source_sender": "Bob",
+            "suggested_reply": "hi!",
+            "confidence": 0.9,
+            "status": "pending",
+            "created_at": "2026-02-15T10:00:00Z",
+            "expires_at": "2026-02-15T10:15:00Z",
+            "channel": "email",
+            "updated_at": "2026-02-15T10:00:00Z"
+        }"#;
+        let card: ReplyCard = serde_json::from_str(json).unwrap();
+        assert!(card.thread.is_empty());
+    }
+
+    #[test]
+    fn thread_ordering_by_timestamp() {
+        let t1 = ThreadMessage {
+            sender: "a@test.com".into(),
+            content: "First".into(),
+            timestamp: Utc::now() - chrono::Duration::hours(3),
+            is_outgoing: false,
+        };
+        let t2 = ThreadMessage {
+            sender: "b@test.com".into(),
+            content: "Second".into(),
+            timestamp: Utc::now() - chrono::Duration::hours(2),
+            is_outgoing: true,
+        };
+        let t3 = ThreadMessage {
+            sender: "a@test.com".into(),
+            content: "Third".into(),
+            timestamp: Utc::now() - chrono::Duration::hours(1),
+            is_outgoing: false,
+        };
+
+        let mut messages = vec![t3.clone(), t1.clone(), t2.clone()];
+        messages.sort_by_key(|m| m.timestamp);
+
+        assert_eq!(messages[0].content, "First");
+        assert_eq!(messages[1].content, "Second");
+        assert_eq!(messages[2].content, "Third");
+    }
+
+    #[test]
+    fn thread_content_truncation() {
+        // Verify a message with >500 chars would need truncation
+        let long_content: String = "x".repeat(600);
+        let msg = ThreadMessage {
+            sender: "sender@test.com".into(),
+            content: long_content.clone(),
+            timestamp: Utc::now(),
+            is_outgoing: false,
+        };
+        assert_eq!(msg.content.len(), 600);
+        // Truncation is done at fetch time, not at the model level.
+        // This test just confirms the model can hold arbitrarily long content.
     }
 }

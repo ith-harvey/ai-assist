@@ -260,4 +260,91 @@ struct ModelTests {
             _ = try WsMessage.decode(from: data)
         }
     }
+
+    // MARK: - ThreadMessage decoding
+
+    @Test("Decode ThreadMessage from snake_case JSON")
+    func decodeThreadMessage() throws {
+        let json = """
+        {
+            "sender": "alice@example.com",
+            "content": "Hey, following up on our discussion",
+            "timestamp": "2026-02-15T10:00:00Z",
+            "is_outgoing": false
+        }
+        """
+        let data = json.data(using: .utf8)!
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let msg = try decoder.decode(ThreadMessage.self, from: data)
+        #expect(msg.sender == "alice@example.com")
+        #expect(msg.content == "Hey, following up on our discussion")
+        #expect(msg.timestamp == "2026-02-15T10:00:00Z")
+        #expect(msg.isOutgoing == false)
+    }
+
+    // MARK: - ReplyCard with thread
+
+    @Test("Decode ReplyCard with thread array")
+    func decodeReplyCardWithThread() throws {
+        let json = """
+        {
+            "id": "550e8400-e29b-41d4-a716-446655440000",
+            "conversation_id": "chat_123",
+            "source_message": "Latest message",
+            "source_sender": "Alice",
+            "suggested_reply": "Sounds good!",
+            "confidence": 0.92,
+            "status": "pending",
+            "created_at": "2026-02-15T10:00:00Z",
+            "expires_at": "2026-02-15T10:15:00Z",
+            "channel": "email",
+            "updated_at": "2026-02-15T10:00:00Z",
+            "thread": [
+                {
+                    "sender": "alice@example.com",
+                    "content": "Original question",
+                    "timestamp": "2026-02-15T08:00:00Z",
+                    "is_outgoing": false
+                },
+                {
+                    "sender": "me@example.com",
+                    "content": "My reply",
+                    "timestamp": "2026-02-15T09:00:00Z",
+                    "is_outgoing": true
+                }
+            ]
+        }
+        """
+        let data = json.data(using: .utf8)!
+        let card = try ReplyCard.decode(from: data)
+        #expect(card.thread.count == 2)
+        #expect(card.thread[0].sender == "alice@example.com")
+        #expect(card.thread[0].isOutgoing == false)
+        #expect(card.thread[1].sender == "me@example.com")
+        #expect(card.thread[1].isOutgoing == true)
+    }
+
+    @Test("Decode ReplyCard without thread field defaults to empty array")
+    func decodeReplyCardWithoutThread() throws {
+        let json = """
+        {
+            "id": "550e8400-e29b-41d4-a716-446655440000",
+            "conversation_id": "chat_123",
+            "source_message": "Hey there",
+            "source_sender": "Bob",
+            "suggested_reply": "Hi!",
+            "confidence": 0.8,
+            "status": "pending",
+            "created_at": "2026-02-15T10:00:00Z",
+            "expires_at": "2026-02-15T10:15:00Z",
+            "channel": "telegram",
+            "updated_at": "2026-02-15T10:00:00Z"
+        }
+        """
+        let data = json.data(using: .utf8)!
+        let card = try ReplyCard.decode(from: data)
+        #expect(card.thread.isEmpty)
+        #expect(card.sourceSender == "Bob")
+    }
 }

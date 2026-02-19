@@ -15,6 +15,7 @@ use lettre::{Message, SmtpTransport, Transport};
 use mail_parser::{MessageParser, MimeHeaders};
 use uuid::Uuid;
 
+use crate::cards::model::ThreadMessage;
 use crate::channels::{Channel, IncomingMessage, MessageStream, OutgoingResponse};
 use crate::error::ChannelError;
 use crate::store::MessageStore;
@@ -240,8 +241,43 @@ impl Channel for EmailChannel {
                             // Safe to mark \Seen now — message is persisted
                             uids_to_mark.push(uid);
 
+                            // Fetch thread context (last 4 messages in this conversation)
+                            let thread_json = {
+                                let thread_cfg = config.clone();
+                                let thread_subject = subject.clone();
+                                match tokio::task::spawn_blocking(move || {
+                                    fetch_thread_by_subject(&thread_cfg, &thread_subject, 4)
+                                })
+                                .await
+                                {
+                                    Ok(Ok(thread)) if !thread.is_empty() => {
+                                        tracing::debug!(
+                                            "Fetched {} thread messages for subject: {}",
+                                            thread.len(),
+                                            subject
+                                        );
+                                        serde_json::to_value(&thread).ok()
+                                    }
+                                    Ok(Err(e)) => {
+                                        tracing::warn!("Thread fetch failed: {e}");
+                                        None
+                                    }
+                                    _ => None,
+                                }
+                            };
+
                             let received_at = chrono::DateTime::from_timestamp(ts as i64, 0)
                                 .unwrap_or_else(chrono::Utc::now);
+
+                            let mut metadata = serde_json::json!({
+                                "reply_to": sender,
+                                "subject": subject,
+                                "message_id": msg_id,
+                                "tracked_message_id": tracked_message_id,
+                            });
+                            if let Some(thread_val) = thread_json {
+                                metadata["thread"] = thread_val;
+                            }
 
                             let incoming = IncomingMessage {
                                 id: Uuid::new_v4(),
@@ -251,12 +287,7 @@ impl Channel for EmailChannel {
                                 content,
                                 thread_id: Some(subject.clone()),
                                 received_at,
-                                metadata: serde_json::json!({
-                                    "reply_to": sender,
-                                    "subject": subject,
-                                    "message_id": msg_id,
-                                    "tracked_message_id": tracked_message_id,
-                                }),
+                                metadata,
                             };
 
                             if tx.send(incoming).is_err() {
@@ -677,6 +708,219 @@ fn mark_seen_imap(config: &EmailConfig, uids: &[String]) -> Result<(), ImapError
     let _ = send_cmd(&mut tls, &logout_tag, "LOGOUT");
 
     Ok(())
+}
+
+// ── Thread fetching ─────────────────────────────────────────────
+
+/// Normalize an email subject by stripping Re:/Fwd:/RE:/FW: prefixes recursively.
+pub fn normalize_subject(subject: &str) -> String {
+    let mut s = subject.trim();
+    loop {
+        let lower = s.to_lowercase();
+        if lower.starts_with("re:") {
+            s = s[3..].trim_start();
+        } else if lower.starts_with("fwd:") {
+            s = s[4..].trim_start();
+        } else if lower.starts_with("fw:") {
+            s = s[3..].trim_start();
+        } else {
+            break;
+        }
+    }
+    s.to_string()
+}
+
+/// Fetch recent messages in an email thread by subject (blocking — run in spawn_blocking).
+///
+/// Searches IMAP for messages matching the normalized subject and returns
+/// the last `limit` messages sorted by timestamp ascending (oldest first).
+/// Each message body is truncated to 500 chars max.
+fn fetch_thread_by_subject(
+    config: &EmailConfig,
+    subject: &str,
+    limit: usize,
+) -> Result<Vec<ThreadMessage>, ImapError> {
+    use std::sync::Arc as StdArc;
+
+    let normalized = normalize_subject(subject);
+    if normalized.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Connect TCP
+    let tcp = TcpStream::connect((&*config.imap_host, config.imap_port))?;
+    tcp.set_read_timeout(Some(Duration::from_secs(30)))?;
+
+    // TLS via rustls
+    let mut root_store = rustls::RootCertStore::empty();
+    root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    let tls_config = StdArc::new(
+        rustls::ClientConfig::builder()
+            .with_root_certificates(root_store)
+            .with_no_client_auth(),
+    );
+    let server_name: rustls::pki_types::ServerName<'_> =
+        rustls::pki_types::ServerName::try_from(config.imap_host.clone())?;
+    let conn = rustls::ClientConnection::new(tls_config, server_name)?;
+    let mut tls = rustls::StreamOwned::new(conn, tcp);
+
+    // IMAP helpers (same pattern as fetch_unseen_imap)
+    let read_line =
+        |tls: &mut rustls::StreamOwned<rustls::ClientConnection, TcpStream>| -> Result<String, ImapError> {
+            let mut buf = Vec::new();
+            loop {
+                let mut byte = [0u8; 1];
+                match std::io::Read::read(tls, &mut byte) {
+                    Ok(0) => return Err("IMAP connection closed".into()),
+                    Ok(_) => {
+                        buf.push(byte[0]);
+                        if buf.ends_with(b"\r\n") {
+                            return Ok(String::from_utf8_lossy(&buf).to_string());
+                        }
+                    }
+                    Err(e) => return Err(e.into()),
+                }
+            }
+        };
+
+    let send_cmd =
+        |tls: &mut rustls::StreamOwned<rustls::ClientConnection, TcpStream>,
+         tag: &str,
+         cmd: &str|
+         -> Result<Vec<String>, ImapError> {
+            let full = format!("{tag} {cmd}\r\n");
+            IoWrite::write_all(tls, full.as_bytes())?;
+            IoWrite::flush(tls)?;
+            let mut lines = Vec::new();
+            loop {
+                let line = read_line(tls)?;
+                let done = line.starts_with(tag);
+                lines.push(line);
+                if done {
+                    break;
+                }
+            }
+            Ok(lines)
+        };
+
+    // Read greeting
+    let _greeting = read_line(&mut tls)?;
+
+    // Login
+    let login_resp = send_cmd(
+        &mut tls,
+        "T1",
+        &format!("LOGIN \"{}\" \"{}\"", config.username, config.password),
+    )?;
+    if !login_resp.last().is_some_and(|l| l.contains("OK")) {
+        return Err("IMAP login failed".into());
+    }
+
+    // Select INBOX
+    let _select = send_cmd(&mut tls, "T2", "SELECT \"INBOX\"")?;
+
+    // Search by subject — escape double quotes in the normalized subject
+    let escaped_subject = normalized.replace('\\', "\\\\").replace('"', "\\\"");
+    let search_resp = send_cmd(
+        &mut tls,
+        "T3",
+        &format!("SEARCH SUBJECT \"{}\"", escaped_subject),
+    )?;
+
+    let mut uids: Vec<&str> = Vec::new();
+    for line in &search_resp {
+        if line.starts_with("* SEARCH") {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() > 2 {
+                uids.extend_from_slice(&parts[2..]);
+            }
+        }
+    }
+
+    // Trim trailing \r\n from UIDs
+    let uids: Vec<String> = uids
+        .iter()
+        .map(|u| u.trim().to_string())
+        .filter(|u| !u.is_empty())
+        .collect();
+
+    // Fetch each message
+    let from_lower = config.from_address.to_lowercase();
+    let mut thread_messages: Vec<ThreadMessage> = Vec::new();
+    let mut tag_counter = 4_u32;
+
+    for uid in &uids {
+        let fetch_tag = format!("T{tag_counter}");
+        tag_counter += 1;
+        let fetch_resp = send_cmd(&mut tls, &fetch_tag, &format!("FETCH {uid} RFC822"))?;
+
+        let raw: String = fetch_resp
+            .iter()
+            .skip(1)
+            .take(fetch_resp.len().saturating_sub(2))
+            .cloned()
+            .collect();
+
+        if let Some(parsed) = MessageParser::default().parse(raw.as_bytes()) {
+            let sender = extract_sender(&parsed);
+            let body = extract_text(&parsed);
+
+            // Truncate body to 500 chars
+            let truncated = if body.chars().count() > 500 {
+                let boundary = body
+                    .char_indices()
+                    .nth(500)
+                    .map(|(i, _)| i)
+                    .unwrap_or(body.len());
+                format!("{}…", &body[..boundary])
+            } else {
+                body
+            };
+
+            let is_outgoing = sender.to_lowercase() == from_lower;
+
+            #[allow(clippy::cast_sign_loss)]
+            let timestamp = parsed
+                .date()
+                .and_then(|d| {
+                    chrono::NaiveDate::from_ymd_opt(
+                        d.year as i32,
+                        u32::from(d.month),
+                        u32::from(d.day),
+                    )
+                    .and_then(|date| {
+                        date.and_hms_opt(
+                            u32::from(d.hour),
+                            u32::from(d.minute),
+                            u32::from(d.second),
+                        )
+                    })
+                    .map(|n| n.and_utc())
+                })
+                .unwrap_or_else(chrono::Utc::now);
+
+            thread_messages.push(ThreadMessage {
+                sender,
+                content: truncated,
+                timestamp,
+                is_outgoing,
+            });
+        }
+    }
+
+    // Sort by timestamp ascending (oldest first)
+    thread_messages.sort_by_key(|m| m.timestamp);
+
+    // Take only the last `limit` messages
+    if thread_messages.len() > limit {
+        thread_messages = thread_messages.split_off(thread_messages.len() - limit);
+    }
+
+    // Logout
+    let logout_tag = format!("T{tag_counter}");
+    let _ = send_cmd(&mut tls, &logout_tag, "LOGOUT");
+
+    Ok(thread_messages)
 }
 
 #[cfg(test)]
