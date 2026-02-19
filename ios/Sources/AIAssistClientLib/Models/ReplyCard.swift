@@ -27,12 +27,15 @@ public struct ReplyCard: Identifiable, Sendable {
     /// Email thread context — previous messages in the conversation.
     /// Empty array when no thread context is available (backwards compatible).
     public let thread: [ThreadMessage]
+    /// Email thread with full headers (From/To/CC/Subject/Message-ID) for rich display.
+    /// Empty array when not available (backwards compatible).
+    public let emailThread: [EmailMessage]
 }
 
 extension ReplyCard: Codable {
     enum CodingKeys: String, CodingKey {
         case id, conversationId, sourceMessage, sourceSender, suggestedReply
-        case confidence, status, createdAt, expiresAt, channel, updatedAt, thread
+        case confidence, status, createdAt, expiresAt, channel, updatedAt, thread, emailThread
     }
 
     public init(from decoder: Decoder) throws {
@@ -49,6 +52,7 @@ extension ReplyCard: Codable {
         channel = try container.decode(String.self, forKey: .channel)
         updatedAt = try container.decode(String.self, forKey: .updatedAt)
         thread = try container.decodeIfPresent([ThreadMessage].self, forKey: .thread) ?? []
+        emailThread = try container.decodeIfPresent([EmailMessage].self, forKey: .emailThread) ?? []
     }
 }
 

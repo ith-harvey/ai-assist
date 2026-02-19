@@ -28,9 +28,14 @@ impl CardStore {
             .reply_metadata
             .as_ref()
             .and_then(|v| serde_json::to_string(v).ok());
+        let email_thread_str = if card.email_thread.is_empty() {
+            None
+        } else {
+            serde_json::to_string(&card.email_thread).ok()
+        };
         conn.execute(
-            "INSERT INTO cards (id, conversation_id, source_message, source_sender, suggested_reply, confidence, status, channel, created_at, expires_at, updated_at, message_id, reply_metadata)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+            "INSERT INTO cards (id, conversation_id, source_message, source_sender, suggested_reply, confidence, status, channel, created_at, expires_at, updated_at, message_id, reply_metadata, email_thread)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
             rusqlite::params![
                 card.id.to_string(),
                 card.conversation_id,
@@ -45,6 +50,7 @@ impl CardStore {
                 card.updated_at.to_rfc3339(),
                 card.message_id,
                 reply_metadata_str,
+                email_thread_str,
             ],
         )?;
         debug!(card_id = %card.id, "Card inserted into DB");
@@ -85,7 +91,7 @@ impl CardStore {
         let conn = self.db.conn();
         let now = Utc::now().to_rfc3339();
         let mut stmt = conn.prepare(
-            "SELECT id, conversation_id, source_message, source_sender, suggested_reply, confidence, status, channel, created_at, expires_at, updated_at, message_id, reply_metadata
+            "SELECT id, conversation_id, source_message, source_sender, suggested_reply, confidence, status, channel, created_at, expires_at, updated_at, message_id, reply_metadata, email_thread
              FROM cards
              WHERE status = 'pending' AND expires_at > ?1
              ORDER BY created_at ASC",
@@ -102,7 +108,7 @@ impl CardStore {
     pub fn get_by_id(&self, card_id: Uuid) -> Result<Option<ReplyCard>, rusqlite::Error> {
         let conn = self.db.conn();
         let mut stmt = conn.prepare(
-            "SELECT id, conversation_id, source_message, source_sender, suggested_reply, confidence, status, channel, created_at, expires_at, updated_at, message_id, reply_metadata
+            "SELECT id, conversation_id, source_message, source_sender, suggested_reply, confidence, status, channel, created_at, expires_at, updated_at, message_id, reply_metadata, email_thread
              FROM cards
              WHERE id = ?1",
         )?;
@@ -123,7 +129,7 @@ impl CardStore {
     ) -> Result<Vec<ReplyCard>, rusqlite::Error> {
         let conn = self.db.conn();
         let mut stmt = conn.prepare(
-            "SELECT id, conversation_id, source_message, source_sender, suggested_reply, confidence, status, channel, created_at, expires_at, updated_at, message_id, reply_metadata
+            "SELECT id, conversation_id, source_message, source_sender, suggested_reply, confidence, status, channel, created_at, expires_at, updated_at, message_id, reply_metadata, email_thread
              FROM cards
              WHERE channel = ?1
              ORDER BY created_at DESC
@@ -223,9 +229,13 @@ fn row_to_card(row: &rusqlite::Row<'_>) -> Result<ReplyCard, rusqlite::Error> {
     let updated_str: String = row.get(10)?;
     let message_id: Option<String> = row.get(11)?;
     let reply_metadata_str: Option<String> = row.get(12)?;
+    let email_thread_str: Option<String> = row.get(13)?;
 
     let reply_metadata = reply_metadata_str
         .and_then(|s| serde_json::from_str(&s).ok());
+    let email_thread = email_thread_str
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
 
     Ok(ReplyCard {
         id: Uuid::parse_str(&id_str).unwrap_or_else(|_| Uuid::nil()),
@@ -242,6 +252,7 @@ fn row_to_card(row: &rusqlite::Row<'_>) -> Result<ReplyCard, rusqlite::Error> {
         message_id,
         thread: Vec::new(),
         reply_metadata,
+        email_thread,
     })
 }
 
@@ -472,6 +483,43 @@ mod tests {
         assert_eq!(pending.len(), 1);
         assert!(pending[0].reply_metadata.is_some());
         assert_eq!(pending[0].reply_metadata.as_ref().unwrap()["reply_to"], "test@example.com");
+    }
+
+    #[test]
+    fn insert_with_email_thread() {
+        use crate::channels::EmailMessage;
+
+        let store = test_store();
+        let email_thread = vec![EmailMessage {
+            from: "alice@test.com".into(),
+            to: vec!["bob@test.com".into()],
+            cc: vec![],
+            subject: "Test".into(),
+            message_id: "<id@test.com>".into(),
+            content: "Hello".into(),
+            timestamp: chrono::Utc::now(),
+            is_outgoing: false,
+        }];
+        let card = make_card("email").with_email_thread(email_thread);
+        let card_id = card.id;
+
+        store.insert(&card).unwrap();
+
+        let fetched = store.get_by_id(card_id).unwrap().unwrap();
+        assert_eq!(fetched.email_thread.len(), 1);
+        assert_eq!(fetched.email_thread[0].from, "alice@test.com");
+    }
+
+    #[test]
+    fn insert_without_email_thread() {
+        let store = test_store();
+        let card = make_card("email");
+        let card_id = card.id;
+
+        store.insert(&card).unwrap();
+
+        let fetched = store.get_by_id(card_id).unwrap().unwrap();
+        assert!(fetched.email_thread.is_empty());
     }
 
     #[test]

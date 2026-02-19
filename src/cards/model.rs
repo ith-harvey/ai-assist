@@ -4,6 +4,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::channels::EmailMessage;
+
 /// A message in an email thread — provides context for reply cards.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ThreadMessage {
@@ -67,6 +69,9 @@ pub struct ReplyCard {
     /// Channel-specific metadata for sending the reply (e.g. email recipients, subject, threading headers).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reply_metadata: Option<serde_json::Value>,
+    /// Email thread with full headers (From/To/CC/Subject/Message-ID) for rich iOS display.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub email_thread: Vec<EmailMessage>,
 }
 
 impl ReplyCard {
@@ -96,7 +101,14 @@ impl ReplyCard {
             message_id: None,
             thread: Vec::new(),
             reply_metadata: None,
+            email_thread: Vec::new(),
         }
+    }
+
+    /// Set the email thread with full headers on this card.
+    pub fn with_email_thread(mut self, email_thread: Vec<EmailMessage>) -> Self {
+        self.email_thread = email_thread;
+        self
     }
 
     /// Set channel-specific reply metadata (email recipients, subject, threading headers).
@@ -398,5 +410,78 @@ mod tests {
         let parsed: ReplyCard = serde_json::from_str(&json).unwrap();
         assert!(parsed.reply_metadata.is_some());
         assert_eq!(parsed.reply_metadata.as_ref().unwrap()["subject"], "Re: Test");
+    }
+
+    // ── email_thread tests ──────────────────────────────────────────
+
+    #[test]
+    fn reply_card_with_email_thread_serializes() {
+        use crate::channels::EmailMessage;
+
+        let email_thread = vec![
+            EmailMessage {
+                from: "alice@example.com".into(),
+                to: vec!["bob@example.com".into()],
+                cc: vec!["carol@example.com".into()],
+                subject: "Re: Meeting".into(),
+                message_id: "<abc@example.com>".into(),
+                content: "Sounds good!".into(),
+                timestamp: Utc::now() - chrono::Duration::hours(1),
+                is_outgoing: false,
+            },
+            EmailMessage {
+                from: "bob@example.com".into(),
+                to: vec!["alice@example.com".into()],
+                cc: vec![],
+                subject: "Re: Meeting".into(),
+                message_id: "<def@example.com>".into(),
+                content: "Great, see you there".into(),
+                timestamp: Utc::now(),
+                is_outgoing: true,
+            },
+        ];
+
+        let card = ReplyCard::new("chat_1", "msg", "Alice", "ok", 0.8, "email", 15)
+            .with_email_thread(email_thread);
+
+        let json = serde_json::to_string(&card).unwrap();
+        assert!(json.contains("\"email_thread\""));
+        assert!(json.contains("alice@example.com"));
+        assert!(json.contains("carol@example.com"));
+
+        let parsed: ReplyCard = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.email_thread.len(), 2);
+        assert_eq!(parsed.email_thread[0].from, "alice@example.com");
+        assert_eq!(parsed.email_thread[0].cc, vec!["carol@example.com"]);
+        assert!(parsed.email_thread[1].is_outgoing);
+        assert!(parsed.email_thread[1].cc.is_empty());
+    }
+
+    #[test]
+    fn reply_card_without_email_thread_omits_field() {
+        let card = ReplyCard::new("chat_1", "hello", "Bob", "hi!", 0.9, "email", 15);
+        let json = serde_json::to_string(&card).unwrap();
+        assert!(!json.contains("\"email_thread\""));
+    }
+
+    #[test]
+    fn reply_card_without_email_thread_field_deserializes() {
+        let json = r#"{
+            "id": "550e8400-e29b-41d4-a716-446655440000",
+            "conversation_id": "chat_1",
+            "source_message": "hello",
+            "source_sender": "Bob",
+            "suggested_reply": "hi!",
+            "confidence": 0.9,
+            "status": "pending",
+            "created_at": "2026-02-15T10:00:00Z",
+            "expires_at": "2026-02-15T10:15:00Z",
+            "channel": "email",
+            "updated_at": "2026-02-15T10:00:00Z"
+        }"#;
+        let card: ReplyCard = serde_json::from_str(json).unwrap();
+        assert!(card.email_thread.is_empty());
+        assert!(card.thread.is_empty());
+        assert!(card.reply_metadata.is_none());
     }
 }

@@ -101,6 +101,7 @@ impl CardGenerator {
         message_id: Option<&str>,
         thread: Vec<super::model::ThreadMessage>,
         reply_metadata: Option<serde_json::Value>,
+        email_thread: Vec<crate::channels::EmailMessage>,
     ) -> Result<Vec<ReplyCard>, LlmError> {
         if !self.should_generate(source_message, sender, chat_id) {
             return Ok(vec![]);
@@ -178,6 +179,13 @@ impl CardGenerator {
         if let Some(ref meta) = reply_metadata {
             for card in &mut cards {
                 card.reply_metadata = Some(meta.clone());
+            }
+        }
+
+        // Attach email thread with full headers
+        if !email_thread.is_empty() {
+            for card in &mut cards {
+                card.email_thread = email_thread.clone();
             }
         }
 
