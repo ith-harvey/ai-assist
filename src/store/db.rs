@@ -71,10 +71,29 @@ impl Database {
                 channel TEXT NOT NULL,
                 created_at TEXT NOT NULL,
                 expires_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
+                updated_at TEXT NOT NULL,
+                message_id TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_cards_status ON cards(status);
-            CREATE INDEX IF NOT EXISTS idx_cards_channel ON cards(channel);",
+            CREATE INDEX IF NOT EXISTS idx_cards_channel ON cards(channel);
+
+            CREATE TABLE IF NOT EXISTS messages (
+                id TEXT PRIMARY KEY,
+                external_id TEXT NOT NULL UNIQUE,
+                channel TEXT NOT NULL,
+                sender TEXT NOT NULL,
+                subject TEXT,
+                content TEXT NOT NULL,
+                received_at TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                replied_at TEXT,
+                metadata TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_messages_status ON messages(status);
+            CREATE INDEX IF NOT EXISTS idx_messages_channel ON messages(channel);
+            CREATE INDEX IF NOT EXISTS idx_messages_external_id ON messages(external_id);",
         )?;
 
         info!("Database migrations complete");

@@ -45,6 +45,9 @@ pub struct ReplyCard {
     pub channel: String,
     /// When the card was last updated.
     pub updated_at: DateTime<Utc>,
+    /// ID of the tracked message this card is linked to (if any).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message_id: Option<String>,
 }
 
 impl ReplyCard {
@@ -71,7 +74,14 @@ impl ReplyCard {
             expires_at: now + chrono::Duration::minutes(expire_minutes as i64),
             channel: channel.into(),
             updated_at: now,
+            message_id: None,
         }
+    }
+
+    /// Set the linked message ID.
+    pub fn with_message_id(mut self, message_id: impl Into<String>) -> Self {
+        self.message_id = Some(message_id.into());
+        self
     }
 
     /// Check if this card has expired.

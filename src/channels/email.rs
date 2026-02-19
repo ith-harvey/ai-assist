@@ -3,11 +3,10 @@
 //! Adapted from ZeroClaw's email_channel.rs to ai-assist's Channel trait
 //! (MessageStream, respond, broadcast, health_check, shutdown).
 
-use std::collections::HashSet;
 use std::io::Write as IoWrite;
 use std::net::TcpStream;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
@@ -18,6 +17,7 @@ use uuid::Uuid;
 
 use crate::channels::{Channel, IncomingMessage, MessageStream, OutgoingResponse};
 use crate::error::ChannelError;
+use crate::store::MessageStore;
 
 // ── Configuration ───────────────────────────────────────────────────
 
@@ -87,17 +87,24 @@ impl EmailConfig {
 // ── Channel ─────────────────────────────────────────────────────────
 
 /// Email channel — IMAP polling (inbound) + SMTP (outbound).
+///
+/// When a `MessageStore` is provided, uses the database for dedup instead of
+/// an in-memory `HashSet`. This means emails survive server restarts.
 pub struct EmailChannel {
     config: EmailConfig,
-    seen_messages: Arc<Mutex<HashSet<String>>>,
+    message_store: Option<Arc<MessageStore>>,
     shutdown: Arc<AtomicBool>,
 }
 
 impl EmailChannel {
-    pub fn new(config: EmailConfig) -> Self {
+    /// Create a new email channel.
+    ///
+    /// If `message_store` is provided, emails are persisted to SQLite and deduplication
+    /// uses the database (durable). Otherwise, dedup is skipped (in-memory only was removed).
+    pub fn new(config: EmailConfig, message_store: Option<Arc<MessageStore>>) -> Self {
         Self {
             config,
-            seen_messages: Arc::new(Mutex::new(HashSet::new())),
+            message_store,
             shutdown: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -167,9 +174,9 @@ impl Channel for EmailChannel {
     async fn start(&self) -> Result<MessageStream, ChannelError> {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         let config = self.config.clone();
-        let seen = Arc::clone(&self.seen_messages);
         let shutdown = Arc::clone(&self.shutdown);
         let allowed = self.config.allowed_senders.clone();
+        let msg_store = self.message_store.clone();
 
         tokio::spawn(async move {
             tracing::info!(
@@ -191,19 +198,47 @@ impl Channel for EmailChannel {
                 let cfg = config.clone();
                 match tokio::task::spawn_blocking(move || fetch_unseen_imap(&cfg)).await {
                     Ok(Ok(messages)) => {
-                        for (msg_id, sender, content, subject, ts) in messages {
-                            // Dedup + allowlist check
-                            {
-                                let mut guard = seen.lock().unwrap();
-                                if guard.contains(&msg_id) {
-                                    continue;
-                                }
-                                if !is_sender_allowed(&allowed, &sender) {
-                                    tracing::warn!("Blocked email from {sender}");
-                                    continue;
-                                }
-                                guard.insert(msg_id.clone());
+                        // Collect UIDs to mark as seen after processing
+                        let mut uids_to_mark: Vec<String> = Vec::new();
+
+                        for (uid, msg_id, sender, content, subject, ts) in messages {
+                            // Allowlist check
+                            if !is_sender_allowed(&allowed, &sender) {
+                                tracing::warn!("Blocked email from {sender}");
+                                uids_to_mark.push(uid);
+                                continue;
                             }
+
+                            // DB dedup: check if we already have this message
+                            let mut tracked_message_id: Option<String> = None;
+                            if let Some(ref store) = msg_store {
+                                if store.get_by_external_id(&msg_id).ok().flatten().is_some() {
+                                    // Already persisted — just mark \Seen and skip
+                                    uids_to_mark.push(uid);
+                                    continue;
+                                }
+
+                                // New message: persist to DB
+                                let received_at = chrono::DateTime::from_timestamp(ts as i64, 0)
+                                    .unwrap_or_else(chrono::Utc::now);
+                                match store.insert(
+                                    &msg_id,
+                                    "email",
+                                    &sender,
+                                    Some(&subject),
+                                    &content,
+                                    received_at,
+                                    None,
+                                ) {
+                                    Ok(id) => tracked_message_id = Some(id),
+                                    Err(e) => {
+                                        tracing::error!("Failed to persist email to DB: {e}");
+                                    }
+                                }
+                            }
+
+                            // Safe to mark \Seen now — message is persisted
+                            uids_to_mark.push(uid);
 
                             let received_at = chrono::DateTime::from_timestamp(ts as i64, 0)
                                 .unwrap_or_else(chrono::Utc::now);
@@ -220,12 +255,27 @@ impl Channel for EmailChannel {
                                     "reply_to": sender,
                                     "subject": subject,
                                     "message_id": msg_id,
+                                    "tracked_message_id": tracked_message_id,
                                 }),
                             };
 
                             if tx.send(incoming).is_err() {
                                 tracing::info!("Email listener channel closed");
                                 return;
+                            }
+                        }
+
+                        // Mark processed emails as \Seen in IMAP
+                        if !uids_to_mark.is_empty() {
+                            let cfg2 = config.clone();
+                            let uids = uids_to_mark;
+                            if let Err(e) = tokio::task::spawn_blocking(move || {
+                                mark_seen_imap(&cfg2, &uids)
+                            })
+                            .await
+                            .unwrap_or_else(|e| Err(e.to_string().into()))
+                            {
+                                tracing::warn!("Failed to mark emails as seen: {e}");
                             }
                         }
                     }
@@ -386,8 +436,8 @@ fn extract_text(parsed: &mail_parser::Message) -> String {
     "(no readable content)".to_string()
 }
 
-/// A fetched email: (message_id, sender, content, subject, timestamp).
-type FetchedEmail = (String, String, String, String, u64);
+/// A fetched email: (uid, message_id, sender, content, subject, timestamp).
+type FetchedEmail = (String, String, String, String, String, u64);
 
 /// Error type for IMAP fetch operations.
 type ImapError = Box<dyn std::error::Error + Send + Sync>;
@@ -530,13 +580,9 @@ fn fetch_unseen_imap(config: &EmailConfig) -> Result<Vec<FetchedEmail>, ImapErro
                         .unwrap_or(0)
                 });
 
-            results.push((msg_id, sender, content, subject, ts));
+            results.push((uid.to_string(), msg_id, sender, content, subject, ts));
         }
-
-        // Mark as seen
-        let store_tag = format!("A{tag_counter}");
-        tag_counter += 1;
-        let _ = send_cmd(&mut tls, &store_tag, &format!("STORE {uid} +FLAGS (\\Seen)"));
+        // NOTE: \Seen is NOT marked here — caller marks after persisting to DB.
     }
 
     // Logout
@@ -544,6 +590,93 @@ fn fetch_unseen_imap(config: &EmailConfig) -> Result<Vec<FetchedEmail>, ImapErro
     let _ = send_cmd(&mut tls, &logout_tag, "LOGOUT");
 
     Ok(results)
+}
+
+/// Mark specific UIDs as \Seen on IMAP (blocking — run in spawn_blocking).
+fn mark_seen_imap(config: &EmailConfig, uids: &[String]) -> Result<(), ImapError> {
+    use std::sync::Arc as StdArc;
+
+    if uids.is_empty() {
+        return Ok(());
+    }
+
+    let tcp = TcpStream::connect((&*config.imap_host, config.imap_port))?;
+    tcp.set_read_timeout(Some(Duration::from_secs(30)))?;
+
+    let mut root_store = rustls::RootCertStore::empty();
+    root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    let tls_config = StdArc::new(
+        rustls::ClientConfig::builder()
+            .with_root_certificates(root_store)
+            .with_no_client_auth(),
+    );
+    let server_name: rustls::pki_types::ServerName<'_> =
+        rustls::pki_types::ServerName::try_from(config.imap_host.clone())?;
+    let conn = rustls::ClientConnection::new(tls_config, server_name)?;
+    let mut tls = rustls::StreamOwned::new(conn, tcp);
+
+    let read_line =
+        |tls: &mut rustls::StreamOwned<rustls::ClientConnection, TcpStream>| -> Result<String, ImapError> {
+            let mut buf = Vec::new();
+            loop {
+                let mut byte = [0u8; 1];
+                match std::io::Read::read(tls, &mut byte) {
+                    Ok(0) => return Err("IMAP connection closed".into()),
+                    Ok(_) => {
+                        buf.push(byte[0]);
+                        if buf.ends_with(b"\r\n") {
+                            return Ok(String::from_utf8_lossy(&buf).to_string());
+                        }
+                    }
+                    Err(e) => return Err(e.into()),
+                }
+            }
+        };
+
+    let send_cmd =
+        |tls: &mut rustls::StreamOwned<rustls::ClientConnection, TcpStream>,
+         tag: &str,
+         cmd: &str|
+         -> Result<Vec<String>, ImapError> {
+            let full = format!("{tag} {cmd}\r\n");
+            IoWrite::write_all(tls, full.as_bytes())?;
+            IoWrite::flush(tls)?;
+            let mut lines = Vec::new();
+            loop {
+                let line = read_line(tls)?;
+                let done = line.starts_with(tag);
+                lines.push(line);
+                if done {
+                    break;
+                }
+            }
+            Ok(lines)
+        };
+
+    let _greeting = read_line(&mut tls)?;
+
+    let login_resp = send_cmd(
+        &mut tls,
+        "A1",
+        &format!("LOGIN \"{}\" \"{}\"", config.username, config.password),
+    )?;
+    if !login_resp.last().is_some_and(|l| l.contains("OK")) {
+        return Err("IMAP login failed".into());
+    }
+
+    let _select = send_cmd(&mut tls, "A2", "SELECT \"INBOX\"")?;
+
+    let mut tag_counter = 3_u32;
+    for uid in uids {
+        let tag = format!("A{tag_counter}");
+        tag_counter += 1;
+        let _ = send_cmd(&mut tls, &tag, &format!("STORE {uid} +FLAGS (\\Seen)"));
+    }
+
+    let logout_tag = format!("A{tag_counter}");
+    let _ = send_cmd(&mut tls, &logout_tag, "LOGOUT");
+
+    Ok(())
 }
 
 #[cfg(test)]

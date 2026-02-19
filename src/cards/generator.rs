@@ -81,6 +81,9 @@ impl CardGenerator {
 
     /// Generate reply suggestion cards for an incoming message.
     ///
+    /// Creates ONE card with the best reply suggestion (1:1 card-to-message model).
+    /// Optionally links the card to a tracked message via `message_id`.
+    ///
     /// This is designed to be called asynchronously (tokio::spawn) so it doesn't
     /// block the main message processing flow.
     pub async fn generate_cards(
@@ -89,6 +92,7 @@ impl CardGenerator {
         sender: &str,
         chat_id: &str,
         channel: &str,
+        message_id: Option<&str>,
     ) -> Result<Vec<ReplyCard>, LlmError> {
         if !self.should_generate(source_message, sender, chat_id) {
             return Ok(vec![]);
@@ -135,8 +139,8 @@ impl CardGenerator {
 
         let response = self.llm.complete(request).await?;
 
-        // Parse JSON response into suggestions
-        let cards = self.parse_suggestions(
+        // Parse JSON response and pick the best suggestion (1:1 model)
+        let mut cards = self.parse_suggestions(
             &response.content,
             source_message,
             sender,
@@ -144,7 +148,18 @@ impl CardGenerator {
             channel,
         );
 
-        // Push cards to queue
+        // Sort by confidence descending, take only the best one
+        cards.sort_by(|a, b| b.confidence.partial_cmp(&a.confidence).unwrap_or(std::cmp::Ordering::Equal));
+        cards.truncate(1);
+
+        // Link to tracked message if provided
+        if let Some(mid) = message_id {
+            for card in &mut cards {
+                card.message_id = Some(mid.to_string());
+            }
+        }
+
+        // Push card to queue
         for card in &cards {
             self.queue.push(card.clone()).await;
         }
@@ -152,7 +167,7 @@ impl CardGenerator {
         info!(
             count = cards.len(),
             sender = sender,
-            "Generated reply suggestions"
+            "Generated reply suggestion (1:1)"
         );
 
         Ok(cards)
