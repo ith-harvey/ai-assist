@@ -481,6 +481,11 @@ impl Agent {
                 .get("thread")
                 .and_then(|v| serde_json::from_value(v.clone()).ok())
                 .unwrap_or_default();
+            // Extract reply metadata for sending replies (email recipients, subject, threading)
+            let reply_metadata = message
+                .metadata
+                .get("reply_metadata")
+                .cloned();
             tokio::spawn(async move {
                 if let Err(e) = card_gen
                     .generate_cards(
@@ -490,6 +495,7 @@ impl Agent {
                         &channel,
                         tracked_msg_id.as_deref(),
                         thread_messages,
+                        reply_metadata,
                     )
                     .await
                 {

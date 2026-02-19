@@ -100,6 +100,7 @@ impl CardGenerator {
         channel: &str,
         message_id: Option<&str>,
         thread: Vec<super::model::ThreadMessage>,
+        reply_metadata: Option<serde_json::Value>,
     ) -> Result<Vec<ReplyCard>, LlmError> {
         if !self.should_generate(source_message, sender, chat_id) {
             return Ok(vec![]);
@@ -170,6 +171,13 @@ impl CardGenerator {
         if !thread.is_empty() {
             for card in &mut cards {
                 card.thread = thread.clone();
+            }
+        }
+
+        // Attach reply metadata for sending replies
+        if let Some(ref meta) = reply_metadata {
+            for card in &mut cards {
+                card.reply_metadata = Some(meta.clone());
             }
         }
 

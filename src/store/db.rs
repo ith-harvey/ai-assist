@@ -96,6 +96,9 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_messages_external_id ON messages(external_id);",
         )?;
 
+        // Idempotent column additions (SQLite lacks ADD COLUMN IF NOT EXISTS)
+        let _ = conn.execute("ALTER TABLE cards ADD COLUMN reply_metadata TEXT", []);
+
         info!("Database migrations complete");
         Ok(())
     }
@@ -134,5 +137,26 @@ mod tests {
         let db = Database::open_in_memory().unwrap();
         // Run migrations again — should not fail
         db.run_migrations().unwrap();
+    }
+
+    #[test]
+    fn reply_metadata_column_exists_after_migration() {
+        let db = Database::open_in_memory().unwrap();
+        let conn = db.conn();
+        // Verify reply_metadata column exists by inserting a row with it
+        conn.execute(
+            "INSERT INTO cards (id, conversation_id, source_message, source_sender, suggested_reply, confidence, status, channel, created_at, expires_at, updated_at, reply_metadata) VALUES ('test', 'conv', 'msg', 'sender', 'reply', 0.9, 'pending', 'email', '2026-01-01', '2026-01-02', '2026-01-01', '{\"reply_to\": \"test@test.com\"}')",
+            [],
+        ).unwrap();
+
+        let meta: Option<String> = conn
+            .query_row(
+                "SELECT reply_metadata FROM cards WHERE id = 'test'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(meta.is_some());
+        assert!(meta.unwrap().contains("test@test.com"));
     }
 }
