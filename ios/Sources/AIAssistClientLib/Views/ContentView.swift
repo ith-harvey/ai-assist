@@ -4,7 +4,7 @@ import SwiftUI
 public struct ContentView: View {
     @State private var socket = CardWebSocket()
     @State private var showSettings = false
-    @State private var hostInput = "localhost"
+    @State private var hostInput = "100.99.236.80"
     @State private var portInput = "8080"
 
     public init() {}

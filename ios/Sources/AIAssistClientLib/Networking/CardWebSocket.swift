@@ -23,7 +23,7 @@ public final class CardWebSocket: @unchecked Sendable {
     private let maxReconnectDelay: TimeInterval = 30.0
     private var isIntentionalDisconnect = false
 
-    public init(host: String = "localhost", port: Int = 8080) {
+    public init(host: String = "100.99.236.80", port: Int = 8080) {
         self.host = host
         self.port = port
         self.session = URLSession(configuration: .default)
