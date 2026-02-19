@@ -78,21 +78,46 @@ struct MessageThreadView: View {
     // MARK: - Thread Header
 
     private func threadHeader(card: ReplyCard) -> some View {
-        HStack(spacing: 8) {
-            Image(systemName: channelIcon(for: card.channel))
-                .font(.body)
-                .foregroundStyle(channelColor(for: card.channel))
-            Text(card.sourceSender)
-                .font(.headline)
-            Spacer()
-            HStack(spacing: 4) {
-                Circle()
-                    .fill(confidenceColor(for: card.confidence))
-                    .frame(width: 6, height: 6)
-                Text("\(Int(card.confidence * 100))%")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-                    .monospacedDigit()
+        VStack(alignment: .leading, spacing: 6) {
+            // Top row: channel icon + subject (bold title) + confidence badge
+            HStack(spacing: 8) {
+                Image(systemName: channelIcon(for: card.channel))
+                    .font(.body)
+                    .foregroundStyle(channelColor(for: card.channel))
+                Text(card.conversationId)
+                    .font(.title3.bold())
+                    .foregroundStyle(.primary)
+                    .lineLimit(2)
+                Spacer()
+                HStack(spacing: 4) {
+                    Circle()
+                        .fill(confidenceColor(for: card.confidence))
+                        .frame(width: 6, height: 6)
+                    Text("\(Int(card.confidence * 100))%")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .monospacedDigit()
+                }
+            }
+
+            // To/CC from the latest email in the thread
+            if let latest = card.emailThread.last {
+                VStack(alignment: .leading, spacing: 1) {
+                    if !latest.to.isEmpty {
+                        Text("To: \(latest.to.joined(separator: ", "))")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
+                    if !latest.cc.isEmpty {
+                        Text("CC: \(latest.cc.joined(separator: ", "))")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
+                }
             }
         }
         .padding(.horizontal, 4)
