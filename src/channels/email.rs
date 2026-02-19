@@ -16,6 +16,7 @@ use mail_parser::{MessageParser, MimeHeaders};
 use uuid::Uuid;
 
 use crate::cards::model::ThreadMessage;
+use crate::channels::email_types::{self, EmailMessage};
 use crate::channels::{Channel, IncomingMessage, MessageStream, OutgoingResponse};
 use crate::error::ChannelError;
 use crate::store::MessageStore;
@@ -242,7 +243,7 @@ impl Channel for EmailChannel {
                             uids_to_mark.push(uid);
 
                             // Fetch thread context (last 4 messages in this conversation)
-                            let thread_json = {
+                            let (thread_json, email_thread_json) = {
                                 let thread_cfg = config.clone();
                                 let thread_subject = subject.clone();
                                 match tokio::task::spawn_blocking(move || {
@@ -250,19 +251,27 @@ impl Channel for EmailChannel {
                                 })
                                 .await
                                 {
-                                    Ok(Ok(thread)) if !thread.is_empty() => {
-                                        tracing::debug!(
-                                            "Fetched {} thread messages for subject: {}",
-                                            thread.len(),
-                                            subject
-                                        );
-                                        serde_json::to_value(&thread).ok()
+                                    Ok(Ok((thread_msgs, email_msgs))) => {
+                                        if !thread_msgs.is_empty() {
+                                            tracing::debug!(
+                                                "Fetched {} thread messages for subject: {}",
+                                                thread_msgs.len(),
+                                                subject
+                                            );
+                                        }
+                                        (
+                                            if thread_msgs.is_empty() { None } else { serde_json::to_value(&thread_msgs).ok() },
+                                            if email_msgs.is_empty() { None } else { serde_json::to_value(&email_msgs).ok() },
+                                        )
                                     }
                                     Ok(Err(e)) => {
                                         tracing::warn!("Thread fetch failed: {e}");
-                                        None
+                                        (None, None)
                                     }
-                                    _ => None,
+                                    Err(e) => {
+                                        tracing::error!("Thread fetch task panicked: {e}");
+                                        (None, None)
+                                    }
                                 }
                             };
 
@@ -278,6 +287,9 @@ impl Channel for EmailChannel {
                             });
                             if let Some(thread_val) = thread_json {
                                 metadata["thread"] = thread_val;
+                            }
+                            if let Some(email_thread_val) = email_thread_json {
+                                metadata["email_thread"] = email_thread_val;
                             }
 
                             let incoming = IncomingMessage {
@@ -815,24 +827,6 @@ pub fn send_reply_email(
 
 // ── Reply metadata ──────────────────────────────────────────────
 
-/// Extract email addresses from a mail_parser Address field.
-fn extract_addresses(addr: &mail_parser::Address) -> Vec<String> {
-    match addr {
-        mail_parser::Address::List(addrs) => addrs
-            .iter()
-            .filter_map(|a| a.address.as_ref().map(|s| s.to_string()))
-            .collect(),
-        mail_parser::Address::Group(groups) => groups
-            .iter()
-            .flat_map(|g| {
-                g.addresses
-                    .iter()
-                    .filter_map(|a| a.address.as_ref().map(|s| s.to_string()))
-            })
-            .collect(),
-    }
-}
-
 /// Build reply metadata from a parsed email for reply-all sending.
 ///
 /// reply_metadata contains:
@@ -856,24 +850,20 @@ pub fn build_reply_metadata(
     let mut seen_lower: Vec<String> = vec![from_lower.clone(), sender_lower.clone()];
 
     // Add original To addresses (except our from_address and the sender)
-    if let Some(to_addr) = parsed.to() {
-        for email in extract_addresses(to_addr) {
-            let email_lower = email.to_lowercase();
-            if !seen_lower.contains(&email_lower) {
-                seen_lower.push(email_lower);
-                cc_list.push(email);
-            }
+    for email in email_types::extract_addresses(parsed.to()) {
+        let email_lower = email.to_lowercase();
+        if !seen_lower.contains(&email_lower) {
+            seen_lower.push(email_lower);
+            cc_list.push(email);
         }
     }
 
     // Add original Cc addresses (except our from_address, sender, and already-added)
-    if let Some(cc_addr) = parsed.cc() {
-        for email in extract_addresses(cc_addr) {
-            let email_lower = email.to_lowercase();
-            if !seen_lower.contains(&email_lower) {
-                seen_lower.push(email_lower);
-                cc_list.push(email);
-            }
+    for email in email_types::extract_addresses(parsed.cc()) {
+        let email_lower = email.to_lowercase();
+        if !seen_lower.contains(&email_lower) {
+            seen_lower.push(email_lower);
+            cc_list.push(email);
         }
     }
 
@@ -916,21 +906,26 @@ pub fn normalize_subject(subject: &str) -> String {
     s.to_string()
 }
 
+/// Fetched thread data: generic ThreadMessages + rich EmailMessages.
+type ThreadData = (Vec<ThreadMessage>, Vec<EmailMessage>);
+
 /// Fetch recent messages in an email thread by subject (blocking — run in spawn_blocking).
 ///
 /// Searches IMAP for messages matching the normalized subject and returns
 /// the last `limit` messages sorted by timestamp ascending (oldest first).
 /// Each message body is truncated to 500 chars max.
+///
+/// Returns both `ThreadMessage` (generic) and `EmailMessage` (with full headers).
 fn fetch_thread_by_subject(
     config: &EmailConfig,
     subject: &str,
     limit: usize,
-) -> Result<Vec<ThreadMessage>, ImapError> {
+) -> Result<ThreadData, ImapError> {
     use std::sync::Arc as StdArc;
 
     let normalized = normalize_subject(subject);
     if normalized.is_empty() {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), Vec::new()));
     }
 
     // Connect TCP
@@ -1030,9 +1025,10 @@ fn fetch_thread_by_subject(
         .filter(|u| !u.is_empty())
         .collect();
 
-    // Fetch each message
+    // Fetch each message — build both ThreadMessage and EmailMessage
     let from_lower = config.from_address.to_lowercase();
     let mut thread_messages: Vec<ThreadMessage> = Vec::new();
+    let mut email_messages: Vec<EmailMessage> = Vec::new();
     let mut tag_counter = 4_u32;
 
     for uid in &uids {
@@ -1050,8 +1046,13 @@ fn fetch_thread_by_subject(
         if let Some(parsed) = MessageParser::default().parse(raw.as_bytes()) {
             let sender = extract_sender(&parsed);
             let body = extract_text(&parsed);
+            let msg_subject = parsed.subject().unwrap_or("(no subject)").to_string();
+            let msg_id = parsed
+                .message_id()
+                .map(|s| s.to_string())
+                .unwrap_or_default();
 
-            // Truncate body to 500 chars
+            // Truncate body to 500 chars (for ThreadMessage)
             let truncated = if body.chars().count() > 500 {
                 let boundary = body
                     .char_indices()
@@ -1060,10 +1061,25 @@ fn fetch_thread_by_subject(
                     .unwrap_or(body.len());
                 format!("{}…", &body[..boundary])
             } else {
-                body
+                body.clone()
+            };
+
+            // Strip quotes and truncate (for EmailMessage)
+            let cleaned = email_types::strip_quoted_text(&body);
+            let cleaned_truncated = if cleaned.chars().count() > 500 {
+                let boundary = cleaned
+                    .char_indices()
+                    .nth(500)
+                    .map(|(i, _)| i)
+                    .unwrap_or(cleaned.len());
+                format!("{}…", &cleaned[..boundary])
+            } else {
+                cleaned
             };
 
             let is_outgoing = sender.to_lowercase() == from_lower;
+            let to_addrs = email_types::extract_addresses(parsed.to());
+            let cc_addrs = email_types::extract_addresses(parsed.cc());
 
             #[allow(clippy::cast_sign_loss)]
             let timestamp = parsed
@@ -1086,27 +1102,42 @@ fn fetch_thread_by_subject(
                 .unwrap_or_else(chrono::Utc::now);
 
             thread_messages.push(ThreadMessage {
-                sender,
+                sender: sender.clone(),
                 content: truncated,
+                timestamp,
+                is_outgoing,
+            });
+
+            email_messages.push(EmailMessage {
+                from: sender,
+                to: to_addrs,
+                cc: cc_addrs,
+                subject: msg_subject,
+                message_id: msg_id,
+                content: cleaned_truncated,
                 timestamp,
                 is_outgoing,
             });
         }
     }
 
-    // Sort by timestamp ascending (oldest first)
+    // Sort both by timestamp ascending (oldest first)
     thread_messages.sort_by_key(|m| m.timestamp);
+    email_messages.sort_by_key(|m| m.timestamp);
 
-    // Take only the last `limit` messages
+    // Take only the last `limit` messages from both
     if thread_messages.len() > limit {
         thread_messages = thread_messages.split_off(thread_messages.len() - limit);
+    }
+    if email_messages.len() > limit {
+        email_messages = email_messages.split_off(email_messages.len() - limit);
     }
 
     // Logout
     let logout_tag = format!("T{tag_counter}");
     let _ = send_cmd(&mut tls, &logout_tag, "LOGOUT");
 
-    Ok(thread_messages)
+    Ok((thread_messages, email_messages))
 }
 
 #[cfg(test)]

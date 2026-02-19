@@ -345,6 +345,128 @@ struct ModelTests {
         let data = json.data(using: .utf8)!
         let card = try ReplyCard.decode(from: data)
         #expect(card.thread.isEmpty)
+        #expect(card.emailThread.isEmpty)
         #expect(card.sourceSender == "Bob")
+    }
+
+    // MARK: - EmailMessage decoding
+
+    @Test("Decode EmailMessage from snake_case JSON")
+    func decodeEmailMessage() throws {
+        let json = """
+        {
+            "from": "alice@example.com",
+            "to": ["bob@example.com"],
+            "cc": ["carol@example.com"],
+            "subject": "Re: Meeting",
+            "message_id": "<abc@example.com>",
+            "content": "Sounds good!",
+            "timestamp": "2026-02-15T10:00:00Z",
+            "is_outgoing": false
+        }
+        """
+        let data = json.data(using: .utf8)!
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let msg = try decoder.decode(EmailMessage.self, from: data)
+        #expect(msg.from == "alice@example.com")
+        #expect(msg.to == ["bob@example.com"])
+        #expect(msg.cc == ["carol@example.com"])
+        #expect(msg.subject == "Re: Meeting")
+        #expect(msg.messageId == "<abc@example.com>")
+        #expect(msg.isOutgoing == false)
+    }
+
+    @Test("Decode EmailMessage without CC defaults to empty")
+    func decodeEmailMessageWithoutCC() throws {
+        let json = """
+        {
+            "from": "alice@example.com",
+            "to": ["bob@example.com"],
+            "subject": "Test",
+            "message_id": "<id@example.com>",
+            "content": "Hello",
+            "timestamp": "2026-02-15T10:00:00Z",
+            "is_outgoing": true
+        }
+        """
+        let data = json.data(using: .utf8)!
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let msg = try decoder.decode(EmailMessage.self, from: data)
+        #expect(msg.cc.isEmpty)
+        #expect(msg.isOutgoing == true)
+    }
+
+    // MARK: - ReplyCard with emailThread
+
+    @Test("Decode ReplyCard with emailThread array")
+    func decodeReplyCardWithEmailThread() throws {
+        let json = """
+        {
+            "id": "550e8400-e29b-41d4-a716-446655440000",
+            "conversation_id": "chat_123",
+            "source_message": "Latest",
+            "source_sender": "Alice",
+            "suggested_reply": "Ok!",
+            "confidence": 0.85,
+            "status": "pending",
+            "created_at": "2026-02-15T10:00:00Z",
+            "expires_at": "2026-02-15T10:15:00Z",
+            "channel": "email",
+            "updated_at": "2026-02-15T10:00:00Z",
+            "email_thread": [
+                {
+                    "from": "alice@example.com",
+                    "to": ["bob@example.com"],
+                    "cc": ["carol@example.com"],
+                    "subject": "Re: Meeting",
+                    "message_id": "<abc@example.com>",
+                    "content": "Sounds good!",
+                    "timestamp": "2026-02-15T08:00:00Z",
+                    "is_outgoing": false
+                },
+                {
+                    "from": "bob@example.com",
+                    "to": ["alice@example.com"],
+                    "subject": "Re: Meeting",
+                    "message_id": "<def@example.com>",
+                    "content": "See you there",
+                    "timestamp": "2026-02-15T09:00:00Z",
+                    "is_outgoing": true
+                }
+            ]
+        }
+        """
+        let data = json.data(using: .utf8)!
+        let card = try ReplyCard.decode(from: data)
+        #expect(card.emailThread.count == 2)
+        #expect(card.emailThread[0].from == "alice@example.com")
+        #expect(card.emailThread[0].cc == ["carol@example.com"])
+        #expect(card.emailThread[1].from == "bob@example.com")
+        #expect(card.emailThread[1].cc.isEmpty)
+        #expect(card.emailThread[1].isOutgoing == true)
+    }
+
+    @Test("Decode ReplyCard without emailThread field defaults to empty")
+    func decodeReplyCardWithoutEmailThread() throws {
+        let json = """
+        {
+            "id": "550e8400-e29b-41d4-a716-446655440000",
+            "conversation_id": "chat_1",
+            "source_message": "hi",
+            "source_sender": "Bob",
+            "suggested_reply": "hey",
+            "confidence": 0.9,
+            "status": "pending",
+            "created_at": "2026-02-15T10:00:00Z",
+            "expires_at": "2026-02-15T10:15:00Z",
+            "channel": "email",
+            "updated_at": "2026-02-15T10:00:00Z"
+        }
+        """
+        let data = json.data(using: .utf8)!
+        let card = try ReplyCard.decode(from: data)
+        #expect(card.emailThread.isEmpty)
     }
 }

@@ -2,13 +2,9 @@ import SwiftUI
 
 /// Shows the email conversation thread as iMessage-style chat bubbles.
 ///
-/// When the card has thread context (previous emails), renders each message
-/// as a bubble — incoming left-aligned (gray), outgoing right-aligned (blue).
+/// Priority: emailThread (rich headers) > thread (generic) > single message fallback.
 /// Auto-scrolls to the bottom (newest messages). The AI suggested reply appears
 /// as a faded/dashed "Draft" bubble at the end.
-///
-/// Falls back to the simple source_message → suggestedReply view when no
-/// thread context is available.
 struct MessageThreadView: View {
     let card: ReplyCard?
 
@@ -19,16 +15,19 @@ struct MessageThreadView: View {
                     VStack(spacing: 12) {
                         threadHeader(card: card)
 
-                        if card.thread.isEmpty {
-                            // Fallback: no thread context
-                            incomingBubble(
-                                sender: card.sourceSender,
-                                content: card.sourceMessage,
-                                timestamp: nil
-                            )
+                        if !card.emailThread.isEmpty {
+                            // Rich email thread with headers
+                            ForEach(card.emailThread) { msg in
+                                if msg.isOutgoing {
+                                    outgoingEmailBubble(msg: msg)
+                                } else {
+                                    incomingEmailBubble(msg: msg)
+                                }
+                            }
                             draftBubble(reply: card.suggestedReply)
-                        } else {
-                            // Full thread view
+                                .id("draft")
+                        } else if !card.thread.isEmpty {
+                            // Generic thread (no headers)
                             ForEach(card.thread) { msg in
                                 if msg.isOutgoing {
                                     outgoingBubble(content: msg.content, timestamp: msg.timestamp)
@@ -42,6 +41,15 @@ struct MessageThreadView: View {
                             }
                             draftBubble(reply: card.suggestedReply)
                                 .id("draft")
+                        } else {
+                            // Fallback: no thread context
+                            incomingBubble(
+                                sender: card.sourceSender,
+                                content: card.sourceMessage,
+                                timestamp: nil
+                            )
+                            draftBubble(reply: card.suggestedReply)
+                                .id("draft")
                         }
                     }
                     .padding(.horizontal, 16)
@@ -49,7 +57,7 @@ struct MessageThreadView: View {
                     .padding(.bottom, 16)
                 }
                 .onAppear {
-                    if !card.thread.isEmpty {
+                    if !card.emailThread.isEmpty || !card.thread.isEmpty {
                         proxy.scrollTo("draft", anchor: .bottom)
                     }
                 }
@@ -90,7 +98,76 @@ struct MessageThreadView: View {
         .padding(.horizontal, 4)
     }
 
-    // MARK: - Bubbles
+    // MARK: - Email Message Header
+
+    @ViewBuilder
+    private func messageHeader(from: String, to: [String], cc: [String], outgoing: Bool) -> some View {
+        let headerColor: Color = outgoing ? .white.opacity(0.6) : .secondary
+        VStack(alignment: .leading, spacing: 1) {
+            Text("From: \(from)")
+                .font(.caption2)
+                .foregroundStyle(headerColor)
+                .lineLimit(1)
+                .truncationMode(.tail)
+            if !to.isEmpty {
+                Text("To: \(to.joined(separator: ", "))")
+                    .font(.caption2)
+                    .foregroundStyle(headerColor)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+            if !cc.isEmpty {
+                Text("CC: \(cc.joined(separator: ", "))")
+                    .font(.caption2)
+                    .foregroundStyle(headerColor)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+        }
+    }
+
+    // MARK: - Email Bubbles
+
+    private func incomingEmailBubble(msg: EmailMessage) -> some View {
+        HStack(alignment: .top) {
+            VStack(alignment: .leading, spacing: 4) {
+                messageHeader(from: msg.from, to: msg.to, cc: msg.cc, outgoing: false)
+                Text(msg.content)
+                    .font(.body)
+                Text(formatTimestamp(msg.timestamp))
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(12)
+            .background(Color.gray.opacity(0.15))
+            .clipShape(RoundedRectangle(cornerRadius: 16))
+            .frame(maxWidth: 280, alignment: .leading)
+
+            Spacer(minLength: 40)
+        }
+    }
+
+    private func outgoingEmailBubble(msg: EmailMessage) -> some View {
+        HStack(alignment: .top) {
+            Spacer(minLength: 40)
+
+            VStack(alignment: .trailing, spacing: 4) {
+                messageHeader(from: "You", to: msg.to, cc: msg.cc, outgoing: true)
+                Text(msg.content)
+                    .font(.body)
+                    .foregroundStyle(.white)
+                Text(formatTimestamp(msg.timestamp))
+                    .font(.caption2)
+                    .foregroundStyle(.white.opacity(0.6))
+            }
+            .padding(12)
+            .background(Color.blue)
+            .clipShape(RoundedRectangle(cornerRadius: 16))
+            .frame(maxWidth: 280, alignment: .trailing)
+        }
+    }
+
+    // MARK: - Generic Bubbles
 
     private func incomingBubble(sender: String, content: String, timestamp: String?) -> some View {
         HStack(alignment: .top) {
@@ -136,6 +213,8 @@ struct MessageThreadView: View {
         }
     }
 
+    // MARK: - Draft Bubble
+
     private func draftBubble(reply: String) -> some View {
         HStack(alignment: .top) {
             Spacer(minLength: 40)
@@ -170,7 +249,6 @@ struct MessageThreadView: View {
             relative.unitsStyle = .short
             return relative.localizedString(for: date, relativeTo: Date())
         }
-        // Try without fractional seconds
         formatter.formatOptions = [.withInternetDateTime]
         if let date = formatter.date(from: iso) {
             let relative = RelativeDateTimeFormatter()

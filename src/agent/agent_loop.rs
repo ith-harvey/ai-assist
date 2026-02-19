@@ -486,6 +486,12 @@ impl Agent {
                 .metadata
                 .get("reply_metadata")
                 .cloned();
+            // Extract email thread with full headers (From/To/CC/Subject)
+            let email_thread: Vec<crate::channels::EmailMessage> = message
+                .metadata
+                .get("email_thread")
+                .and_then(|v| serde_json::from_value(v.clone()).ok())
+                .unwrap_or_default();
             tokio::spawn(async move {
                 if let Err(e) = card_gen
                     .generate_cards(
@@ -496,6 +502,7 @@ impl Agent {
                         tracked_msg_id.as_deref(),
                         thread_messages,
                         reply_metadata,
+                        email_thread,
                     )
                     .await
                 {

@@ -98,6 +98,7 @@ impl Database {
 
         // Idempotent column additions (SQLite lacks ADD COLUMN IF NOT EXISTS)
         let _ = conn.execute("ALTER TABLE cards ADD COLUMN reply_metadata TEXT", []);
+        let _ = conn.execute("ALTER TABLE cards ADD COLUMN email_thread TEXT", []);
 
         info!("Database migrations complete");
         Ok(())
@@ -137,6 +138,26 @@ mod tests {
         let db = Database::open_in_memory().unwrap();
         // Run migrations again — should not fail
         db.run_migrations().unwrap();
+    }
+
+    #[test]
+    fn email_thread_column_exists_after_migration() {
+        let db = Database::open_in_memory().unwrap();
+        let conn = db.conn();
+        conn.execute(
+            "INSERT INTO cards (id, conversation_id, source_message, source_sender, suggested_reply, confidence, status, channel, created_at, expires_at, updated_at, email_thread) VALUES ('test2', 'conv', 'msg', 'sender', 'reply', 0.9, 'pending', 'email', '2026-01-01', '2026-01-02', '2026-01-01', '[{\"from\":\"a@test.com\"}]')",
+            [],
+        ).unwrap();
+
+        let thread: Option<String> = conn
+            .query_row(
+                "SELECT email_thread FROM cards WHERE id = 'test2'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(thread.is_some());
+        assert!(thread.unwrap().contains("a@test.com"));
     }
 
     #[test]
