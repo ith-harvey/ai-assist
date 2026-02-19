@@ -1,4 +1,39 @@
 use super::*;
+use crate::channels::email_types::strip_quoted_text;
+
+// ── Source message quote stripping tests ────────────────────────
+
+#[test]
+fn source_message_body_strips_quoted_text() {
+    // Simulates what fetch_unseen_imap does: body → strip_quoted_text → format
+    let body = "Hey, can you review this PR?\n\n\
+                On Mon, Feb 16, 2026 at 10:00 AM Alice <alice@test.com> wrote:\n\
+                > Sure, I'll take a look at it.\n\
+                > Let me know if there are specific files to focus on.\n\n\
+                > On Sun, Feb 15, 2026 at 9:00 AM Bob <bob@test.com> wrote:\n\
+                >> The initial implementation is in src/main.rs";
+    let cleaned = strip_quoted_text(body);
+    let content = format!("Subject: Re: PR Review\n\n{cleaned}");
+
+    // Should contain the actual message
+    assert!(content.contains("Hey, can you review this PR?"));
+    // Should NOT contain quoted lines
+    assert!(
+        !content.contains("> Sure"),
+        "source_message should not contain > quoted lines"
+    );
+    assert!(
+        !content.contains(">> The initial"),
+        "source_message should not contain >> nested quotes"
+    );
+    // Should NOT contain the attribution line
+    assert!(
+        !content.contains("On Mon, Feb 16"),
+        "source_message should not contain On...wrote: attribution"
+    );
+    // Subject line should still be present
+    assert!(content.starts_with("Subject: Re: PR Review\n\n"));
+}
 
 // ── Sender allowlist tests ──────────────────────────────────────
 

@@ -593,7 +593,8 @@ fn fetch_unseen_imap(config: &EmailConfig) -> Result<Vec<FetchedEmail>, ImapErro
             let sender = extract_sender(&parsed);
             let subject = parsed.subject().unwrap_or("(no subject)").to_string();
             let body = extract_text(&parsed);
-            let content = format!("Subject: {subject}\n\n{body}");
+            let cleaned_body = email_types::strip_quoted_text(&body);
+            let content = format!("Subject: {subject}\n\n{cleaned_body}");
             let msg_id = parsed
                 .message_id()
                 .map(|s| s.to_string())
