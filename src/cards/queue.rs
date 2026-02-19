@@ -10,7 +10,8 @@ use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 use super::model::{CardStatus, ReplyCard, WsMessage};
-use crate::store::CardStore;
+use crate::store::messages::MessageStatus;
+use crate::store::{CardStore, MessageStore};
 
 /// Default broadcast channel capacity.
 const DEFAULT_BROADCAST_CAPACITY: usize = 256;
@@ -24,6 +25,7 @@ pub struct CardQueue {
     cards: RwLock<VecDeque<ReplyCard>>,
     tx: broadcast::Sender<WsMessage>,
     store: Option<Arc<CardStore>>,
+    message_store: Option<Arc<MessageStore>>,
 }
 
 impl CardQueue {
@@ -34,6 +36,7 @@ impl CardQueue {
             cards: RwLock::new(VecDeque::new()),
             tx,
             store: None,
+            message_store: None,
         })
     }
 
@@ -41,6 +44,17 @@ impl CardQueue {
     ///
     /// Loads pending cards from the database on creation.
     pub fn with_store(store: Arc<CardStore>) -> Arc<Self> {
+        Self::with_stores(store, None)
+    }
+
+    /// Create a card queue backed by both CardStore and MessageStore.
+    ///
+    /// Loads pending cards from the database on creation.
+    /// When a card is approved/dismissed/sent, also updates the linked message status.
+    pub fn with_stores(
+        store: Arc<CardStore>,
+        message_store: Option<Arc<MessageStore>>,
+    ) -> Arc<Self> {
         let (tx, _rx) = broadcast::channel(DEFAULT_BROADCAST_CAPACITY);
 
         // Load pending cards from DB
@@ -59,6 +73,7 @@ impl CardQueue {
             cards: RwLock::new(cards),
             tx,
             store: Some(store),
+            message_store,
         })
     }
 
@@ -116,6 +131,11 @@ impl CardQueue {
         card.updated_at = chrono::Utc::now();
         let approved = card.clone();
 
+        // Update linked message status → replied
+        if let Some(ref msg_id) = approved.message_id {
+            self.update_message_status(msg_id, MessageStatus::Replied);
+        }
+
         info!(card_id = %card_id, "Card approved");
 
         let _ = self.tx.send(WsMessage::CardUpdate {
@@ -145,6 +165,11 @@ impl CardQueue {
 
             card.status = CardStatus::Dismissed;
             card.updated_at = chrono::Utc::now();
+
+            // Update linked message status → dismissed
+            if let Some(ref msg_id) = card.message_id {
+                self.update_message_status(msg_id, MessageStatus::Dismissed);
+            }
 
             info!(card_id = %card_id, "Card dismissed");
 
@@ -284,6 +309,11 @@ impl CardQueue {
             card.status = CardStatus::Sent;
             card.updated_at = chrono::Utc::now();
 
+            // Update linked message status → replied
+            if let Some(ref msg_id) = card.message_id {
+                self.update_message_status(msg_id, MessageStatus::Replied);
+            }
+
             let _ = self.tx.send(WsMessage::CardUpdate {
                 id: card_id,
                 status: CardStatus::Sent,
@@ -292,6 +322,15 @@ impl CardQueue {
             true
         } else {
             false
+        }
+    }
+
+    /// Helper: update the linked message status (if MessageStore is available).
+    fn update_message_status(&self, message_id: &str, status: MessageStatus) {
+        if let Some(ref msg_store) = self.message_store
+            && let Err(e) = msg_store.update_status(message_id, status)
+        {
+            warn!(message_id = message_id, "Failed to update message status in DB: {e}");
         }
     }
 }

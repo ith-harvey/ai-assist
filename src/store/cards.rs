@@ -25,8 +25,8 @@ impl CardStore {
     pub fn insert(&self, card: &ReplyCard) -> Result<(), rusqlite::Error> {
         let conn = self.db.conn();
         conn.execute(
-            "INSERT INTO cards (id, conversation_id, source_message, source_sender, suggested_reply, confidence, status, channel, created_at, expires_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            "INSERT INTO cards (id, conversation_id, source_message, source_sender, suggested_reply, confidence, status, channel, created_at, expires_at, updated_at, message_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             rusqlite::params![
                 card.id.to_string(),
                 card.conversation_id,
@@ -39,6 +39,7 @@ impl CardStore {
                 card.created_at.to_rfc3339(),
                 card.expires_at.to_rfc3339(),
                 card.updated_at.to_rfc3339(),
+                card.message_id,
             ],
         )?;
         debug!(card_id = %card.id, "Card inserted into DB");
@@ -79,7 +80,7 @@ impl CardStore {
         let conn = self.db.conn();
         let now = Utc::now().to_rfc3339();
         let mut stmt = conn.prepare(
-            "SELECT id, conversation_id, source_message, source_sender, suggested_reply, confidence, status, channel, created_at, expires_at, updated_at
+            "SELECT id, conversation_id, source_message, source_sender, suggested_reply, confidence, status, channel, created_at, expires_at, updated_at, message_id
              FROM cards
              WHERE status = 'pending' AND expires_at > ?1
              ORDER BY created_at ASC",
@@ -96,7 +97,7 @@ impl CardStore {
     pub fn get_by_id(&self, card_id: Uuid) -> Result<Option<ReplyCard>, rusqlite::Error> {
         let conn = self.db.conn();
         let mut stmt = conn.prepare(
-            "SELECT id, conversation_id, source_message, source_sender, suggested_reply, confidence, status, channel, created_at, expires_at, updated_at
+            "SELECT id, conversation_id, source_message, source_sender, suggested_reply, confidence, status, channel, created_at, expires_at, updated_at, message_id
              FROM cards
              WHERE id = ?1",
         )?;
@@ -117,7 +118,7 @@ impl CardStore {
     ) -> Result<Vec<ReplyCard>, rusqlite::Error> {
         let conn = self.db.conn();
         let mut stmt = conn.prepare(
-            "SELECT id, conversation_id, source_message, source_sender, suggested_reply, confidence, status, channel, created_at, expires_at, updated_at
+            "SELECT id, conversation_id, source_message, source_sender, suggested_reply, confidence, status, channel, created_at, expires_at, updated_at, message_id
              FROM cards
              WHERE channel = ?1
              ORDER BY created_at DESC
@@ -129,6 +130,18 @@ impl CardStore {
             .collect::<Result<Vec<_>, _>>()?;
 
         Ok(cards)
+    }
+
+    /// Check if there's an active (pending) card for a given message_id.
+    pub fn has_pending_for_message(&self, message_id: &str) -> Result<bool, rusqlite::Error> {
+        let conn = self.db.conn();
+        let now = Utc::now().to_rfc3339();
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM cards WHERE message_id = ?1 AND status = 'pending' AND expires_at > ?2",
+            rusqlite::params![message_id, now],
+            |row| row.get(0),
+        )?;
+        Ok(count > 0)
     }
 
     /// Expire cards that are past their `expires_at` timestamp.
@@ -203,6 +216,7 @@ fn row_to_card(row: &rusqlite::Row<'_>) -> Result<ReplyCard, rusqlite::Error> {
     let created_str: String = row.get(8)?;
     let expires_str: String = row.get(9)?;
     let updated_str: String = row.get(10)?;
+    let message_id: Option<String> = row.get(11)?;
 
     Ok(ReplyCard {
         id: Uuid::parse_str(&id_str).unwrap_or_else(|_| Uuid::nil()),
@@ -216,6 +230,7 @@ fn row_to_card(row: &rusqlite::Row<'_>) -> Result<ReplyCard, rusqlite::Error> {
         created_at: parse_datetime(&created_str),
         expires_at: parse_datetime(&expires_str),
         updated_at: parse_datetime(&updated_str),
+        message_id,
     })
 }
 

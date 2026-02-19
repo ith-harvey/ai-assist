@@ -9,7 +9,7 @@ use ai_assist::channels::email::EmailConfig;
 use ai_assist::config::AgentConfig;
 use ai_assist::llm::{create_provider, LlmBackend, LlmConfig};
 use ai_assist::safety::SafetyLayer;
-use ai_assist::store::{CardStore, Database};
+use ai_assist::store::{CardStore, Database, MessageStore};
 use ai_assist::tools::ToolRegistry;
 
 #[tokio::main]
@@ -66,12 +66,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(1);
     });
     let db = Arc::new(db);
-    let card_store = Arc::new(CardStore::new(db));
+    let card_store = Arc::new(CardStore::new(Arc::clone(&db)));
+    let message_store = Arc::new(MessageStore::new(Arc::clone(&db)));
 
     eprintln!("   Database: {}", db_path);
 
     // ── Card System ─────────────────────────────────────────────────────
-    let card_queue = CardQueue::with_store(card_store);
+    let card_queue = CardQueue::with_stores(card_store.clone(), Some(Arc::clone(&message_store)));
 
     let generator_config = GeneratorConfig {
         expire_minutes: card_expire_min,
@@ -82,6 +83,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         card_queue.clone(),
         generator_config,
     ));
+
+    // ── Startup Recovery: reload unanswered messages as cards ──────────
+    {
+        let pending_messages = message_store.get_pending().unwrap_or_default();
+        let mut recovered = 0;
+        for msg in &pending_messages {
+            // Check if there's already an active card for this message
+            if card_store.has_pending_for_message(&msg.id).unwrap_or(false) {
+                continue;
+            }
+            // No active card — create a placeholder card for the UI
+            // (Full re-generation via LLM would require async; this ensures visibility)
+            let card = ai_assist::cards::model::ReplyCard::new(
+                &msg.sender,
+                &msg.content,
+                &msg.sender,
+                "(pending re-generation)",
+                0.0,
+                &msg.channel,
+                card_expire_min,
+            )
+            .with_message_id(&msg.id);
+            card_queue.push(card).await;
+            recovered += 1;
+        }
+        if recovered > 0 {
+            eprintln!("   Recovered {} unanswered messages from DB", recovered);
+        }
+    }
 
     // Spawn card expiry sweep task (runs every 60s)
     let _expiry_handle = queue::spawn_expiry_task(card_queue.clone());
@@ -151,7 +181,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 senders.join(", ")
             }
         );
-        channels.add(Box::new(EmailChannel::new(email_config)));
+        channels.add(Box::new(EmailChannel::new(email_config, Some(Arc::clone(&message_store)))));
         active_channels.push("email");
     }
 

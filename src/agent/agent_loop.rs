@@ -469,9 +469,21 @@ impl Agent {
                 .unwrap_or_else(|| message.user_id.clone());
             let chat_id = thread_id.to_string();
             let channel = message.channel.clone();
+            // Extract tracked message_id from metadata (set during email/channel ingest)
+            let tracked_msg_id = message
+                .metadata
+                .get("tracked_message_id")
+                .and_then(|v| v.as_str())
+                .map(String::from);
             tokio::spawn(async move {
                 if let Err(e) = card_gen
-                    .generate_cards(&msg_content, &sender, &chat_id, &channel)
+                    .generate_cards(
+                        &msg_content,
+                        &sender,
+                        &chat_id,
+                        &channel,
+                        tracked_msg_id.as_deref(),
+                    )
                     .await
                 {
                     tracing::warn!("Card generation failed: {}", e);

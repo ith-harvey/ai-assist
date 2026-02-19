@@ -154,7 +154,7 @@ fn email_channel_name() {
         poll_interval_secs: 60,
         allowed_senders: vec![],
     };
-    let ch = EmailChannel::new(config);
+    let ch = EmailChannel::new(config, None);
     assert_eq!(ch.name(), "email");
 }
 
@@ -171,7 +171,7 @@ fn email_channel_sender_check_delegates_to_config() {
         poll_interval_secs: 60,
         allowed_senders: vec!["@trusted.com".to_string()],
     };
-    let ch = EmailChannel::new(config);
+    let ch = EmailChannel::new(config, None);
     assert!(ch.is_sender_allowed("anyone@trusted.com"));
     assert!(!ch.is_sender_allowed("anyone@evil.com"));
 }
