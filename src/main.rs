@@ -9,6 +9,7 @@ use ai_assist::channels::email::EmailConfig;
 use ai_assist::config::AgentConfig;
 use ai_assist::llm::{create_provider, LlmBackend, LlmConfig};
 use ai_assist::safety::SafetyLayer;
+use ai_assist::store::{CardStore, Database};
 use ai_assist::tools::ToolRegistry;
 
 #[tokio::main]
@@ -56,8 +57,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let llm = create_provider(&llm_config)?;
 
+    // ── Database ─────────────────────────────────────────────────────────
+    let db_path = std::env::var("AI_ASSIST_DB_PATH")
+        .unwrap_or_else(|_| "./data/ai-assist.db".to_string());
+
+    let db = Database::open(&db_path).unwrap_or_else(|e| {
+        eprintln!("Error: Failed to open database at {}: {}", db_path, e);
+        std::process::exit(1);
+    });
+    let db = Arc::new(db);
+    let card_store = Arc::new(CardStore::new(db));
+
+    eprintln!("   Database: {}", db_path);
+
     // ── Card System ─────────────────────────────────────────────────────
-    let card_queue = CardQueue::new();
+    let card_queue = CardQueue::with_store(card_store);
 
     let generator_config = GeneratorConfig {
         expire_minutes: card_expire_min,

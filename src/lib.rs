@@ -11,4 +11,5 @@ pub mod extensions;
 pub mod llm;
 pub mod safety;
 pub mod tools;
+pub mod store;
 pub mod workspace;
