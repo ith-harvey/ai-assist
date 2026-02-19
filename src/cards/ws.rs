@@ -18,16 +18,22 @@ use uuid::Uuid;
 
 use super::model::{CardAction, ReplyCard, WsMessage};
 use super::queue::CardQueue;
+use crate::channels::email::{send_reply_email, EmailConfig};
 
 /// Application state shared across handlers.
 #[derive(Clone)]
 pub struct AppState {
     pub queue: Arc<CardQueue>,
+    /// Email configuration for sending replies (None if email channel is disabled).
+    pub email_config: Option<EmailConfig>,
 }
 
 /// Build the Axum router with card WebSocket and REST routes.
-pub fn card_routes(queue: Arc<CardQueue>) -> Router {
-    let state = AppState { queue };
+pub fn card_routes(queue: Arc<CardQueue>, email_config: Option<EmailConfig>) -> Router {
+    let state = AppState {
+        queue,
+        email_config,
+    };
 
     Router::new()
         .route("/ws", get(ws_handler))
@@ -56,10 +62,14 @@ async fn ws_handler(
     State(state): State<AppState>,
 ) -> impl IntoResponse {
     info!("WebSocket client connecting");
-    ws.on_upgrade(|socket| handle_socket(socket, state.queue))
+    ws.on_upgrade(|socket| handle_socket(socket, state.queue, state.email_config))
 }
 
-async fn handle_socket(mut socket: WebSocket, queue: Arc<CardQueue>) {
+async fn handle_socket(
+    mut socket: WebSocket,
+    queue: Arc<CardQueue>,
+    email_config: Option<EmailConfig>,
+) {
     info!("WebSocket client connected");
 
     // Send all pending cards on connect
@@ -110,7 +120,7 @@ async fn handle_socket(mut socket: WebSocket, queue: Arc<CardQueue>) {
             result = socket.recv() => {
                 match result {
                     Some(Ok(Message::Text(text))) => {
-                        handle_client_message(&text, &queue).await;
+                        handle_client_message(&text, &queue, email_config.as_ref()).await;
                     }
                     Some(Ok(Message::Ping(data))) => {
                         if socket.send(Message::Pong(data)).await.is_err() {
@@ -134,38 +144,76 @@ async fn handle_socket(mut socket: WebSocket, queue: Arc<CardQueue>) {
     info!("WebSocket connection closed");
 }
 
-async fn handle_client_message(text: &str, queue: &CardQueue) {
+async fn handle_client_message(
+    text: &str,
+    queue: &CardQueue,
+    email_config: Option<&EmailConfig>,
+) {
     match serde_json::from_str::<CardAction>(text) {
-        Ok(action) => {
-            match action {
-                CardAction::Approve { card_id } => {
-                    if let Some(card) = queue.approve(card_id).await {
-                        info!(card_id = %card_id, reply = %card.suggested_reply, "Card approved via WS");
-                        // TODO: Wire to channel to actually send the reply
-                    } else {
-                        warn!(card_id = %card_id, "Approve failed — card not found or not pending");
-                    }
-                }
-                CardAction::Dismiss { card_id } => {
-                    if queue.dismiss(card_id).await {
-                        info!(card_id = %card_id, "Card dismissed via WS");
-                    } else {
-                        warn!(card_id = %card_id, "Dismiss failed — card not found or not pending");
-                    }
-                }
-                CardAction::Edit { card_id, new_text } => {
-                    if let Some(card) = queue.edit(card_id, new_text).await {
-                        info!(card_id = %card_id, reply = %card.suggested_reply, "Card edited and approved via WS");
-                        // TODO: Wire to channel to send the edited reply
-                    } else {
-                        warn!(card_id = %card_id, "Edit failed — card not found or not pending");
-                    }
+        Ok(action) => match action {
+            CardAction::Approve { card_id } => {
+                if let Some(card) = queue.approve(card_id).await {
+                    info!(card_id = %card_id, reply = %card.suggested_reply, "Card approved via WS");
+                    send_card_reply(&card, email_config, queue).await;
+                } else {
+                    warn!(card_id = %card_id, "Approve failed — card not found or not pending");
                 }
             }
-        }
+            CardAction::Dismiss { card_id } => {
+                if queue.dismiss(card_id).await {
+                    info!(card_id = %card_id, "Card dismissed via WS");
+                } else {
+                    warn!(card_id = %card_id, "Dismiss failed — card not found or not pending");
+                }
+            }
+            CardAction::Edit { card_id, new_text } => {
+                if let Some(card) = queue.edit(card_id, new_text).await {
+                    info!(card_id = %card_id, reply = %card.suggested_reply, "Card edited and approved via WS");
+                    send_card_reply(&card, email_config, queue).await;
+                } else {
+                    warn!(card_id = %card_id, "Edit failed — card not found or not pending");
+                }
+            }
+        },
         Err(e) => {
             debug!(error = %e, text = text, "Unrecognized WS message from client");
         }
+    }
+}
+
+/// Send the reply for an approved/edited card via the originating channel.
+///
+/// For email cards with reply_metadata, sends a reply-all email with threading headers.
+/// Marks the card as sent on success.
+async fn send_card_reply(
+    card: &ReplyCard,
+    email_config: Option<&EmailConfig>,
+    queue: &CardQueue,
+) {
+    if card.channel == "email" {
+        if let (Some(config), Some(meta)) = (email_config, &card.reply_metadata) {
+            match send_reply_email(config, meta, &card.suggested_reply) {
+                Ok(()) => {
+                    queue.mark_sent(card.id).await;
+                    info!(card_id = %card.id, "Reply email sent successfully");
+                }
+                Err(e) => {
+                    tracing::error!(card_id = %card.id, error = %e, "Failed to send reply email");
+                }
+            }
+        } else {
+            warn!(
+                card_id = %card.id,
+                "Cannot send email reply — missing email config or reply_metadata"
+            );
+        }
+    } else {
+        // Non-email channels: log for now (Telegram/other channels use the agent's respond path)
+        info!(
+            card_id = %card.id,
+            channel = %card.channel,
+            "Card approved on non-email channel — reply not sent (not yet wired)"
+        );
     }
 }
 
@@ -186,7 +234,10 @@ async fn approve_card(
     };
 
     match state.queue.approve(card_id).await {
-        Some(card) => (StatusCode::OK, Json(serde_json::json!(card))),
+        Some(card) => {
+            send_card_reply(&card, state.email_config.as_ref(), &state.queue).await;
+            (StatusCode::OK, Json(serde_json::json!(card)))
+        }
         None => (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "Card not found or not pending"}))),
     }
 }
@@ -223,7 +274,10 @@ async fn edit_card(
     };
 
     match state.queue.edit(card_id, body.text).await {
-        Some(card) => (StatusCode::OK, Json(serde_json::json!(card))),
+        Some(card) => {
+            send_card_reply(&card, state.email_config.as_ref(), &state.queue).await;
+            (StatusCode::OK, Json(serde_json::json!(card)))
+        }
         None => (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "Card not found or not pending"}))),
     }
 }

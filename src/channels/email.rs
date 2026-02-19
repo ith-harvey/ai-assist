@@ -202,7 +202,7 @@ impl Channel for EmailChannel {
                         // Collect UIDs to mark as seen after processing
                         let mut uids_to_mark: Vec<String> = Vec::new();
 
-                        for (uid, msg_id, sender, content, subject, ts) in messages {
+                        for (uid, msg_id, sender, content, subject, ts, reply_meta) in messages {
                             // Allowlist check
                             if !is_sender_allowed(&allowed, &sender) {
                                 tracing::warn!("Blocked email from {sender}");
@@ -274,6 +274,7 @@ impl Channel for EmailChannel {
                                 "subject": subject,
                                 "message_id": msg_id,
                                 "tracked_message_id": tracked_message_id,
+                                "reply_metadata": reply_meta,
                             });
                             if let Some(thread_val) = thread_json {
                                 metadata["thread"] = thread_val;
@@ -467,8 +468,8 @@ fn extract_text(parsed: &mail_parser::Message) -> String {
     "(no readable content)".to_string()
 }
 
-/// A fetched email: (uid, message_id, sender, content, subject, timestamp).
-type FetchedEmail = (String, String, String, String, String, u64);
+/// A fetched email: (uid, message_id, sender, content, subject, timestamp, reply_metadata).
+type FetchedEmail = (String, String, String, String, String, u64, serde_json::Value);
 
 /// Error type for IMAP fetch operations.
 type ImapError = Box<dyn std::error::Error + Send + Sync>;
@@ -586,6 +587,15 @@ fn fetch_unseen_imap(config: &EmailConfig) -> Result<Vec<FetchedEmail>, ImapErro
                 .map(|s| s.to_string())
                 .unwrap_or_else(|| format!("gen-{}", Uuid::new_v4()));
 
+            // Build reply_metadata for reply-all send
+            let reply_metadata = build_reply_metadata(
+                &parsed,
+                &sender,
+                &subject,
+                &msg_id,
+                &config.from_address,
+            );
+
             #[allow(clippy::cast_sign_loss)]
             let ts = parsed
                 .date()
@@ -611,7 +621,7 @@ fn fetch_unseen_imap(config: &EmailConfig) -> Result<Vec<FetchedEmail>, ImapErro
                         .unwrap_or(0)
                 });
 
-            results.push((uid.to_string(), msg_id, sender, content, subject, ts));
+            results.push((uid.to_string(), msg_id, sender, content, subject, ts, reply_metadata));
         }
         // NOTE: \Seen is NOT marked here — caller marks after persisting to DB.
     }
@@ -708,6 +718,182 @@ fn mark_seen_imap(config: &EmailConfig, uids: &[String]) -> Result<(), ImapError
     let _ = send_cmd(&mut tls, &logout_tag, "LOGOUT");
 
     Ok(())
+}
+
+// ── Reply sending ───────────────────────────────────────────────
+
+/// Send a reply email using reply_metadata from the card.
+///
+/// This is a standalone function (not tied to Channel trait) so it can be called
+/// from the WS/REST handlers with just an EmailConfig reference.
+///
+/// Sends a reply-all email with:
+/// - To: the original sender (reply_to)
+/// - CC: other participants from the original email
+/// - Subject: with "Re: " prefix
+/// - In-Reply-To / References headers for Gmail/Outlook threading
+pub fn send_reply_email(
+    config: &EmailConfig,
+    reply_metadata: &serde_json::Value,
+    body: &str,
+) -> Result<(), ChannelError> {
+    let reply_to = reply_metadata["reply_to"]
+        .as_str()
+        .ok_or_else(|| ChannelError::SendFailed {
+            name: "email".into(),
+            reason: "Missing reply_to in reply_metadata".into(),
+        })?;
+    let subject = reply_metadata["subject"]
+        .as_str()
+        .unwrap_or("Re: (no subject)");
+    let in_reply_to = reply_metadata["in_reply_to"].as_str();
+    let references = reply_metadata["references"].as_str();
+    let cc_addrs: Vec<&str> = reply_metadata["cc"]
+        .as_array()
+        .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect())
+        .unwrap_or_default();
+
+    let creds = Credentials::new(config.username.clone(), config.password.clone());
+
+    let transport = SmtpTransport::relay(&config.smtp_host)
+        .map_err(|e| ChannelError::SendFailed {
+            name: "email".into(),
+            reason: format!("SMTP relay error: {e}"),
+        })?
+        .port(config.smtp_port)
+        .credentials(creds)
+        .build();
+
+    let mut builder = Message::builder()
+        .from(config.from_address.parse().map_err(|e| {
+            ChannelError::SendFailed {
+                name: "email".into(),
+                reason: format!("Invalid from address: {e}"),
+            }
+        })?)
+        .to(reply_to.parse().map_err(|e| ChannelError::SendFailed {
+            name: "email".into(),
+            reason: format!("Invalid reply_to address: {e}"),
+        })?)
+        .subject(subject);
+
+    // Add CC recipients for reply-all
+    for cc in &cc_addrs {
+        if let Ok(mbox) = cc.parse() {
+            builder = builder.cc(mbox);
+        }
+    }
+
+    // Add threading headers
+    if let Some(irt) = in_reply_to {
+        builder = builder.in_reply_to(irt.to_string());
+    }
+    if let Some(refs) = references {
+        builder = builder.references(refs.to_string());
+    }
+
+    let email = builder.body(body.to_string()).map_err(|e| {
+        ChannelError::SendFailed {
+            name: "email".into(),
+            reason: format!("Failed to build email: {e}"),
+        }
+    })?;
+
+    transport.send(&email).map_err(|e| ChannelError::SendFailed {
+        name: "email".into(),
+        reason: format!("SMTP send failed: {e}"),
+    })?;
+
+    tracing::info!(
+        to = reply_to,
+        cc = ?cc_addrs,
+        subject = subject,
+        "Reply-all email sent"
+    );
+    Ok(())
+}
+
+// ── Reply metadata ──────────────────────────────────────────────
+
+/// Extract email addresses from a mail_parser Address field.
+fn extract_addresses(addr: &mail_parser::Address) -> Vec<String> {
+    match addr {
+        mail_parser::Address::List(addrs) => addrs
+            .iter()
+            .filter_map(|a| a.address.as_ref().map(|s| s.to_string()))
+            .collect(),
+        mail_parser::Address::Group(groups) => groups
+            .iter()
+            .flat_map(|g| {
+                g.addresses
+                    .iter()
+                    .filter_map(|a| a.address.as_ref().map(|s| s.to_string()))
+            })
+            .collect(),
+    }
+}
+
+/// Build reply metadata from a parsed email for reply-all sending.
+///
+/// reply_metadata contains:
+/// - `reply_to`: the From address (who we're replying to)
+/// - `cc`: CC list for reply-all (original To + Cc minus our address and the sender)
+/// - `subject`: with "Re: " prepended if not already present
+/// - `in_reply_to`: original Message-ID for threading
+/// - `references`: original Message-ID for threading
+pub fn build_reply_metadata(
+    parsed: &mail_parser::Message,
+    sender: &str,
+    subject: &str,
+    msg_id: &str,
+    from_address: &str,
+) -> serde_json::Value {
+    let from_lower = from_address.to_lowercase();
+    let sender_lower = sender.to_lowercase();
+
+    // Build CC list for reply-all: merge original To + Cc, remove ourselves and the sender
+    let mut cc_list: Vec<String> = Vec::new();
+    let mut seen_lower: Vec<String> = vec![from_lower.clone(), sender_lower.clone()];
+
+    // Add original To addresses (except our from_address and the sender)
+    if let Some(to_addr) = parsed.to() {
+        for email in extract_addresses(to_addr) {
+            let email_lower = email.to_lowercase();
+            if !seen_lower.contains(&email_lower) {
+                seen_lower.push(email_lower);
+                cc_list.push(email);
+            }
+        }
+    }
+
+    // Add original Cc addresses (except our from_address, sender, and already-added)
+    if let Some(cc_addr) = parsed.cc() {
+        for email in extract_addresses(cc_addr) {
+            let email_lower = email.to_lowercase();
+            if !seen_lower.contains(&email_lower) {
+                seen_lower.push(email_lower);
+                cc_list.push(email);
+            }
+        }
+    }
+
+    // Subject: prepend Re: if not already present
+    let reply_subject = if subject.starts_with("Re: ")
+        || subject.starts_with("RE: ")
+        || subject.starts_with("re: ")
+    {
+        subject.to_string()
+    } else {
+        format!("Re: {subject}")
+    };
+
+    serde_json::json!({
+        "reply_to": sender,
+        "cc": cc_list,
+        "subject": reply_subject,
+        "in_reply_to": msg_id,
+        "references": msg_id,
+    })
 }
 
 // ── Thread fetching ─────────────────────────────────────────────

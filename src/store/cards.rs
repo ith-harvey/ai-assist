@@ -24,9 +24,13 @@ impl CardStore {
     /// Insert a new card into the database.
     pub fn insert(&self, card: &ReplyCard) -> Result<(), rusqlite::Error> {
         let conn = self.db.conn();
+        let reply_metadata_str = card
+            .reply_metadata
+            .as_ref()
+            .and_then(|v| serde_json::to_string(v).ok());
         conn.execute(
-            "INSERT INTO cards (id, conversation_id, source_message, source_sender, suggested_reply, confidence, status, channel, created_at, expires_at, updated_at, message_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            "INSERT INTO cards (id, conversation_id, source_message, source_sender, suggested_reply, confidence, status, channel, created_at, expires_at, updated_at, message_id, reply_metadata)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
             rusqlite::params![
                 card.id.to_string(),
                 card.conversation_id,
@@ -40,6 +44,7 @@ impl CardStore {
                 card.expires_at.to_rfc3339(),
                 card.updated_at.to_rfc3339(),
                 card.message_id,
+                reply_metadata_str,
             ],
         )?;
         debug!(card_id = %card.id, "Card inserted into DB");
@@ -80,7 +85,7 @@ impl CardStore {
         let conn = self.db.conn();
         let now = Utc::now().to_rfc3339();
         let mut stmt = conn.prepare(
-            "SELECT id, conversation_id, source_message, source_sender, suggested_reply, confidence, status, channel, created_at, expires_at, updated_at, message_id
+            "SELECT id, conversation_id, source_message, source_sender, suggested_reply, confidence, status, channel, created_at, expires_at, updated_at, message_id, reply_metadata
              FROM cards
              WHERE status = 'pending' AND expires_at > ?1
              ORDER BY created_at ASC",
@@ -97,7 +102,7 @@ impl CardStore {
     pub fn get_by_id(&self, card_id: Uuid) -> Result<Option<ReplyCard>, rusqlite::Error> {
         let conn = self.db.conn();
         let mut stmt = conn.prepare(
-            "SELECT id, conversation_id, source_message, source_sender, suggested_reply, confidence, status, channel, created_at, expires_at, updated_at, message_id
+            "SELECT id, conversation_id, source_message, source_sender, suggested_reply, confidence, status, channel, created_at, expires_at, updated_at, message_id, reply_metadata
              FROM cards
              WHERE id = ?1",
         )?;
@@ -118,7 +123,7 @@ impl CardStore {
     ) -> Result<Vec<ReplyCard>, rusqlite::Error> {
         let conn = self.db.conn();
         let mut stmt = conn.prepare(
-            "SELECT id, conversation_id, source_message, source_sender, suggested_reply, confidence, status, channel, created_at, expires_at, updated_at, message_id
+            "SELECT id, conversation_id, source_message, source_sender, suggested_reply, confidence, status, channel, created_at, expires_at, updated_at, message_id, reply_metadata
              FROM cards
              WHERE channel = ?1
              ORDER BY created_at DESC
@@ -217,6 +222,10 @@ fn row_to_card(row: &rusqlite::Row<'_>) -> Result<ReplyCard, rusqlite::Error> {
     let expires_str: String = row.get(9)?;
     let updated_str: String = row.get(10)?;
     let message_id: Option<String> = row.get(11)?;
+    let reply_metadata_str: Option<String> = row.get(12)?;
+
+    let reply_metadata = reply_metadata_str
+        .and_then(|s| serde_json::from_str(&s).ok());
 
     Ok(ReplyCard {
         id: Uuid::parse_str(&id_str).unwrap_or_else(|_| Uuid::nil()),
@@ -232,6 +241,7 @@ fn row_to_card(row: &rusqlite::Row<'_>) -> Result<ReplyCard, rusqlite::Error> {
         updated_at: parse_datetime(&updated_str),
         message_id,
         thread: Vec::new(),
+        reply_metadata,
     })
 }
 
@@ -413,6 +423,55 @@ mod tests {
         assert_eq!(pruned, 0);
 
         assert!(store.get_by_id(card_id).unwrap().is_some());
+    }
+
+    #[test]
+    fn insert_with_reply_metadata() {
+        let store = test_store();
+        let meta = serde_json::json!({
+            "reply_to": "alice@example.com",
+            "cc": ["bob@example.com"],
+            "subject": "Re: Test",
+            "in_reply_to": "<msg1@example.com>",
+            "references": "<msg1@example.com>",
+        });
+        let card = make_card("email").with_reply_metadata(meta.clone());
+        let card_id = card.id;
+
+        store.insert(&card).unwrap();
+
+        let fetched = store.get_by_id(card_id).unwrap().unwrap();
+        assert!(fetched.reply_metadata.is_some());
+        let fetched_meta = fetched.reply_metadata.unwrap();
+        assert_eq!(fetched_meta["reply_to"], "alice@example.com");
+        assert_eq!(fetched_meta["cc"][0], "bob@example.com");
+        assert_eq!(fetched_meta["subject"], "Re: Test");
+    }
+
+    #[test]
+    fn insert_without_reply_metadata() {
+        let store = test_store();
+        let card = make_card("email");
+        let card_id = card.id;
+
+        store.insert(&card).unwrap();
+
+        let fetched = store.get_by_id(card_id).unwrap().unwrap();
+        assert!(fetched.reply_metadata.is_none());
+    }
+
+    #[test]
+    fn get_pending_includes_reply_metadata() {
+        let store = test_store();
+        let meta = serde_json::json!({"reply_to": "test@example.com", "subject": "Re: Hi"});
+        let card = make_card("email").with_reply_metadata(meta);
+
+        store.insert(&card).unwrap();
+
+        let pending = store.get_pending().unwrap();
+        assert_eq!(pending.len(), 1);
+        assert!(pending[0].reply_metadata.is_some());
+        assert_eq!(pending[0].reply_metadata.as_ref().unwrap()["reply_to"], "test@example.com");
     }
 
     #[test]

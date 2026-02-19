@@ -121,8 +121,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Spawn card expiry sweep task (runs every 60s)
     let _expiry_handle = queue::spawn_expiry_task(card_queue.clone());
 
+    // Build EmailConfig for the card server (so approve/edit can send replies)
+    let email_config_for_cards = EmailConfig::from_env();
+
     // Spawn Axum WS/REST server for cards
-    let app = card_routes(card_queue.clone());
+    let app = card_routes(card_queue.clone(), email_config_for_cards);
     tokio::spawn(async move {
         let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", ws_port))
             .await

@@ -64,6 +64,9 @@ pub struct ReplyCard {
     /// Email thread context — previous messages in the conversation.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub thread: Vec<ThreadMessage>,
+    /// Channel-specific metadata for sending the reply (e.g. email recipients, subject, threading headers).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply_metadata: Option<serde_json::Value>,
 }
 
 impl ReplyCard {
@@ -92,7 +95,14 @@ impl ReplyCard {
             updated_at: now,
             message_id: None,
             thread: Vec::new(),
+            reply_metadata: None,
         }
+    }
+
+    /// Set channel-specific reply metadata (email recipients, subject, threading headers).
+    pub fn with_reply_metadata(mut self, metadata: serde_json::Value) -> Self {
+        self.reply_metadata = Some(metadata);
+        self
     }
 
     /// Set the email thread context on this card.
@@ -312,5 +322,81 @@ mod tests {
         assert_eq!(msg.content.len(), 600);
         // Truncation is done at fetch time, not at the model level.
         // This test just confirms the model can hold arbitrarily long content.
+    }
+
+    // ── reply_metadata tests ────────────────────────────────────────
+
+    #[test]
+    fn reply_metadata_serde_roundtrip_some() {
+        let meta = serde_json::json!({
+            "reply_to": "alice@example.com",
+            "cc": ["bob@example.com", "carol@example.com"],
+            "subject": "Re: Meeting tomorrow",
+            "in_reply_to": "<abc123@example.com>",
+            "references": "<abc123@example.com>",
+        });
+
+        let card = ReplyCard::new("chat_1", "msg", "Alice", "sounds good", 0.8, "email", 15)
+            .with_reply_metadata(meta.clone());
+
+        let json = serde_json::to_string(&card).unwrap();
+        assert!(json.contains("\"reply_metadata\""));
+        assert!(json.contains("alice@example.com"));
+
+        let parsed: ReplyCard = serde_json::from_str(&json).unwrap();
+        assert!(parsed.reply_metadata.is_some());
+        let parsed_meta = parsed.reply_metadata.unwrap();
+        assert_eq!(parsed_meta["reply_to"], "alice@example.com");
+        assert_eq!(parsed_meta["cc"][0], "bob@example.com");
+    }
+
+    #[test]
+    fn reply_metadata_serde_roundtrip_none() {
+        let card = ReplyCard::new("chat_1", "msg", "Alice", "hi", 0.8, "telegram", 15);
+        assert!(card.reply_metadata.is_none());
+
+        let json = serde_json::to_string(&card).unwrap();
+        // skip_serializing_if = "Option::is_none" should omit the field
+        assert!(!json.contains("\"reply_metadata\""));
+    }
+
+    #[test]
+    fn reply_card_without_reply_metadata_field_deserializes() {
+        // JSON from an older server that doesn't include reply_metadata
+        let json = r#"{
+            "id": "550e8400-e29b-41d4-a716-446655440000",
+            "conversation_id": "chat_1",
+            "source_message": "hello",
+            "source_sender": "Bob",
+            "suggested_reply": "hi!",
+            "confidence": 0.9,
+            "status": "pending",
+            "created_at": "2026-02-15T10:00:00Z",
+            "expires_at": "2026-02-15T10:15:00Z",
+            "channel": "email",
+            "updated_at": "2026-02-15T10:00:00Z"
+        }"#;
+        let card: ReplyCard = serde_json::from_str(json).unwrap();
+        assert!(card.reply_metadata.is_none());
+        assert!(card.thread.is_empty());
+    }
+
+    #[test]
+    fn reply_card_with_reply_metadata_serializes_correctly() {
+        let meta = serde_json::json!({
+            "reply_to": "sender@test.com",
+            "cc": [],
+            "subject": "Re: Test",
+            "in_reply_to": "<msg1@test.com>",
+            "references": "<msg1@test.com>",
+        });
+
+        let card = ReplyCard::new("chat_1", "hello", "sender@test.com", "hi!", 0.9, "email", 15)
+            .with_reply_metadata(meta);
+
+        let json = serde_json::to_string(&card).unwrap();
+        let parsed: ReplyCard = serde_json::from_str(&json).unwrap();
+        assert!(parsed.reply_metadata.is_some());
+        assert_eq!(parsed.reply_metadata.as_ref().unwrap()["subject"], "Re: Test");
     }
 }
