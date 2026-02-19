@@ -129,6 +129,48 @@ fn extract_subject_with_body_whitespace() {
     assert_eq!(body, "Body with leading space");
 }
 
+// ── Subject normalization tests ──────────────────────────────────
+
+#[test]
+fn normalize_subject_strips_re() {
+    assert_eq!(normalize_subject("Re: Hello"), "Hello");
+}
+
+#[test]
+fn normalize_subject_strips_fwd() {
+    assert_eq!(normalize_subject("Fwd: Hello"), "Hello");
+}
+
+#[test]
+fn normalize_subject_strips_fw() {
+    assert_eq!(normalize_subject("FW: Hello"), "Hello");
+}
+
+#[test]
+fn normalize_subject_strips_re_uppercase() {
+    assert_eq!(normalize_subject("RE: Hello"), "Hello");
+}
+
+#[test]
+fn normalize_subject_recursive() {
+    assert_eq!(normalize_subject("Re: Fwd: Re: RE: Hello"), "Hello");
+}
+
+#[test]
+fn normalize_subject_preserves_plain() {
+    assert_eq!(normalize_subject("Hello World"), "Hello World");
+}
+
+#[test]
+fn normalize_subject_trims_whitespace() {
+    assert_eq!(normalize_subject("  Re:  Hello  "), "Hello");
+}
+
+#[test]
+fn normalize_subject_empty_after_strip() {
+    assert_eq!(normalize_subject("Re: "), "");
+}
+
 // ── Config defaults tests ───────────────────────────────────────
 
 #[test]

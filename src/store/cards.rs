@@ -231,6 +231,7 @@ fn row_to_card(row: &rusqlite::Row<'_>) -> Result<ReplyCard, rusqlite::Error> {
         expires_at: parse_datetime(&expires_str),
         updated_at: parse_datetime(&updated_str),
         message_id,
+        thread: Vec::new(),
     })
 }
 

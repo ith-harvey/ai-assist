@@ -475,6 +475,12 @@ impl Agent {
                 .get("tracked_message_id")
                 .and_then(|v| v.as_str())
                 .map(String::from);
+            // Extract email thread context from metadata (set during email ingest)
+            let thread_messages: Vec<crate::cards::model::ThreadMessage> = message
+                .metadata
+                .get("thread")
+                .and_then(|v| serde_json::from_value(v.clone()).ok())
+                .unwrap_or_default();
             tokio::spawn(async move {
                 if let Err(e) = card_gen
                     .generate_cards(
@@ -483,6 +489,7 @@ impl Agent {
                         &chat_id,
                         &channel,
                         tracked_msg_id.as_deref(),
+                        thread_messages,
                     )
                     .await
                 {
