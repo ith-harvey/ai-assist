@@ -10,12 +10,33 @@ private struct ScrollOffsetKey: PreferenceKey {
     }
 }
 
+/// PreferenceKey that reports how far the user has overscrolled past the bottom in the chat.
+/// Positive = rubber-banding past the end of content. Zero = normal scrolling.
+private struct ChatOverscrollKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
+/// PreferenceKey to capture the chat scroll viewport height.
+private struct ChatViewportHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
 /// Terminal-style full-screen chat view for the Brain tab.
 /// Full-width messages (not chat bubbles), text input bar at bottom,
 /// thinking indicator, and streaming support with auto-scroll.
 ///
 /// The input bar and status indicator slide off-screen when scrolling up
 /// (iMessage-style) and reappear when scrolling back to the bottom.
+///
+/// Pull-down overscroll at the bottom of the chat triggers voice recording
+/// (same pattern as card refine in ContentView). Releasing submits the
+/// transcript as a chat message.
 public struct BrainChatView: View {
     @State private var chatSocket = ChatWebSocket()
     @State private var inputText = ""
@@ -27,15 +48,39 @@ public struct BrainChatView: View {
     /// Whether the keyboard is currently shown.
     @State private var isKeyboardVisible = false
 
+    // Voice-to-chat state
+    #if os(iOS)
+    @State private var speechRecognizer = SpeechRecognizer()
+    #endif
+    @State private var isRecordingVoice = false
+    @State private var isDraggingDown = false
+    /// How far (in points) the user has overscrolled past the bottom.
+    /// Positive = rubber-banding downward. Recording triggers when > recordThreshold.
+    @State private var chatOverscroll: CGFloat = 0
+    @State private var chatViewportHeight: CGFloat = 0
+
+    /// Vertical drag distance to trigger voice recording.
+    private let recordThreshold: CGFloat = 60
+
     public init() {}
+
+    /// Whether voice recording should be suppressed (keyboard up or text in field).
+    private var shouldSuppressVoice: Bool {
+        isKeyboardVisible
+            || !inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
 
     public var body: some View {
         VStack(spacing: 0) {
             connectionBanner
 
-            ZStack {
-                messageList
-                emptyState
+            ZStack(alignment: .bottom) {
+                ZStack {
+                    messageList
+                    emptyState
+                }
+
+                voiceOverlay
             }
 
             // Status indicator + input bar slide together
@@ -48,6 +93,9 @@ public struct BrainChatView: View {
             chatSocket.disconnect()
         }
         #if os(iOS)
+        .onAppear {
+            speechRecognizer.requestPermissions()
+        }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
             isKeyboardVisible = true
             isInputBarVisible = true
@@ -68,7 +116,7 @@ public struct BrainChatView: View {
 
     @ViewBuilder
     private var bottomBar: some View {
-        let visible = isInputBarVisible || shouldForceShowBar
+        let visible = (isInputBarVisible || shouldForceShowBar) && !isRecordingVoice
 
         VStack(spacing: 0) {
             statusIndicator
@@ -92,17 +140,62 @@ public struct BrainChatView: View {
                 .padding(.vertical, 8)
                 .background(
                     GeometryReader { geo in
-                        Color.clear.preference(
-                            key: ScrollOffsetKey.self,
-                            value: geo.frame(in: .named("chatScroll")).minY
-                        )
+                        let minY = geo.frame(in: .named("chatScroll")).minY
+                        let contentBottom = geo.frame(in: .named("chatScroll")).maxY
+                        let overscroll = max(0, contentBottom - chatViewportHeight)
+                        Color.clear
+                            .preference(
+                                key: ScrollOffsetKey.self,
+                                value: minY
+                            )
+                            .preference(
+                                key: ChatOverscrollKey.self,
+                                value: overscroll
+                            )
                     }
                 )
             }
             .coordinateSpace(name: "chatScroll")
+            .overlay(
+                GeometryReader { viewportGeo in
+                    Color.clear.preference(
+                        key: ChatViewportHeightKey.self,
+                        value: viewportGeo.size.height
+                    )
+                }
+            )
             .onPreferenceChange(ScrollOffsetKey.self) { offset in
                 handleScrollOffset(offset)
             }
+            .onPreferenceChange(ChatViewportHeightKey.self) { height in
+                chatViewportHeight = height
+            }
+            .onPreferenceChange(ChatOverscrollKey.self) { distance in
+                chatOverscroll = distance
+            }
+            .simultaneousGesture(
+                DragGesture(minimumDistance: 20)
+                    .onChanged { _ in
+                        // Voice recording: triggered by ScrollView rubber-band overscroll,
+                        // NOT by the drag gesture's translation.
+                        guard !shouldSuppressVoice else { return }
+
+                        #if os(iOS)
+                        if chatOverscroll > recordThreshold && !isRecordingVoice {
+                            isDraggingDown = true
+                            startVoiceRecording()
+                        }
+                        #endif
+                    }
+                    .onEnded { _ in
+                        if isDraggingDown {
+                            #if os(iOS)
+                            stopVoiceRecordingAndSend()
+                            #endif
+                            isDraggingDown = false
+                        }
+                    }
+            )
             .onChange(of: chatSocket.messages.count) { _, _ in
                 scrollToBottom(proxy: proxy)
                 // Reveal bar when new messages arrive
@@ -226,6 +319,62 @@ public struct BrainChatView: View {
             Text(msg)
         case .status(let msg):
             Text(msg)
+        }
+    }
+
+    // MARK: - Voice Recording
+
+    #if os(iOS)
+    private func startVoiceRecording() {
+        guard speechRecognizer.isAuthorized else {
+            speechRecognizer.requestPermissions()
+            return
+        }
+        isRecordingVoice = true
+        speechRecognizer.startRecording()
+
+        // Haptic feedback on start
+        let generator = UIImpactFeedbackGenerator(style: .medium)
+        generator.impactOccurred()
+    }
+
+    private func stopVoiceRecordingAndSend() {
+        guard isRecordingVoice else { return }
+
+        speechRecognizer.stopRecording()
+        isRecordingVoice = false
+
+        // Haptic feedback on stop/submit
+        let notification = UINotificationFeedbackGenerator()
+        notification.notificationOccurred(.success)
+
+        let transcript = speechRecognizer.transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !transcript.isEmpty else { return }
+
+        chatSocket.send(text: transcript)
+    }
+    #endif
+
+    // MARK: - Voice Overlay
+
+    @ViewBuilder
+    private var voiceOverlay: some View {
+        if isRecordingVoice {
+            HStack(spacing: 8) {
+                Image(systemName: "mic.fill")
+                    .font(.system(size: 14, weight: .semibold))
+                    #if os(iOS)
+                    .symbolEffect(.pulse)
+                    #endif
+                Text("Recording...")
+                    .font(.caption)
+                    .fontWeight(.semibold)
+            }
+            .foregroundStyle(.white)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 8)
+            .background(Color.orange)
+            .transition(.move(edge: .bottom).combined(with: .opacity))
         }
     }
 
