@@ -32,18 +32,19 @@ private struct ScrollOverscrollModifier: ViewModifier {
     func body(content: Content) -> some View {
         if #available(iOS 18.0, macOS 15.0, *) {
             content
-                .onScrollGeometryChange(for: CGFloat.self) { geo in
-                    let scrolledTo = geo.contentOffset.y + geo.containerSize.height
-                    let contentEnd = geo.contentSize.height + geo.contentInsets.bottom
+                .onScrollGeometryChange(for: [CGFloat].self) { geo in
+                    [geo.contentOffset.y, geo.containerSize.height, geo.contentSize.height, geo.contentInsets.top, geo.contentInsets.bottom]
+                } action: { _, vals in
+                    let offsetY = vals[0]
+                    let containerH = vals[1]
+                    let contentH = vals[2]
+                    let insetBot = vals[4]
+                    let scrolledTo = offsetY + containerH
+                    let contentEnd = contentH + insetBot
                     let rawOverscroll = max(0, scrolledTo - contentEnd)
-                    // iOS rubber-band dampens finger movement ~3-4x.
-                    // Amplify so the reported value approximates actual finger distance.
-                    return rawOverscroll * 6.0
-                } action: { oldOverscroll, newOverscroll in
-                    if newOverscroll != oldOverscroll {
-                        print("[SCROLL-DEBUG] overscroll(amp): \(String(format: "%.1f", oldOverscroll))→\(String(format: "%.1f", newOverscroll))")
-                    }
-                    overscrollDistance = newOverscroll
+                    let amplified = rawOverscroll * 6.0
+                    print("[SCROLL-RAW] off=\(String(format:"%.0f",offsetY)) cont=\(String(format:"%.0f",containerH)) content=\(String(format:"%.0f",contentH)) inB=\(String(format:"%.0f",insetBot)) raw=\(String(format:"%.1f",rawOverscroll)) amp=\(String(format:"%.1f",amplified))")
+                    overscrollDistance = amplified
                 }
                 .onScrollPhaseChange { oldPhase, newPhase in
                     print("[SCROLL-DEBUG] phase: \(oldPhase) → \(newPhase)")
