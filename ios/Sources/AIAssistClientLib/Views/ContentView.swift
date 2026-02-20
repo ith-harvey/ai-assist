@@ -3,8 +3,8 @@ import SwiftUI
 /// Root view with full-screen swipe to approve/reject cards.
 ///
 /// `MessageThreadView` fills 100% of vertical space. Swiping right approves,
-/// swiping left rejects. The card stack has been replaced by this Tinder-style
-/// full-screen gesture.
+/// swiping left rejects. Uses a UIKit `UIPanGestureRecognizer` overlay for
+/// zero-lag 1:1 finger tracking (bypasses SwiftUI gesture system).
 public struct ContentView: View {
     @State private var socket = CardWebSocket()
     @State private var showSettings = false
@@ -12,11 +12,9 @@ public struct ContentView: View {
     @State private var portInput = "8080"
 
     // Swipe state
-    @State private var dragOffset: CGSize = .zero
-    @State private var isDraggingHorizontally: Bool? = nil
+    @State private var dragOffset: CGFloat = 0
 
     private let swipeThreshold: CGFloat = 100
-    private let directionLockThreshold: CGFloat = 8
 
     public init() {}
 
@@ -28,10 +26,12 @@ public struct ContentView: View {
                         connectionBanner
                         MessageThreadView(card: card)
                     }
-                    .offset(x: dragOffset.width)
-                    .rotationEffect(.degrees(Double(dragOffset.width) / 25))
+                    .offset(x: dragOffset)
+                    .rotationEffect(.degrees(Double(dragOffset) / 25))
                     .overlay(swipeOverlay)
-                    .gesture(swipeGesture(for: card))
+                    .overlay(
+                        swipeGestureOverlay(for: card)
+                    )
                 } else {
                     VStack(spacing: 0) {
                         connectionBanner
@@ -74,73 +74,58 @@ public struct ContentView: View {
         }
     }
 
-    // MARK: - Swipe Gesture
+    // MARK: - Swipe Gesture (UIKit)
 
-    /// Horizontal-favoring drag gesture that doesn't conflict with vertical scroll.
-    ///
-    /// On the first 10pt of movement, we lock to horizontal or vertical.
-    /// If the initial movement is more vertical, we bail and let ScrollView handle it.
-    private func swipeGesture(for card: ReplyCard) -> some Gesture {
-        DragGesture(minimumDistance: 0)
-            .onChanged { value in
-                // Lock direction once movement exceeds a small threshold
-                if isDraggingHorizontally == nil {
-                    let horizontal = abs(value.translation.width)
-                    let vertical = abs(value.translation.height)
-                    guard horizontal > directionLockThreshold || vertical > directionLockThreshold else {
-                        return
-                    }
-                    isDraggingHorizontally = horizontal > vertical
-                }
+    /// UIKit-based horizontal pan overlay — zero lag, 1:1 tracking.
+    /// Vertical scrolling passes through to the ScrollView in MessageThreadView.
+    @ViewBuilder
+    private func swipeGestureOverlay(for card: ReplyCard) -> some View {
+        #if canImport(UIKit)
+        HorizontalSwipeGesture(
+            onChanged: { translationX in
+                // Direct assignment — no animation, pure 1:1 tracking
+                dragOffset = translationX
+            },
+            onEnded: { translationX, velocityX in
+                let width = translationX
+                // Use velocity to assist: a fast flick with lower distance still triggers
+                let effectiveWidth = width + velocityX * 0.15
 
-                // Track finger position immediately — no animation on drag
-                if isDraggingHorizontally == true {
-                    dragOffset = CGSize(width: value.translation.width, height: 0)
-                }
-            }
-            .onEnded { value in
-                defer {
-                    isDraggingHorizontally = nil
-                }
-
-                guard isDraggingHorizontally == true else {
-                    dragOffset = .zero
-                    return
-                }
-
-                let width = value.translation.width
-                if width > swipeThreshold {
+                if effectiveWidth > swipeThreshold {
                     // Fly off right — approve
-                    withAnimation(.easeOut(duration: 0.2)) {
-                        dragOffset = CGSize(width: 500, height: 0)
+                    withAnimation(.easeOut(duration: 0.18)) {
+                        dragOffset = 500
                     }
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) {
                         socket.approve(cardId: card.id)
-                        dragOffset = .zero
+                        dragOffset = 0
                     }
-                } else if width < -swipeThreshold {
+                } else if effectiveWidth < -swipeThreshold {
                     // Fly off left — reject
-                    withAnimation(.easeOut(duration: 0.2)) {
-                        dragOffset = CGSize(width: -500, height: 0)
+                    withAnimation(.easeOut(duration: 0.18)) {
+                        dragOffset = -500
                     }
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) {
                         socket.dismiss(cardId: card.id)
-                        dragOffset = .zero
+                        dragOffset = 0
                     }
                 } else {
                     // Snap back with spring
                     withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
-                        dragOffset = .zero
+                        dragOffset = 0
                     }
                 }
             }
+        )
+        .allowsHitTesting(true)
+        #endif
     }
 
     // MARK: - Swipe Overlay
 
     @ViewBuilder
     private var swipeOverlay: some View {
-        let width = dragOffset.width
+        let width = dragOffset
         ZStack {
             // Green tint + APPROVE label
             if width > 30 {
