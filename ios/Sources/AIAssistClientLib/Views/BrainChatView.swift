@@ -18,7 +18,7 @@ public struct BrainChatView: View {
                 emptyState
             }
 
-            thinkingIndicator
+            statusIndicator
             inputBar
         }
         .onAppear {
@@ -82,22 +82,67 @@ public struct BrainChatView: View {
         }
     }
 
-    // MARK: - Thinking Indicator
+    // MARK: - Status Indicator
 
     @ViewBuilder
-    private var thinkingIndicator: some View {
-        if chatSocket.isThinking {
+    private var statusIndicator: some View {
+        if let status = chatSocket.currentStatus {
             HStack(spacing: 6) {
-                ProgressView()
-                    .controlSize(.small)
-                Text("thinking...")
+                statusIcon(for: status)
+                statusText(for: status)
                     .font(.system(.caption, design: .monospaced))
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
                 Spacer()
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 6)
             .transition(.opacity)
+        }
+    }
+
+    @ViewBuilder
+    private func statusIcon(for status: StatusEvent) -> some View {
+        switch status.kind {
+        case .thinking:
+            ProgressView()
+                .controlSize(.small)
+        case .toolStarted:
+            Image(systemName: "wrench.and.screwdriver")
+                .font(.caption)
+                .foregroundStyle(.orange)
+        case .toolCompleted(_, let success):
+            Image(systemName: success ? "checkmark.circle" : "xmark.circle")
+                .font(.caption)
+                .foregroundStyle(success ? .green : .red)
+        case .toolResult:
+            Image(systemName: "doc.text")
+                .font(.caption)
+                .foregroundStyle(.blue)
+        case .error:
+            Image(systemName: "exclamationmark.triangle")
+                .font(.caption)
+                .foregroundStyle(.red)
+        case .status:
+            ProgressView()
+                .controlSize(.small)
+        }
+    }
+
+    private func statusText(for status: StatusEvent) -> Text {
+        switch status.kind {
+        case .thinking(let msg):
+            Text(msg.isEmpty ? "thinking..." : msg)
+        case .toolStarted(let name):
+            Text("running \(name)...")
+        case .toolCompleted(let name, let success):
+            Text("\(name) \(success ? "done" : "failed")")
+        case .toolResult(let name, let preview):
+            Text("\(name): \(preview)")
+        case .error(let msg):
+            Text(msg)
+        case .status(let msg):
+            Text(msg)
         }
     }
 
@@ -139,7 +184,7 @@ public struct BrainChatView: View {
 
     private var canSend: Bool {
         !inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            && !chatSocket.isThinking
+            && chatSocket.currentStatus == nil
     }
 
     private func sendMessage() {
