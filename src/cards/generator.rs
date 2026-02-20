@@ -203,6 +203,68 @@ impl CardGenerator {
         Ok(cards)
     }
 
+    /// Refine an existing card's draft using an LLM with the user's instruction.
+    ///
+    /// Returns (new_suggested_reply, confidence).
+    pub async fn refine_card(
+        &self,
+        card: &ReplyCard,
+        instruction: &str,
+    ) -> Result<(String, f32), LlmError> {
+        info!(
+            card_id = %card.id,
+            instruction = instruction,
+            "Refining card draft via LLM"
+        );
+
+        let system_prompt = "You are a reply refinement engine. The user has reviewed an \
+             AI-drafted reply and wants changes. Apply their instruction to improve the draft. \
+             Output ONLY the refined reply text — no explanation, no JSON, no quotes.";
+
+        // Build context including thread if available
+        let mut context = format!(
+            "Original message from {sender}: \"{message}\"",
+            sender = card.source_sender,
+            message = card.source_message,
+        );
+
+        if !card.email_thread.is_empty() {
+            context.push_str("\n\nEmail thread context:");
+            for msg in &card.email_thread {
+                context.push_str(&format!(
+                    "\n  From {}: \"{}\"",
+                    msg.from,
+                    msg.content.chars().take(300).collect::<String>(),
+                ));
+            }
+        }
+
+        let user_prompt = format!(
+            "{context}\n\nCurrent draft reply: \"{draft}\"\n\nUser instruction: {instruction}",
+            context = context,
+            draft = card.suggested_reply,
+            instruction = instruction,
+        );
+
+        let request = CompletionRequest::new(vec![
+            ChatMessage::system(system_prompt.to_string()),
+            ChatMessage::user(user_prompt),
+        ])
+        .with_temperature(self.config.temperature)
+        .with_max_tokens(self.config.max_tokens);
+
+        let response = self.llm.complete(request).await?;
+
+        let refined_text = response.content.trim().to_string();
+
+        // Use 0.85 as default confidence for refined replies
+        let confidence = 0.85_f32;
+
+        info!(card_id = %card.id, "Card draft refined successfully");
+
+        Ok((refined_text, confidence))
+    }
+
     /// Parse LLM response JSON into ReplyCard objects.
     fn parse_suggestions(
         &self,

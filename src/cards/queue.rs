@@ -9,6 +9,7 @@ use tokio::sync::{broadcast, RwLock};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
+use super::generator::CardGenerator;
 use super::model::{CardStatus, ReplyCard, WsMessage};
 use crate::store::messages::MessageStatus;
 use crate::store::{CardStore, MessageStore};
@@ -215,6 +216,61 @@ impl CardQueue {
         });
 
         Some(edited)
+    }
+
+    /// Refine a card's draft via LLM. Returns the updated card if successful.
+    pub async fn refine(
+        &self,
+        card_id: Uuid,
+        instruction: String,
+        generator: &CardGenerator,
+    ) -> Result<ReplyCard, String> {
+        // Find the card and verify it's pending
+        let card_snapshot = {
+            let cards = self.cards.read().await;
+            let card = cards.iter().find(|c| c.id == card_id)
+                .ok_or_else(|| format!("Card {} not found", card_id))?;
+            if card.status != CardStatus::Pending {
+                return Err(format!("Card {} is not pending (status: {:?})", card_id, card.status));
+            }
+            card.clone()
+        };
+
+        // Call LLM to refine (this is async, done outside the lock)
+        let (new_text, new_confidence) = generator
+            .refine_card(&card_snapshot, &instruction)
+            .await
+            .map_err(|e| format!("LLM refinement failed: {}", e))?;
+
+        // Update card in-place
+        let updated = {
+            let mut cards = self.cards.write().await;
+            let card = cards.iter_mut().find(|c| c.id == card_id)
+                .ok_or_else(|| format!("Card {} disappeared during refinement", card_id))?;
+
+            if card.status != CardStatus::Pending {
+                return Err(format!("Card {} is no longer pending", card_id));
+            }
+
+            card.suggested_reply = new_text;
+            card.confidence = new_confidence;
+            card.updated_at = chrono::Utc::now();
+            card.clone()
+        };
+
+        // Persist to DB (keep status as Pending)
+        if let Some(store) = &self.store {
+            if let Err(e) = store.update_reply(card_id, &updated.suggested_reply, CardStatus::Pending) {
+                error!(card_id = %card_id, error = %e, "Failed to persist refine to DB");
+            }
+        }
+
+        info!(card_id = %card_id, "Card refined");
+
+        // Broadcast the full updated card so iOS can replace it in-place
+        let _ = self.tx.send(WsMessage::CardRefreshed { card: updated.clone() });
+
+        Ok(updated)
     }
 
     /// Get all pending (non-expired) cards.
