@@ -38,7 +38,7 @@ public struct ContentView: View {
     /// first crack at vertical gestures.
     private let directionLockDistance: CGFloat = 20
     /// Vertical drag distance to trigger voice recording.
-    private let recordThreshold: CGFloat = 15
+    private let recordThreshold: CGFloat = 5
 
     public init() {}
 
@@ -169,12 +169,18 @@ public struct ContentView: View {
             speechRecognizer.requestPermissions()
         }
         .onChange(of: overscrollDistance) { _, newDistance in
+            if newDistance > 0 {
+                print("[VOICE-DEBUG] overscroll=\(String(format: "%.1f", newDistance)) interacting=\(isUserInteracting) recording=\(isRecordingVoice) threshold=\(recordThreshold)")
+            }
             if newDistance > recordThreshold && isUserInteracting && !isRecordingVoice {
+                print("[VOICE-DEBUG] ✅ STARTING RECORDING (overscroll=\(String(format: "%.1f", newDistance)))")
                 startVoiceRecording()
             }
         }
         .onChange(of: isUserInteracting) { _, interacting in
+            print("[VOICE-DEBUG] phase interacting=\(interacting) recording=\(isRecordingVoice) overscroll=\(String(format: "%.1f", overscrollDistance))")
             if !interacting && isRecordingVoice {
+                print("[VOICE-DEBUG] ✅ STOPPING RECORDING & SENDING")
                 stopVoiceRecordingAndRefine(cardId: card.id)
             }
         }
