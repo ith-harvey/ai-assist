@@ -190,17 +190,24 @@ public struct ContentView: View {
     // MARK: - Voice Recording
 
     #if os(iOS)
+    // Pre-created haptic generator for instant response during scroll
+    private let startHaptic: UIImpactFeedbackGenerator = {
+        let gen = UIImpactFeedbackGenerator(style: .heavy)
+        gen.prepare()
+        return gen
+    }()
+
     private func startVoiceRecording() {
         guard speechRecognizer.isAuthorized else {
             speechRecognizer.requestPermissions()
             return
         }
+        // Fire haptic FIRST before any async work
+        startHaptic.impactOccurred()
+        startHaptic.prepare() // re-arm for next time
+
         isRecordingVoice = true
         speechRecognizer.startRecording()
-
-        // Haptic feedback on start
-        let generator = UIImpactFeedbackGenerator(style: .medium)
-        generator.impactOccurred()
     }
 
     private func stopVoiceRecordingAndRefine(cardId: UUID) {
