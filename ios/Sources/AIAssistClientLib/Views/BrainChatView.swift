@@ -10,10 +10,19 @@ private struct ScrollOffsetKey: PreferenceKey {
     }
 }
 
-/// PreferenceKey that reports whether the chat scroll content bottom is near the viewport bottom.
-private struct ChatScrollAtBottomKey: PreferenceKey {
-    static let defaultValue: Bool = true
-    static func reduce(value: inout Bool, nextValue: () -> Bool) {
+/// PreferenceKey that reports how far the user has overscrolled past the bottom in the chat.
+/// Positive = rubber-banding past the end of content. Zero = normal scrolling.
+private struct ChatOverscrollKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
+/// PreferenceKey to capture the chat scroll viewport height.
+private struct ChatViewportHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
         value = nextValue()
     }
 }
@@ -45,9 +54,10 @@ public struct BrainChatView: View {
     #endif
     @State private var isRecordingVoice = false
     @State private var isDraggingDown = false
-    /// Whether the scroll view is at the bottom (latest messages visible).
-    /// Defaults to `true` so short/empty chats still allow voice recording.
-    @State private var isAtBottom = true
+    /// How far (in points) the user has overscrolled past the bottom.
+    /// Positive = rubber-banding downward. Recording triggers when > recordThreshold.
+    @State private var chatOverscroll: CGFloat = 0
+    @State private var chatViewportHeight: CGFloat = 0
 
     /// Vertical drag distance to trigger voice recording.
     private let recordThreshold: CGFloat = 60
@@ -131,42 +141,48 @@ public struct BrainChatView: View {
                 .background(
                     GeometryReader { geo in
                         let minY = geo.frame(in: .named("chatScroll")).minY
-                        let maxY = geo.frame(in: .named("chatScroll")).maxY
-                        let viewportHeight = geo.frame(in: .global).height
+                        let contentBottom = geo.frame(in: .named("chatScroll")).maxY
+                        let overscroll = max(0, contentBottom - chatViewportHeight)
                         Color.clear
                             .preference(
                                 key: ScrollOffsetKey.self,
                                 value: minY
                             )
                             .preference(
-                                key: ChatScrollAtBottomKey.self,
-                                value: maxY <= viewportHeight + 30
+                                key: ChatOverscrollKey.self,
+                                value: overscroll
                             )
                     }
                 )
             }
             .coordinateSpace(name: "chatScroll")
+            .overlay(
+                GeometryReader { viewportGeo in
+                    Color.clear.preference(
+                        key: ChatViewportHeightKey.self,
+                        value: viewportGeo.size.height
+                    )
+                }
+            )
             .onPreferenceChange(ScrollOffsetKey.self) { offset in
                 handleScrollOffset(offset)
             }
-            .onPreferenceChange(ChatScrollAtBottomKey.self) { atBottom in
-                isAtBottom = atBottom
+            .onPreferenceChange(ChatViewportHeightKey.self) { height in
+                chatViewportHeight = height
+            }
+            .onPreferenceChange(ChatOverscrollKey.self) { distance in
+                chatOverscroll = distance
             }
             .simultaneousGesture(
                 DragGesture(minimumDistance: 20)
-                    .onChanged { value in
-                        let isDownward = value.translation.height > 0
-                        let vertical = abs(value.translation.height)
-
-                        // Only trigger when at bottom, dragging down, and voice not suppressed
-                        guard isDownward, isAtBottom, !shouldSuppressVoice else { return }
-
-                        if !isDraggingDown && vertical > 20 {
-                            isDraggingDown = true
-                        }
+                    .onChanged { _ in
+                        // Voice recording: triggered by ScrollView rubber-band overscroll,
+                        // NOT by the drag gesture's translation.
+                        guard !shouldSuppressVoice else { return }
 
                         #if os(iOS)
-                        if isDraggingDown && value.translation.height > recordThreshold && !isRecordingVoice {
+                        if chatOverscroll > recordThreshold && !isRecordingVoice {
+                            isDraggingDown = true
                             startVoiceRecording()
                         }
                         #endif

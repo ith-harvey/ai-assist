@@ -1,9 +1,19 @@
 import SwiftUI
 
-/// PreferenceKey that reports whether the scroll content bottom is near the viewport bottom.
-struct ScrollAtBottomKey: PreferenceKey {
-    static let defaultValue: Bool = true
-    static func reduce(value: inout Bool, nextValue: () -> Bool) {
+/// PreferenceKey that reports how far the user has overscrolled past the bottom.
+/// Positive values mean the user is pulling down past the end of content (rubber-band).
+/// Zero or negative means normal scrolling (not past bottom).
+struct OverscrollDistanceKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
+/// PreferenceKey to capture the scroll viewport height from an overlay on the ScrollView.
+struct ViewportHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
         value = nextValue()
     }
 }
@@ -14,11 +24,13 @@ struct ScrollAtBottomKey: PreferenceKey {
 /// Auto-scrolls to the bottom (newest messages). The AI suggested reply appears
 /// as a faded/dashed "Draft" bubble at the end.
 ///
-/// Reports scroll position via `isAtBottom` binding — `true` when the content
-/// bottom is within ~30pt of the viewport bottom (or content is shorter than viewport).
+/// Reports overscroll distance via `overscrollDistance` binding — positive values
+/// mean the user has scrolled past the bottom and is rubber-banding downward.
+/// Zero means normal scrolling (not past bottom).
 struct MessageThreadView: View {
     let card: ReplyCard?
-    @Binding var isAtBottom: Bool
+    @Binding var overscrollDistance: CGFloat
+    @State private var viewportHeight: CGFloat = 0
 
     var body: some View {
         if let card {
@@ -71,21 +83,34 @@ struct MessageThreadView: View {
                         GeometryReader { contentGeo in
                             Color.clear
                                 .preference(
-                                    key: ScrollAtBottomKey.self,
+                                    key: OverscrollDistanceKey.self,
                                     value: {
                                         let contentBottom = contentGeo.frame(in: .named("threadScroll")).maxY
-                                        let viewportHeight = contentGeo.frame(in: .global).height
-                                        // Content bottom within 30pt of viewport bottom,
-                                        // or content is shorter than viewport
-                                        return contentBottom <= viewportHeight + 30
+                                        // How far past the viewport bottom the content's bottom is
+                                        // When content is scrolled to the very end, contentBottom ≈ viewportHeight
+                                        // When user overscrolls (rubber-band), contentBottom > viewportHeight
+                                        // Positive = overscrolling past bottom
+                                        let overscroll = contentBottom - viewportHeight
+                                        return max(0, overscroll)
                                     }()
                                 )
                         }
                     )
                 }
                 .coordinateSpace(name: "threadScroll")
-                .onPreferenceChange(ScrollAtBottomKey.self) { atBottom in
-                    isAtBottom = atBottom
+                .overlay(
+                    GeometryReader { viewportGeo in
+                        Color.clear.preference(
+                            key: ViewportHeightKey.self,
+                            value: viewportGeo.size.height
+                        )
+                    }
+                )
+                .onPreferenceChange(ViewportHeightKey.self) { height in
+                    viewportHeight = height
+                }
+                .onPreferenceChange(OverscrollDistanceKey.self) { distance in
+                    overscrollDistance = distance
                 }
                 .onAppear {
                     if !card.emailThread.isEmpty || !card.thread.isEmpty {

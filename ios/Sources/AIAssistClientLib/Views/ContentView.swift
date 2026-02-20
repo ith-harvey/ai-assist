@@ -9,8 +9,9 @@ import SwiftUI
 /// past 60pt. Uses SwiftUI-native `DragGesture`.
 ///
 /// Direction lock: first 20pt of movement decides axis. Horizontal wins →
-/// swipe approve/reject. Vertical-down at bottom → hold-to-record for refine.
-/// Vertical-up or vertical-down mid-thread → ScrollView handles it normally.
+/// swipe approve/reject. Voice recording triggers ONLY when the ScrollView
+/// reports positive overscroll (user has scrolled to the very bottom and is
+/// rubber-banding further down). Mid-thread vertical drags are ignored.
 public struct ContentView: View {
     @State private var socket = CardWebSocket()
     @State private var showSettings = false
@@ -27,9 +28,10 @@ public struct ContentView: View {
     #endif
     @State private var isRecordingVoice = false
     @State private var isDraggingDown = false
-    /// Whether the scroll view is at the bottom (AI suggestion visible).
-    /// Defaults to `true` so short threads that don't scroll still allow voice recording.
-    @State private var isAtBottom = true
+    /// How far (in points) the user has overscrolled past the bottom of the
+    /// message thread.  Positive = rubber-banding downward past the last message.
+    /// Recording only starts when this exceeds `recordThreshold`.
+    @State private var overscrollDistance: CGFloat = 0
 
     private let swipeThreshold: CGFloat = 100
     /// Minimum movement before direction is locked. Gives ScrollView
@@ -93,7 +95,7 @@ public struct ContentView: View {
     private func cardContent(for card: ReplyCard) -> some View {
         VStack(spacing: 0) {
             connectionBanner
-            MessageThreadView(card: card, isAtBottom: $isAtBottom)
+            MessageThreadView(card: card, overscrollDistance: $overscrollDistance)
         }
         .offset(x: dragOffset)
         .rotationEffect(.degrees(isDraggingHorizontally ? Double(dragOffset) / 25 : 0))
@@ -104,31 +106,31 @@ public struct ContentView: View {
                 .onChanged { value in
                     let horizontal = abs(value.translation.width)
                     let vertical = abs(value.translation.height)
-                    let isDownward = value.translation.height > 0
 
                     // Direction lock: once locked, stay locked for this gesture
                     if !isDraggingHorizontally && !isDraggingDown {
                         if horizontal > vertical && horizontal > directionLockDistance {
                             isDraggingHorizontally = true
-                        } else if isDownward && vertical > directionLockDistance && isAtBottom {
-                            isDraggingDown = true
-                        } else {
-                            // Vertical-up or ambiguous — let ScrollView have it
-                            return
                         }
+                        // Vertical movement is always left to ScrollView here.
+                        // Voice recording is triggered separately by overscroll detection below.
                     }
 
                     if isDraggingHorizontally {
                         // Horizontal tracking: 1:1 finger movement
                         dragOffset = value.translation.width
-                    } else if isDraggingDown {
-                        // Vertical-down: start recording once past threshold
-                        #if os(iOS)
-                        if value.translation.height > recordThreshold && !isRecordingVoice {
-                            startVoiceRecording()
-                        }
-                        #endif
                     }
+
+                    // Voice recording: triggered by ScrollView rubber-band overscroll,
+                    // NOT by the drag gesture's translation. The ScrollView reports
+                    // overscrollDistance > 0 only when the user is already at the very
+                    // bottom and keeps pulling down.
+                    #if os(iOS)
+                    if !isDraggingHorizontally && overscrollDistance > recordThreshold && !isRecordingVoice {
+                        isDraggingDown = true
+                        startVoiceRecording()
+                    }
+                    #endif
                 }
                 .onEnded { value in
                     if isDraggingHorizontally {
