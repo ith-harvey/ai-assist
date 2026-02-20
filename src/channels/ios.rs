@@ -27,7 +27,10 @@ use crate::error::ChannelError;
 #[serde(tag = "type")]
 enum ClientMessage {
     #[serde(rename = "message")]
-    Message { content: String },
+    Message {
+        content: String,
+        thread_id: Option<String>,
+    },
 }
 
 /// Message from server → iOS client.
@@ -149,12 +152,12 @@ impl Channel for IosChannel {
 
     async fn respond(
         &self,
-        _msg: &IncomingMessage,
+        msg: &IncomingMessage,
         response: OutgoingResponse,
     ) -> Result<(), ChannelError> {
         let server_msg = ServerMessage::Response {
             content: response.content,
-            thread_id: None,
+            thread_id: msg.thread_id.clone(),
         };
         // Ignore send errors — no subscribers means no connected clients
         let _ = self.inner.outgoing_tx.send(server_msg);
@@ -263,12 +266,15 @@ async fn handle_chat_socket(mut socket: WebSocket, inner: Arc<IosChannelInner>) 
                 match result {
                     Some(Ok(Message::Text(text))) => {
                         match serde_json::from_str::<ClientMessage>(&text) {
-                            Ok(ClientMessage::Message { content }) => {
+                            Ok(ClientMessage::Message { content, thread_id }) => {
                                 let content = content.trim().to_string();
                                 if content.is_empty() {
                                     continue;
                                 }
-                                let msg = IncomingMessage::new("ios", "ios-user", &content);
+                                let mut msg = IncomingMessage::new("ios", "ios-user", &content);
+                                if let Some(ref tid) = thread_id {
+                                    msg = msg.with_thread(tid);
+                                }
                                 if inner.incoming_tx.send(msg).is_err() {
                                     warn!("iOS incoming channel closed");
                                     break;
