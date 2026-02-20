@@ -33,13 +33,30 @@ enum ClientMessage {
 /// Message from server → iOS client.
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type")]
+#[allow(dead_code)] // Error variant is part of the protocol, used by future error paths
 enum ServerMessage {
     #[serde(rename = "response")]
-    Response { content: String },
+    Response {
+        content: String,
+        thread_id: Option<String>,
+    },
+    #[serde(rename = "thinking")]
+    Thinking { message: String },
+    #[serde(rename = "tool_started")]
+    ToolStarted { name: String },
+    #[serde(rename = "tool_completed")]
+    ToolCompleted { name: String, success: bool },
+    #[serde(rename = "tool_result")]
+    ToolResult { name: String, preview: String },
     #[serde(rename = "status")]
-    Status { kind: String, detail: Option<String> },
+    Status { message: String },
+    #[serde(rename = "error")]
+    Error { message: String },
     #[serde(rename = "stream_chunk")]
-    StreamChunk { content: String },
+    StreamChunk {
+        content: String,
+        thread_id: Option<String>,
+    },
 }
 
 // ── Shared State ────────────────────────────────────────────────────────
@@ -137,6 +154,7 @@ impl Channel for IosChannel {
     ) -> Result<(), ChannelError> {
         let server_msg = ServerMessage::Response {
             content: response.content,
+            thread_id: None,
         };
         // Ignore send errors — no subscribers means no connected clients
         let _ = self.inner.outgoing_tx.send(server_msg);
@@ -149,57 +167,42 @@ impl Channel for IosChannel {
         _metadata: &serde_json::Value,
     ) -> Result<(), ChannelError> {
         let server_msg = match status {
-            StatusUpdate::Thinking(msg) => ServerMessage::Status {
-                kind: "thinking".to_string(),
-                detail: Some(msg),
+            StatusUpdate::Thinking(msg) => ServerMessage::Thinking { message: msg },
+            StatusUpdate::ToolStarted { name } => ServerMessage::ToolStarted { name },
+            StatusUpdate::ToolCompleted { name, success } => {
+                ServerMessage::ToolCompleted { name, success }
+            }
+            StatusUpdate::ToolResult { name, preview } => {
+                ServerMessage::ToolResult { name, preview }
+            }
+            StatusUpdate::StreamChunk(text) => ServerMessage::StreamChunk {
+                content: text,
+                thread_id: None,
             },
-            StatusUpdate::ToolStarted { name } => ServerMessage::Status {
-                kind: "tool_started".to_string(),
-                detail: Some(name),
-            },
-            StatusUpdate::ToolCompleted { name, success } => ServerMessage::Status {
-                kind: "tool_completed".to_string(),
-                detail: Some(format!("{}:{}", name, if success { "ok" } else { "fail" })),
-            },
-            StatusUpdate::ToolResult { name, preview } => ServerMessage::Status {
-                kind: "tool_result".to_string(),
-                detail: Some(format!("{}: {}", name, preview)),
-            },
-            StatusUpdate::StreamChunk(text) => ServerMessage::StreamChunk { content: text },
-            StatusUpdate::Status(msg) => ServerMessage::Status {
-                kind: "status".to_string(),
-                detail: Some(msg),
-            },
-            StatusUpdate::JobStarted { title, .. } => ServerMessage::Status {
-                kind: "job_started".to_string(),
-                detail: Some(title),
-            },
+            StatusUpdate::Status(msg) => ServerMessage::Status { message: msg },
+            StatusUpdate::JobStarted { title, .. } => ServerMessage::Status { message: title },
             StatusUpdate::ApprovalNeeded {
                 tool_name,
                 description,
                 ..
             } => ServerMessage::Status {
-                kind: "approval_needed".to_string(),
-                detail: Some(format!("{}: {}", tool_name, description)),
+                message: format!("{}: {}", tool_name, description),
             },
             StatusUpdate::AuthRequired {
                 extension_name, ..
             } => ServerMessage::Status {
-                kind: "auth_required".to_string(),
-                detail: Some(extension_name),
+                message: extension_name,
             },
             StatusUpdate::AuthCompleted {
                 extension_name,
                 success,
                 message,
             } => ServerMessage::Status {
-                kind: "auth_completed".to_string(),
-                detail: Some(format!(
-                    "{}:{}:{}",
+                message: format!(
+                    "{}: {}",
                     extension_name,
-                    if success { "ok" } else { "fail" },
-                    message
-                )),
+                    if success { &message } else { "auth failed" }
+                ),
             },
         };
 
