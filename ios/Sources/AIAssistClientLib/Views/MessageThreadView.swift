@@ -22,37 +22,35 @@ struct ViewportHeightKey: PreferenceKey {
     }
 }
 
-/// Equatable value type for onScrollGeometryChange tracking.
-private struct ScrollMetrics: Equatable {
-    let overscroll: CGFloat
-    let isAtBottom: Bool
-}
-
 /// ViewModifier that uses iOS 18+ `onScrollGeometryChange` and `onScrollPhaseChange`
-/// to report overscroll distance, at-bottom state, and user interaction state.
-/// Falls back to a no-op on iOS < 18 (where PreferenceKey-based reporting is used instead).
+/// to report overscroll distance and user interaction state. Falls back to a no-op
+/// on iOS < 18 (where PreferenceKey-based reporting is used instead).
 private struct ScrollOverscrollModifier: ViewModifier {
     @Binding var overscrollDistance: CGFloat
     @Binding var isUserInteracting: Bool
-    @Binding var isAtBottom: Bool
 
     func body(content: Content) -> some View {
         if #available(iOS 18.0, macOS 15.0, *) {
             content
-                .onScrollGeometryChange(for: ScrollMetrics.self) { geo in
+                .onScrollGeometryChange(for: CGFloat.self) { geo in
+                    // Overscroll past bottom:
+                    // contentOffset.y = how far we've scrolled down
+                    // containerSize.height = viewport height
+                    // contentSize.height = total content height
+                    // contentInsets.bottom = safe area / content inset at bottom
+                    //
+                    // At the very bottom (no overscroll):
+                    //   contentOffset.y + containerSize.height ≈ contentSize.height + contentInsets
+                    // During rubber-band past bottom:
+                    //   contentOffset.y + containerSize.height > contentSize.height + contentInsets
                     let scrolledTo = geo.contentOffset.y + geo.containerSize.height
                     let contentEnd = geo.contentSize.height + geo.contentInsets.bottom
-                    let overscroll = max(0, scrolledTo - contentEnd)
-                    // "At bottom" = within 10pt of the end of content
-                    let distanceFromBottom = contentEnd - scrolledTo
-                    let atBottom = distanceFromBottom < 10
-                    return ScrollMetrics(overscroll: overscroll, isAtBottom: atBottom)
-                } action: { old, new in
-                    if new.overscroll > 0 || old.overscroll > 0 || new.isAtBottom != old.isAtBottom {
-                        print("[SCROLL-DEBUG] overscroll: \(String(format: "%.1f", new.overscroll)) atBottom: \(new.isAtBottom)")
+                    return max(0, scrolledTo - contentEnd)
+                } action: { oldOverscroll, newOverscroll in
+                    if newOverscroll > 0 || oldOverscroll > 0 {
+                        print("[SCROLL-DEBUG] overscroll: \(String(format: "%.1f", oldOverscroll)) → \(String(format: "%.1f", newOverscroll))")
                     }
-                    overscrollDistance = new.overscroll
-                    isAtBottom = new.isAtBottom
+                    overscrollDistance = newOverscroll
                 }
                 .onScrollPhaseChange { oldPhase, newPhase in
                     print("[SCROLL-DEBUG] phase: \(oldPhase) → \(newPhase)")
@@ -83,8 +81,6 @@ struct MessageThreadView: View {
     /// True while the user's finger is on the scroll view (interacting phase).
     /// Falls to false on finger lift. Only updated on iOS 18+.
     @Binding var isUserInteracting: Bool
-    /// True when the scroll view is within 10pt of the bottom of content.
-    @Binding var isAtBottom: Bool
     @State private var viewportHeight: CGFloat = 0
 
     var body: some View {
@@ -173,8 +169,7 @@ struct MessageThreadView: View {
                 }
                 .modifier(ScrollOverscrollModifier(
                     overscrollDistance: $overscrollDistance,
-                    isUserInteracting: $isUserInteracting,
-                    isAtBottom: $isAtBottom
+                    isUserInteracting: $isUserInteracting
                 ))
                 .onAppear {
                     if !card.emailThread.isEmpty || !card.thread.isEmpty {

@@ -28,14 +28,10 @@ public struct ContentView: View {
     @State private var isRecordingVoice = false
     /// How far (in points) the user has overscrolled past the bottom of the
     /// message thread.  Positive = rubber-banding downward past the last message.
+    /// Recording only starts when this exceeds `recordThreshold`.
     @State private var overscrollDistance: CGFloat = 0
     /// Whether the user's finger is currently on the scroll view (iOS 18+).
     @State private var isUserInteracting = false
-    /// Whether the scroll view is at or near the bottom of content.
-    @State private var isAtBottom = true
-    /// Tracks whether we've been at the bottom long enough to arm recording.
-    /// Prevents triggering during the initial scroll-to-bottom.
-    @State private var recordingArmed = false
 
     private let swipeThreshold: CGFloat = 100
     /// Minimum movement before direction is locked. Gives ScrollView
@@ -102,8 +98,7 @@ public struct ContentView: View {
             MessageThreadView(
                 card: card,
                 overscrollDistance: $overscrollDistance,
-                isUserInteracting: $isUserInteracting,
-                isAtBottom: $isAtBottom
+                isUserInteracting: $isUserInteracting
             )
         }
         .offset(x: dragOffset)
@@ -173,35 +168,20 @@ public struct ContentView: View {
         .onAppear {
             speechRecognizer.requestPermissions()
         }
-        .onChange(of: isAtBottom) { _, atBottom in
-            if atBottom && isUserInteracting {
-                // User scrolled to bottom while touching — arm recording
-                recordingArmed = true
-                print("[VOICE-DEBUG] armed (scrolled to bottom while interacting)")
-            }
-        }
         .onChange(of: overscrollDistance) { _, newDistance in
             if newDistance > 0 {
-                print("[VOICE-DEBUG] overscroll=\(String(format: "%.1f", newDistance)) armed=\(recordingArmed) interacting=\(isUserInteracting) recording=\(isRecordingVoice)")
+                print("[VOICE-DEBUG] overscroll=\(String(format: "%.1f", newDistance)) interacting=\(isUserInteracting) recording=\(isRecordingVoice) threshold=\(recordThreshold)")
             }
-            // Any overscroll while armed = start recording immediately
-            if newDistance > 0 && recordingArmed && isUserInteracting && !isRecordingVoice {
-                print("[VOICE-DEBUG] ✅ STARTING RECORDING")
+            if newDistance > recordThreshold && isUserInteracting && !isRecordingVoice {
+                print("[VOICE-DEBUG] ✅ STARTING RECORDING (overscroll=\(String(format: "%.1f", newDistance)))")
                 startVoiceRecording()
             }
         }
         .onChange(of: isUserInteracting) { _, interacting in
-            print("[VOICE-DEBUG] phase interacting=\(interacting) recording=\(isRecordingVoice) atBottom=\(isAtBottom)")
-            if !interacting {
-                if isRecordingVoice {
-                    print("[VOICE-DEBUG] ✅ STOPPING RECORDING & SENDING")
-                    stopVoiceRecordingAndRefine(cardId: card.id)
-                }
-                recordingArmed = false
-            } else if isAtBottom {
-                // Finger down while already at bottom — arm immediately
-                recordingArmed = true
-                print("[VOICE-DEBUG] armed (finger down at bottom)")
+            print("[VOICE-DEBUG] phase interacting=\(interacting) recording=\(isRecordingVoice) overscroll=\(String(format: "%.1f", overscrollDistance))")
+            if !interacting && isRecordingVoice {
+                print("[VOICE-DEBUG] ✅ STOPPING RECORDING & SENDING")
+                stopVoiceRecordingAndRefine(cardId: card.id)
             }
         }
         #endif
