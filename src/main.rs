@@ -4,7 +4,7 @@ use ai_assist::agent::{Agent, AgentDeps};
 use ai_assist::cards::generator::{CardGenerator, GeneratorConfig};
 use ai_assist::cards::queue::{self, CardQueue};
 use ai_assist::cards::ws::card_routes;
-use ai_assist::channels::{ChannelManager, CliChannel, EmailChannel, TelegramChannel};
+use ai_assist::channels::{ChannelManager, CliChannel, EmailChannel, IosChannel, TelegramChannel};
 use ai_assist::channels::email::EmailConfig;
 use ai_assist::config::AgentConfig;
 use ai_assist::llm::{create_provider, LlmBackend, LlmConfig};
@@ -51,6 +51,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     eprintln!("🤖 AI Assist v{}", env!("CARGO_PKG_VERSION"));
     eprintln!("   Model: {}", model);
     eprintln!("   Card WS: ws://0.0.0.0:{}/ws", ws_port);
+    eprintln!("   Chat WS: ws://0.0.0.0:{}/ws/chat", ws_port);
     eprintln!("   Card API: http://0.0.0.0:{}/api/cards", ws_port);
     eprintln!("   Type a message and press Enter. /quit to exit.\n");
 
@@ -124,8 +125,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Build EmailConfig for the card server (so approve/edit can send replies)
     let email_config_for_cards = EmailConfig::from_env();
 
-    // Spawn Axum WS/REST server for cards
-    let app = card_routes(card_queue.clone(), email_config_for_cards);
+    // Create iOS channel (needs to exist before router build)
+    let ios_channel = IosChannel::new();
+    let ios_router = ios_channel.router();
+
+    // Spawn Axum WS/REST server for cards + iOS chat
+    let app = card_routes(card_queue.clone(), email_config_for_cards).merge(ios_router);
     tokio::spawn(async move {
         let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", ws_port))
             .await
@@ -147,10 +152,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Set up channels
     let mut channels = ChannelManager::new();
-    let mut active_channels = vec!["cli"];
+    let mut active_channels = vec!["cli", "ios"];
 
     // Always add CLI
     channels.add(Box::new(CliChannel::new()));
+
+    // Always add iOS (WebSocket chat at /ws/chat)
+    channels.add(Box::new(ios_channel));
 
     // Conditionally add Telegram if bot token is set
     if let Ok(telegram_token) = std::env::var("TELEGRAM_BOT_TOKEN") {
