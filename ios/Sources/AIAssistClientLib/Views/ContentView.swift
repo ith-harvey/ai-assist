@@ -236,18 +236,18 @@ public struct ContentView: View {
     }
 
     private var recordingBar: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "mic.fill")
-                .font(.system(size: 14, weight: .semibold))
-                .symbolEffect(.pulse)
-            Text("Recording...")
-                .font(.caption)
-                .fontWeight(.semibold)
+        HStack(spacing: 6) {
+            Circle()
+                .fill(Color.red)
+                .frame(width: 8, height: 8)
+            Text("recording... suggest changes")
+                .font(.caption2)
+                .fontWeight(.medium)
         }
-        .foregroundStyle(.white)
+        .foregroundStyle(.secondary)
         .frame(maxWidth: .infinity)
-        .padding(.vertical, 8)
-        .background(Color.orange)
+        .padding(.vertical, 6)
+        .background(.ultraThinMaterial)
         .transition(.move(edge: .bottom).combined(with: .opacity))
     }
 
