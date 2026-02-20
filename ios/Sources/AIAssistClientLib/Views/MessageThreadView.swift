@@ -1,12 +1,24 @@
 import SwiftUI
 
+/// PreferenceKey that reports whether the scroll content bottom is near the viewport bottom.
+struct ScrollAtBottomKey: PreferenceKey {
+    static let defaultValue: Bool = true
+    static func reduce(value: inout Bool, nextValue: () -> Bool) {
+        value = nextValue()
+    }
+}
+
 /// Shows the email conversation thread as iMessage-style chat bubbles.
 ///
 /// Priority: emailThread (rich headers) > thread (generic) > single message fallback.
 /// Auto-scrolls to the bottom (newest messages). The AI suggested reply appears
 /// as a faded/dashed "Draft" bubble at the end.
+///
+/// Reports scroll position via `isAtBottom` binding — `true` when the content
+/// bottom is within ~30pt of the viewport bottom (or content is shorter than viewport).
 struct MessageThreadView: View {
     let card: ReplyCard?
+    @Binding var isAtBottom: Bool
 
     var body: some View {
         if let card {
@@ -55,6 +67,25 @@ struct MessageThreadView: View {
                     .padding(.horizontal, 16)
                     .padding(.top, 8)
                     .padding(.bottom, 16)
+                    .background(
+                        GeometryReader { contentGeo in
+                            Color.clear
+                                .preference(
+                                    key: ScrollAtBottomKey.self,
+                                    value: {
+                                        let contentBottom = contentGeo.frame(in: .named("threadScroll")).maxY
+                                        let viewportHeight = contentGeo.frame(in: .global).height
+                                        // Content bottom within 30pt of viewport bottom,
+                                        // or content is shorter than viewport
+                                        return contentBottom <= viewportHeight + 30
+                                    }()
+                                )
+                        }
+                    )
+                }
+                .coordinateSpace(name: "threadScroll")
+                .onPreferenceChange(ScrollAtBottomKey.self) { atBottom in
+                    isAtBottom = atBottom
                 }
                 .onAppear {
                     if !card.emailThread.isEmpty || !card.thread.isEmpty {
