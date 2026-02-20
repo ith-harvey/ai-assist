@@ -103,7 +103,7 @@ struct HorizontalSwipeGesture: UIViewRepresentable {
         var onEnded: (CGFloat, CGFloat) -> Void
         private var tracking = false
 
-        init(onChanged: @escaping (CGFloat) -> Void, onEnded: @escaping (CGFloat) -> Void) {
+        init(onChanged: @escaping (CGFloat) -> Void, onEnded: @escaping (CGFloat, CGFloat) -> Void) {
             self.onChanged = onChanged
             self.onEnded = onEnded
         }
