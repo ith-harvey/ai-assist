@@ -217,9 +217,11 @@ impl CardGenerator {
             "Refining card draft via LLM"
         );
 
-        let system_prompt = "You are a reply refinement engine. The user has reviewed an \
-             AI-drafted reply and wants changes. Apply their instruction to improve the draft. \
-             Output ONLY the refined reply text — no explanation, no JSON, no quotes.";
+        let system_prompt = "You are a reply rewrite engine. The user has reviewed an \
+             AI-drafted reply and wants it rewritten according to their instruction. \
+             Completely rewrite the draft from scratch based on the instruction — do not \
+             append to or minimally edit the existing draft. \
+             Output ONLY the new reply text — no explanation, no JSON, no quotes.";
 
         // Build context including thread if available
         let mut context = format!(
