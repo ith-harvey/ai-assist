@@ -4,12 +4,13 @@ import SwiftUI
 ///
 /// `MessageThreadView` fills 100% of vertical space and scrolls vertically.
 /// Horizontal drag (after 20pt direction lock) moves the whole card for
-/// approve/reject. Vertical drag down past 60pt threshold starts voice
-/// recording for card refinement. Uses SwiftUI-native `DragGesture`.
+/// approve/reject. Voice-to-refine only triggers when the user is scrolled
+/// to the bottom (AI suggestion draft visible) and overscrolls downward
+/// past 60pt. Uses SwiftUI-native `DragGesture`.
 ///
 /// Direction lock: first 20pt of movement decides axis. Horizontal wins →
-/// swipe approve/reject. Vertical-down wins → hold-to-record for refine.
-/// Vertical-up → ScrollView handles it normally.
+/// swipe approve/reject. Vertical-down at bottom → hold-to-record for refine.
+/// Vertical-up or vertical-down mid-thread → ScrollView handles it normally.
 public struct ContentView: View {
     @State private var socket = CardWebSocket()
     @State private var showSettings = false
@@ -26,6 +27,9 @@ public struct ContentView: View {
     #endif
     @State private var isRecordingVoice = false
     @State private var isDraggingDown = false
+    /// Whether the scroll view is at the bottom (AI suggestion visible).
+    /// Defaults to `true` so short threads that don't scroll still allow voice recording.
+    @State private var isAtBottom = true
 
     private let swipeThreshold: CGFloat = 100
     /// Minimum movement before direction is locked. Gives ScrollView
@@ -89,7 +93,7 @@ public struct ContentView: View {
     private func cardContent(for card: ReplyCard) -> some View {
         VStack(spacing: 0) {
             connectionBanner
-            MessageThreadView(card: card)
+            MessageThreadView(card: card, isAtBottom: $isAtBottom)
         }
         .offset(x: dragOffset)
         .rotationEffect(.degrees(isDraggingHorizontally ? Double(dragOffset) / 25 : 0))
@@ -106,7 +110,7 @@ public struct ContentView: View {
                     if !isDraggingHorizontally && !isDraggingDown {
                         if horizontal > vertical && horizontal > directionLockDistance {
                             isDraggingHorizontally = true
-                        } else if isDownward && vertical > directionLockDistance {
+                        } else if isDownward && vertical > directionLockDistance && isAtBottom {
                             isDraggingDown = true
                         } else {
                             // Vertical-up or ambiguous — let ScrollView have it
@@ -198,6 +202,10 @@ public struct ContentView: View {
 
         speechRecognizer.stopRecording()
         isRecordingVoice = false
+
+        // Haptic feedback on stop/submit
+        let notification = UINotificationFeedbackGenerator()
+        notification.notificationOccurred(.success)
 
         let transcript = speechRecognizer.transcript.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !transcript.isEmpty else { return }
