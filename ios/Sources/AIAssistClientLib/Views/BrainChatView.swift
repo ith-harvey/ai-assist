@@ -1,11 +1,31 @@
 import SwiftUI
 
+// MARK: - Scroll Offset Tracking
+
+/// PreferenceKey to report scroll offset from inside the ScrollView.
+private struct ScrollOffsetKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
 /// Terminal-style full-screen chat view for the Brain tab.
 /// Full-width messages (not chat bubbles), text input bar at bottom,
 /// thinking indicator, and streaming support with auto-scroll.
+///
+/// The input bar and status indicator slide off-screen when scrolling up
+/// (iMessage-style) and reappear when scrolling back to the bottom.
 public struct BrainChatView: View {
     @State private var chatSocket = ChatWebSocket()
     @State private var inputText = ""
+
+    // Input bar visibility — driven by scroll direction
+    @State private var isInputBarVisible = true
+    @State private var lastScrollOffset: CGFloat = 0
+
+    /// Whether the keyboard is currently shown.
+    @State private var isKeyboardVisible = false
 
     public init() {}
 
@@ -18,8 +38,8 @@ public struct BrainChatView: View {
                 emptyState
             }
 
-            statusIndicator
-            inputBar
+            // Status indicator + input bar slide together
+            bottomBar
         }
         .onAppear {
             chatSocket.connect()
@@ -27,6 +47,35 @@ public struct BrainChatView: View {
         .onDisappear {
             chatSocket.disconnect()
         }
+        #if os(iOS)
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
+            isKeyboardVisible = true
+            isInputBarVisible = true
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
+            isKeyboardVisible = false
+        }
+        #endif
+    }
+
+    // MARK: - Bottom Bar (status + input, slides together)
+
+    /// Whether the bottom bar should stay pinned visible regardless of scroll.
+    private var shouldForceShowBar: Bool {
+        !inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || isKeyboardVisible
+    }
+
+    @ViewBuilder
+    private var bottomBar: some View {
+        let visible = isInputBarVisible || shouldForceShowBar
+
+        VStack(spacing: 0) {
+            statusIndicator
+            inputBar
+        }
+        .offset(y: visible ? 0 : 120)
+        .animation(.spring(response: 0.35, dampingFraction: 0.8), value: visible)
     }
 
     // MARK: - Message List
@@ -41,14 +90,48 @@ public struct BrainChatView: View {
                     }
                 }
                 .padding(.vertical, 8)
+                .background(
+                    GeometryReader { geo in
+                        Color.clear.preference(
+                            key: ScrollOffsetKey.self,
+                            value: geo.frame(in: .named("chatScroll")).minY
+                        )
+                    }
+                )
+            }
+            .coordinateSpace(name: "chatScroll")
+            .onPreferenceChange(ScrollOffsetKey.self) { offset in
+                handleScrollOffset(offset)
             }
             .onChange(of: chatSocket.messages.count) { _, _ in
                 scrollToBottom(proxy: proxy)
+                // Reveal bar when new messages arrive
+                isInputBarVisible = true
             }
             .onChange(of: chatSocket.messages.last?.content) { _, _ in
                 scrollToBottom(proxy: proxy)
             }
         }
+    }
+
+    /// Detect scroll direction from offset changes.
+    private func handleScrollOffset(_ offset: CGFloat) {
+        let delta = offset - lastScrollOffset
+
+        // Only react to meaningful movement (debounce jitter)
+        guard abs(delta) > 2 else { return }
+
+        if delta > 0 {
+            // Scrolling down (toward bottom) → show bar
+            isInputBarVisible = true
+        } else {
+            // Scrolling up (toward top) → hide bar (unless forced visible)
+            if !shouldForceShowBar {
+                isInputBarVisible = false
+            }
+        }
+
+        lastScrollOffset = offset
     }
 
     private func scrollToBottom(proxy: ScrollViewProxy) {
