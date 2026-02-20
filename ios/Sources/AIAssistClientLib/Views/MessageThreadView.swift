@@ -247,17 +247,18 @@ struct MessageThreadView: View {
             VStack(alignment: .trailing, spacing: 4) {
                 Text("AI Suggestion")
                     .font(.caption)
-                    .foregroundStyle(.blue.opacity(0.7))
+                    .fontWeight(.semibold)
+                    .foregroundStyle(.blue)
                 Text(reply)
                     .font(.body)
-                    .foregroundStyle(.primary.opacity(0.7))
+                    .foregroundStyle(.primary.opacity(0.85))
             }
             .padding(12)
-            .background(Color.blue.opacity(0.08))
+            .background(Color.blue.opacity(0.18))
             .overlay(
                 RoundedRectangle(cornerRadius: 16)
-                    .stroke(style: StrokeStyle(lineWidth: 1, dash: [6, 3]))
-                    .foregroundStyle(.blue.opacity(0.4))
+                    .stroke(style: StrokeStyle(lineWidth: 1.5, dash: [6, 3]))
+                    .foregroundStyle(.blue.opacity(0.6))
             )
             .clipShape(RoundedRectangle(cornerRadius: 16))
             .frame(maxWidth: 280, alignment: .trailing)

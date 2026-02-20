@@ -16,6 +16,7 @@ public struct ContentView: View {
     @State private var isDraggingHorizontally: Bool? = nil
 
     private let swipeThreshold: CGFloat = 100
+    private let directionLockThreshold: CGFloat = 8
 
     public init() {}
 
@@ -31,7 +32,6 @@ public struct ContentView: View {
                     .rotationEffect(.degrees(Double(dragOffset.width) / 25))
                     .overlay(swipeOverlay)
                     .gesture(swipeGesture(for: card))
-                    .animation(.spring(response: 0.3, dampingFraction: 0.7), value: dragOffset)
                 } else {
                     VStack(spacing: 0) {
                         connectionBanner
@@ -81,16 +81,19 @@ public struct ContentView: View {
     /// On the first 10pt of movement, we lock to horizontal or vertical.
     /// If the initial movement is more vertical, we bail and let ScrollView handle it.
     private func swipeGesture(for card: ReplyCard) -> some Gesture {
-        DragGesture(minimumDistance: 15)
+        DragGesture(minimumDistance: 0)
             .onChanged { value in
-                // Lock direction on first significant movement
+                // Lock direction once movement exceeds a small threshold
                 if isDraggingHorizontally == nil {
                     let horizontal = abs(value.translation.width)
                     let vertical = abs(value.translation.height)
+                    guard horizontal > directionLockThreshold || vertical > directionLockThreshold else {
+                        return
+                    }
                     isDraggingHorizontally = horizontal > vertical
                 }
 
-                // Only apply offset for horizontal drags
+                // Track finger position immediately — no animation on drag
                 if isDraggingHorizontally == true {
                     dragOffset = CGSize(width: value.translation.width, height: 0)
                 }
@@ -108,28 +111,24 @@ public struct ContentView: View {
                 let width = value.translation.width
                 if width > swipeThreshold {
                     // Fly off right — approve
-                    withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+                    withAnimation(.easeOut(duration: 0.2)) {
                         dragOffset = CGSize(width: 500, height: 0)
                     }
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-                        withAnimation(.spring(response: 0.45, dampingFraction: 0.8)) {
-                            socket.approve(cardId: card.id)
-                            dragOffset = .zero
-                        }
+                        socket.approve(cardId: card.id)
+                        dragOffset = .zero
                     }
                 } else if width < -swipeThreshold {
                     // Fly off left — reject
-                    withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+                    withAnimation(.easeOut(duration: 0.2)) {
                         dragOffset = CGSize(width: -500, height: 0)
                     }
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-                        withAnimation(.spring(response: 0.45, dampingFraction: 0.8)) {
-                            socket.dismiss(cardId: card.id)
-                            dragOffset = .zero
-                        }
+                        socket.dismiss(cardId: card.id)
+                        dragOffset = .zero
                     }
                 } else {
-                    // Snap back
+                    // Snap back with spring
                     withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
                         dragOffset = .zero
                     }
