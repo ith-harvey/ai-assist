@@ -4,10 +4,12 @@ import SwiftUI
 ///
 /// `MessageThreadView` fills 100% of vertical space and scrolls vertically.
 /// Horizontal drag (after 20pt direction lock) moves the whole card for
-/// approve/reject. Uses SwiftUI-native `DragGesture` — no UIKit overlay.
+/// approve/reject. Vertical drag down past 60pt threshold starts voice
+/// recording for card refinement. Uses SwiftUI-native `DragGesture`.
 ///
-/// Direction lock: first 20pt of movement decides axis. If horizontal wins,
-/// we track the swipe. If vertical wins, the ScrollView handles it normally.
+/// Direction lock: first 20pt of movement decides axis. Horizontal wins →
+/// swipe approve/reject. Vertical-down wins → hold-to-record for refine.
+/// Vertical-up → ScrollView handles it normally.
 public struct ContentView: View {
     @State private var socket = CardWebSocket()
     @State private var showSettings = false
@@ -18,10 +20,19 @@ public struct ContentView: View {
     @State private var dragOffset: CGFloat = 0
     @State private var isDraggingHorizontally = false
 
+    // Voice-to-refine state
+    #if os(iOS)
+    @State private var speechRecognizer = SpeechRecognizer()
+    #endif
+    @State private var isRecordingVoice = false
+    @State private var isDraggingDown = false
+
     private let swipeThreshold: CGFloat = 100
     /// Minimum movement before direction is locked. Gives ScrollView
     /// first crack at vertical gestures.
     private let directionLockDistance: CGFloat = 20
+    /// Vertical drag distance to trigger voice recording.
+    private let recordThreshold: CGFloat = 60
 
     public init() {}
 
@@ -83,65 +94,161 @@ public struct ContentView: View {
         .offset(x: dragOffset)
         .rotationEffect(.degrees(isDraggingHorizontally ? Double(dragOffset) / 25 : 0))
         .overlay(swipeOverlay)
+        .overlay(alignment: .bottom) { voiceOverlay }
         .simultaneousGesture(
             DragGesture(minimumDistance: directionLockDistance)
                 .onChanged { value in
                     let horizontal = abs(value.translation.width)
                     let vertical = abs(value.translation.height)
+                    let isDownward = value.translation.height > 0
 
                     // Direction lock: once locked, stay locked for this gesture
-                    if !isDraggingHorizontally {
-                        // Only claim horizontal if it clearly dominates
+                    if !isDraggingHorizontally && !isDraggingDown {
                         if horizontal > vertical && horizontal > directionLockDistance {
                             isDraggingHorizontally = true
+                        } else if isDownward && vertical > directionLockDistance {
+                            isDraggingDown = true
                         } else {
-                            // Vertical or ambiguous — let ScrollView have it
+                            // Vertical-up or ambiguous — let ScrollView have it
                             return
                         }
                     }
 
-                    // Horizontal tracking: 1:1 finger movement
-                    dragOffset = value.translation.width
+                    if isDraggingHorizontally {
+                        // Horizontal tracking: 1:1 finger movement
+                        dragOffset = value.translation.width
+                    } else if isDraggingDown {
+                        // Vertical-down: start recording once past threshold
+                        #if os(iOS)
+                        if value.translation.height > recordThreshold && !isRecordingVoice {
+                            startVoiceRecording()
+                        }
+                        #endif
+                    }
                 }
                 .onEnded { value in
-                    guard isDraggingHorizontally else {
-                        isDraggingHorizontally = false
-                        return
-                    }
+                    if isDraggingHorizontally {
+                        let width = value.translation.width
+                        let velocityX = value.predictedEndTranslation.width - width
+                        let effectiveWidth = width + velocityX * 0.15
 
-                    let width = value.translation.width
-                    let velocityX = value.predictedEndTranslation.width - width
-                    let effectiveWidth = width + velocityX * 0.15
-
-                    if effectiveWidth > swipeThreshold {
-                        // Fly off right — approve
-                        withAnimation(.easeOut(duration: 0.18)) {
-                            dragOffset = 500
-                        }
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) {
-                            socket.approve(cardId: card.id)
-                            dragOffset = 0
+                        if effectiveWidth > swipeThreshold {
+                            // Fly off right — approve
+                            withAnimation(.easeOut(duration: 0.18)) {
+                                dragOffset = 500
+                            }
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) {
+                                socket.approve(cardId: card.id)
+                                dragOffset = 0
+                                isDraggingHorizontally = false
+                            }
+                        } else if effectiveWidth < -swipeThreshold {
+                            // Fly off left — reject
+                            withAnimation(.easeOut(duration: 0.18)) {
+                                dragOffset = -500
+                            }
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) {
+                                socket.dismiss(cardId: card.id)
+                                dragOffset = 0
+                                isDraggingHorizontally = false
+                            }
+                        } else {
+                            // Snap back
+                            withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+                                dragOffset = 0
+                            }
                             isDraggingHorizontally = false
                         }
-                    } else if effectiveWidth < -swipeThreshold {
-                        // Fly off left — reject
-                        withAnimation(.easeOut(duration: 0.18)) {
-                            dragOffset = -500
-                        }
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) {
-                            socket.dismiss(cardId: card.id)
-                            dragOffset = 0
-                            isDraggingHorizontally = false
-                        }
+                    } else if isDraggingDown {
+                        #if os(iOS)
+                        stopVoiceRecordingAndRefine(cardId: card.id)
+                        #endif
+                        isDraggingDown = false
                     } else {
-                        // Snap back
-                        withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
-                            dragOffset = 0
-                        }
                         isDraggingHorizontally = false
+                        isDraggingDown = false
                     }
                 }
         )
+        #if os(iOS)
+        .onAppear {
+            speechRecognizer.requestPermissions()
+        }
+        #endif
+    }
+
+    // MARK: - Voice Recording
+
+    #if os(iOS)
+    private func startVoiceRecording() {
+        guard speechRecognizer.isAuthorized else {
+            speechRecognizer.requestPermissions()
+            return
+        }
+        isRecordingVoice = true
+        speechRecognizer.startRecording()
+
+        // Haptic feedback on start
+        let generator = UIImpactFeedbackGenerator(style: .medium)
+        generator.impactOccurred()
+    }
+
+    private func stopVoiceRecordingAndRefine(cardId: UUID) {
+        guard isRecordingVoice else { return }
+
+        speechRecognizer.stopRecording()
+        isRecordingVoice = false
+
+        let transcript = speechRecognizer.transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !transcript.isEmpty else { return }
+
+        socket.refine(cardId: cardId, instruction: transcript)
+    }
+    #endif
+
+    // MARK: - Voice Overlay
+
+    @ViewBuilder
+    private var voiceOverlay: some View {
+        if isRecordingVoice {
+            // Pulsing amber bar while recording
+            recordingBar
+        } else if socket.isRefining {
+            // "Refining..." bar while waiting for server
+            refiningBar
+        }
+    }
+
+    private var recordingBar: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "mic.fill")
+                .font(.system(size: 14, weight: .semibold))
+                .symbolEffect(.pulse)
+            Text("Recording...")
+                .font(.caption)
+                .fontWeight(.semibold)
+        }
+        .foregroundStyle(.white)
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 8)
+        .background(Color.orange)
+        .transition(.move(edge: .bottom).combined(with: .opacity))
+    }
+
+    private var refiningBar: some View {
+        HStack(spacing: 8) {
+            ProgressView()
+                .controlSize(.small)
+                .tint(.white)
+            Text("Refining...")
+                .font(.caption)
+                .fontWeight(.semibold)
+        }
+        .foregroundStyle(.white)
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 8)
+        .background(Color.orange.opacity(0.8))
+        .transition(.move(edge: .bottom).combined(with: .opacity))
     }
 
     // MARK: - Swipe Overlay

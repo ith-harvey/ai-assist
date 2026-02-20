@@ -9,6 +9,8 @@ public final class CardWebSocket: @unchecked Sendable {
 
     public var cards: [ReplyCard] = []
     public var isConnected: Bool = false
+    /// True while waiting for a `card_refreshed` response after a refine action.
+    public var isRefining: Bool = false
 
     // MARK: - Configuration
 
@@ -113,6 +115,16 @@ public final class CardWebSocket: @unchecked Sendable {
             cards.removeAll { $0.id == id }
         case .cardsSync(let syncedCards):
             cards = syncedCards.filter { $0.status == .pending }
+        case .cardRefreshed(let card):
+            isRefining = false
+            if let index = cards.firstIndex(where: { $0.id == card.id }) {
+                cards[index] = card
+            } else {
+                // Card was removed in the interim — re-add if still pending
+                if card.status == .pending {
+                    cards.insert(card, at: 0)
+                }
+            }
         case .ping:
             break
         }
@@ -139,6 +151,11 @@ public final class CardWebSocket: @unchecked Sendable {
     public func edit(cardId: UUID, newText: String) {
         send(action: .edit(cardId: cardId, newText: newText))
         cards.removeAll { $0.id == cardId }
+    }
+
+    public func refine(cardId: UUID, instruction: String) {
+        isRefining = true
+        send(action: .refine(cardId: cardId, instruction: instruction))
     }
 
     // MARK: - Reconnection

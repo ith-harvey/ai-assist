@@ -11,11 +11,13 @@ public enum CardAction: Encodable, Sendable {
     case approve(cardId: UUID)
     case dismiss(cardId: UUID)
     case edit(cardId: UUID, newText: String)
+    case refine(cardId: UUID, instruction: String)
 
     private enum CodingKeys: String, CodingKey {
         case action
         case cardId = "card_id"
         case newText = "new_text"
+        case instruction
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -31,6 +33,10 @@ public enum CardAction: Encodable, Sendable {
             try container.encode("edit", forKey: .action)
             try container.encode(cardId, forKey: .cardId)
             try container.encode(newText, forKey: .newText)
+        case .refine(let cardId, let instruction):
+            try container.encode("refine", forKey: .action)
+            try container.encode(cardId, forKey: .cardId)
+            try container.encode(instruction, forKey: .instruction)
         }
     }
 
