@@ -37,8 +37,22 @@ public final class ChatWebSocket: @unchecked Sendable {
     /// Convenience — true when the agent is actively working.
     public var isThinking: Bool { currentStatus != nil }
 
-    /// Thread ID parsed from the most recent response/stream_chunk.
+    /// Thread ID for conversation continuity. Persisted in UserDefaults.
     public var currentThreadId: String?
+
+    // MARK: - Thread Persistence
+
+    private static let threadIdKey = "ai_assist_chat_thread_id"
+
+    /// Persistent thread ID — reused across app launches.
+    public var threadId: String {
+        if let stored = UserDefaults.standard.string(forKey: Self.threadIdKey) {
+            return stored
+        }
+        let newId = UUID().uuidString
+        UserDefaults.standard.set(newId, forKey: Self.threadIdKey)
+        return newId
+    }
 
     // MARK: - Configuration
 
@@ -55,6 +69,9 @@ public final class ChatWebSocket: @unchecked Sendable {
 
     /// Tracks the in-progress streaming message so chunks append to it.
     private var streamingMessageId: UUID?
+
+    /// IDs of messages loaded from history, used to dedup live WS messages.
+    private var knownMessageIds: Set<UUID> = []
 
     public init(host: String = "192.168.0.5", port: Int = 8080) {
         self.host = host
@@ -95,6 +112,7 @@ public final class ChatWebSocket: @unchecked Sendable {
         isConnected = true
         reconnectAttempt = 0
         receiveMessage()
+        loadHistory()
     }
 
     // MARK: - Sending
@@ -110,8 +128,12 @@ public final class ChatWebSocket: @unchecked Sendable {
             self?.messages.append(userMessage)
         }
 
-        // Send over WebSocket
-        let payload: [String: String] = ["type": "message", "content": trimmed]
+        // Send over WebSocket (include thread_id for conversation continuity)
+        let payload: [String: String] = [
+            "type": "message",
+            "content": trimmed,
+            "thread_id": threadId,
+        ]
         guard let data = try? JSONSerialization.data(withJSONObject: payload),
               let jsonString = String(data: data, encoding: .utf8) else { return }
         webSocketTask?.send(.string(jsonString)) { _ in }
@@ -220,6 +242,12 @@ public final class ChatWebSocket: @unchecked Sendable {
             currentStatus = nil
             finalizeStream()
             if let content = json["content"] as? String {
+                // Dedup: skip if this message was already loaded from history
+                if let idStr = json["id"] as? String,
+                   let serverId = UUID(uuidString: idStr),
+                   knownMessageIds.contains(serverId) {
+                    break
+                }
                 let aiMessage = ChatMessage(content: content, isFromUser: false)
                 messages.append(aiMessage)
             }
@@ -246,6 +274,57 @@ public final class ChatWebSocket: @unchecked Sendable {
     /// End the current streaming message (if any).
     private func finalizeStream() {
         streamingMessageId = nil
+    }
+
+    // MARK: - History
+
+    /// Load previous messages from the REST API so conversations survive app restarts.
+    private func loadHistory() {
+        let tid = threadId
+        guard let url = URL(string: "http://\(host):\(port)/api/chat/history?thread_id=\(tid)&limit=50") else { return }
+
+        URLSession.shared.dataTask(with: url) { [weak self] data, _, _ in
+            guard let self, let data,
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let messagesJson = json["messages"] as? [[String: Any]] else { return }
+
+            let isoFormatter = ISO8601DateFormatter()
+            isoFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+
+            let historyMessages: [ChatMessage] = messagesJson.compactMap { msg in
+                guard let role = msg["role"] as? String,
+                      let content = msg["content"] as? String else { return nil }
+
+                let id = UUID(uuidString: msg["id"] as? String ?? "") ?? UUID()
+                let timestamp: Date
+                if let ts = msg["timestamp"] as? String {
+                    timestamp = isoFormatter.date(from: ts) ?? Date()
+                } else {
+                    timestamp = Date()
+                }
+
+                return ChatMessage(
+                    id: id,
+                    content: content,
+                    isFromUser: role == "user",
+                    timestamp: timestamp
+                )
+            }
+
+            DispatchQueue.main.async {
+                // Track known IDs for dedup against live WS messages
+                self.knownMessageIds = Set(historyMessages.map(\.id))
+                // Only replace if we haven't received live messages yet
+                if self.messages.isEmpty {
+                    self.messages = historyMessages
+                } else {
+                    // Prepend history before any live messages, skipping dupes
+                    let liveIds = Set(self.messages.map(\.id))
+                    let newHistory = historyMessages.filter { !liveIds.contains($0.id) }
+                    self.messages = newHistory + self.messages
+                }
+            }
+        }.resume()
     }
 
     // MARK: - Reconnection
