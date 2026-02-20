@@ -40,8 +40,8 @@ private struct ScrollOverscrollModifier: ViewModifier {
                     // Amplify so the reported value approximates actual finger distance.
                     return rawOverscroll * 3.0
                 } action: { oldOverscroll, newOverscroll in
-                    if newOverscroll > 0 || oldOverscroll > 0 {
-                        print("[SCROLL-DEBUG] overscroll(amplified): \(String(format: "%.1f", oldOverscroll)) → \(String(format: "%.1f", newOverscroll))")
+                    if newOverscroll != oldOverscroll {
+                        print("[SCROLL-DEBUG] overscroll(amp): \(String(format: "%.1f", oldOverscroll))→\(String(format: "%.1f", newOverscroll))")
                     }
                     overscrollDistance = newOverscroll
                 }
