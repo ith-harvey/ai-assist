@@ -33,22 +33,15 @@ private struct ScrollOverscrollModifier: ViewModifier {
         if #available(iOS 18.0, macOS 15.0, *) {
             content
                 .onScrollGeometryChange(for: CGFloat.self) { geo in
-                    // Overscroll past bottom:
-                    // contentOffset.y = how far we've scrolled down
-                    // containerSize.height = viewport height
-                    // contentSize.height = total content height
-                    // contentInsets.bottom = safe area / content inset at bottom
-                    //
-                    // At the very bottom (no overscroll):
-                    //   contentOffset.y + containerSize.height ≈ contentSize.height + contentInsets
-                    // During rubber-band past bottom:
-                    //   contentOffset.y + containerSize.height > contentSize.height + contentInsets
                     let scrolledTo = geo.contentOffset.y + geo.containerSize.height
                     let contentEnd = geo.contentSize.height + geo.contentInsets.bottom
-                    return max(0, scrolledTo - contentEnd)
+                    let rawOverscroll = max(0, scrolledTo - contentEnd)
+                    // iOS rubber-band dampens finger movement ~3-4x.
+                    // Amplify so the reported value approximates actual finger distance.
+                    return rawOverscroll * 3.0
                 } action: { oldOverscroll, newOverscroll in
                     if newOverscroll > 0 || oldOverscroll > 0 {
-                        print("[SCROLL-DEBUG] overscroll: \(String(format: "%.1f", oldOverscroll)) → \(String(format: "%.1f", newOverscroll))")
+                        print("[SCROLL-DEBUG] overscroll(amplified): \(String(format: "%.1f", oldOverscroll)) → \(String(format: "%.1f", newOverscroll))")
                     }
                     overscrollDistance = newOverscroll
                 }
