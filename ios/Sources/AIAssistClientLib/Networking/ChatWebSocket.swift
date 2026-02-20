@@ -1,6 +1,26 @@
 import Foundation
 import Observation
 
+// MARK: - StatusEvent Model
+
+/// Represents a typed agent activity event from the server.
+public struct StatusEvent: Identifiable, Sendable {
+    public let id = UUID()
+    public let kind: StatusKind
+    public let timestamp = Date()
+
+    public enum StatusKind: Sendable {
+        case thinking(String)
+        case toolStarted(name: String)
+        case toolCompleted(name: String, success: Bool)
+        case toolResult(name: String, preview: String)
+        case error(String)
+        case status(String)
+    }
+}
+
+// MARK: - ChatWebSocket
+
 /// WebSocket client for the Brain chat system.
 /// Connects to the Rust server at `/ws/chat`, sends user messages,
 /// and receives responses, status updates, and streaming chunks.
@@ -10,7 +30,15 @@ public final class ChatWebSocket: @unchecked Sendable {
 
     public var messages: [ChatMessage] = []
     public var isConnected: Bool = false
-    public var isThinking: Bool = false
+
+    /// Current agent activity. Set during processing, cleared on response.
+    public var currentStatus: StatusEvent?
+
+    /// Convenience — true when the agent is actively working.
+    public var isThinking: Bool { currentStatus != nil }
+
+    /// Thread ID parsed from the most recent response/stream_chunk.
+    public var currentThreadId: String?
 
     // MARK: - Configuration
 
@@ -126,22 +154,70 @@ public final class ChatWebSocket: @unchecked Sendable {
 
     private func applyMessage(type: String, json: [String: Any]) {
         switch type {
+
+        // --- Rich status events ---
+
+        case "thinking":
+            // {"type":"thinking","message":"Processing..."}
+            let msg = json["message"] as? String ?? ""
+            currentStatus = StatusEvent(kind: .thinking(msg))
+
+        case "tool_started":
+            // {"type":"tool_started","name":"shell"}
+            let name = json["name"] as? String ?? "tool"
+            currentStatus = StatusEvent(kind: .toolStarted(name: name))
+
+        case "tool_completed":
+            // {"type":"tool_completed","name":"shell","success":true}
+            let name = json["name"] as? String ?? "tool"
+            let success = json["success"] as? Bool ?? true
+            currentStatus = StatusEvent(kind: .toolCompleted(name: name, success: success))
+
+        case "tool_result":
+            // {"type":"tool_result","name":"shell","preview":"3 files found"}
+            let name = json["name"] as? String ?? "tool"
+            let preview = json["preview"] as? String ?? ""
+            currentStatus = StatusEvent(kind: .toolResult(name: name, preview: preview))
+
+        case "error":
+            // {"type":"error","message":"Something went wrong"}
+            let msg = json["message"] as? String ?? "Unknown error"
+            currentStatus = StatusEvent(kind: .error(msg))
+
+        // --- Legacy status fallback ---
+
         case "status":
-            // {"type":"status","kind":"thinking"}
             if let kind = json["kind"] as? String {
-                isThinking = (kind == "thinking")
+                // Old format: {"type":"status","kind":"thinking"}
+                if kind == "thinking" {
+                    currentStatus = StatusEvent(kind: .thinking(""))
+                } else {
+                    currentStatus = StatusEvent(kind: .status(kind))
+                }
+            } else if let msg = json["message"] as? String {
+                // New format: {"type":"status","message":"General status info"}
+                currentStatus = StatusEvent(kind: .status(msg))
             }
 
+        // --- Content messages ---
+
         case "stream_chunk":
-            // {"type":"stream_chunk","content":"partial text"}
-            isThinking = false
+            // {"type":"stream_chunk","content":"partial text","thread_id":"abc-123"}
+            if let threadId = json["thread_id"] as? String {
+                currentThreadId = threadId
+            }
+            // Clear thinking status once content starts flowing
+            currentStatus = nil
             if let content = json["content"] as? String {
                 appendStreamChunk(content)
             }
 
         case "response":
-            // {"type":"response","content":"full reply"}
-            isThinking = false
+            // {"type":"response","content":"full reply","thread_id":"abc-123"}
+            if let threadId = json["thread_id"] as? String {
+                currentThreadId = threadId
+            }
+            currentStatus = nil
             finalizeStream()
             if let content = json["content"] as? String {
                 let aiMessage = ChatMessage(content: content, isFromUser: false)
@@ -159,10 +235,8 @@ public final class ChatWebSocket: @unchecked Sendable {
     private func appendStreamChunk(_ chunk: String) {
         if let id = streamingMessageId,
            let index = messages.firstIndex(where: { $0.id == id }) {
-            // Append to existing streaming message
             messages[index].content += chunk
         } else {
-            // Start a new streaming message
             let aiMessage = ChatMessage(content: chunk, isFromUser: false)
             streamingMessageId = aiMessage.id
             messages.append(aiMessage)
@@ -179,7 +253,7 @@ public final class ChatWebSocket: @unchecked Sendable {
     private func handleDisconnect() {
         DispatchQueue.main.async { [weak self] in
             self?.isConnected = false
-            self?.isThinking = false
+            self?.currentStatus = nil
         }
 
         guard !isIntentionalDisconnect else { return }
