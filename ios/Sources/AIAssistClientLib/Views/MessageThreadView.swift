@@ -38,7 +38,7 @@ private struct ScrollOverscrollModifier: ViewModifier {
                     let rawOverscroll = max(0, scrolledTo - contentEnd)
                     // iOS rubber-band dampens finger movement ~3-4x.
                     // Amplify so the reported value approximates actual finger distance.
-                    return rawOverscroll * 3.0
+                    return rawOverscroll * 6.0
                 } action: { oldOverscroll, newOverscroll in
                     if newOverscroll != oldOverscroll {
                         print("[SCROLL-DEBUG] overscroll(amp): \(String(format: "%.1f", oldOverscroll))→\(String(format: "%.1f", newOverscroll))")
