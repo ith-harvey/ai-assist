@@ -1,3 +1,5 @@
+// COMMENTED OUT: Preserved for future use. Replaced by full-screen swipe in ContentView.
+/*
 import SwiftUI
 
 /// Displays a fanned-deck stack of cards.
@@ -147,3 +149,4 @@ public struct CardStackView: View {
             }
     }
 }
+*/

@@ -1,3 +1,5 @@
+// COMMENTED OUT: Preserved for future use. Replaced by full-screen swipe in ContentView.
+/*
 import SwiftUI
 
 /// Displays a single reply suggestion card.
@@ -144,3 +146,4 @@ public struct CardView: View {
         abs(dragOffset) > 30 ? 2 : 0
     }
 }
+*/
