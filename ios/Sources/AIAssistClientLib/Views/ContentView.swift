@@ -2,9 +2,12 @@ import SwiftUI
 
 /// Root view with full-screen swipe to approve/reject cards.
 ///
-/// `MessageThreadView` fills 100% of vertical space. Swiping right approves,
-/// swiping left rejects. Uses a UIKit `UIPanGestureRecognizer` overlay for
-/// zero-lag 1:1 finger tracking (bypasses SwiftUI gesture system).
+/// `MessageThreadView` fills 100% of vertical space and scrolls vertically.
+/// Horizontal drag (after 20pt direction lock) moves the whole card for
+/// approve/reject. Uses SwiftUI-native `DragGesture` — no UIKit overlay.
+///
+/// Direction lock: first 20pt of movement decides axis. If horizontal wins,
+/// we track the swipe. If vertical wins, the ScrollView handles it normally.
 public struct ContentView: View {
     @State private var socket = CardWebSocket()
     @State private var showSettings = false
@@ -13,8 +16,12 @@ public struct ContentView: View {
 
     // Swipe state
     @State private var dragOffset: CGFloat = 0
+    @State private var isDraggingHorizontally = false
 
     private let swipeThreshold: CGFloat = 100
+    /// Minimum movement before direction is locked. Gives ScrollView
+    /// first crack at vertical gestures.
+    private let directionLockDistance: CGFloat = 20
 
     public init() {}
 
@@ -22,16 +29,7 @@ public struct ContentView: View {
         NavigationStack {
             ZStack {
                 if let card = socket.cards.first {
-                    VStack(spacing: 0) {
-                        connectionBanner
-                        MessageThreadView(card: card)
-                    }
-                    .offset(x: dragOffset)
-                    .rotationEffect(.degrees(Double(dragOffset) / 25))
-                    .overlay(swipeOverlay)
-                    .overlay(
-                        swipeGestureOverlay(for: card)
-                    )
+                    cardContent(for: card)
                 } else {
                     VStack(spacing: 0) {
                         connectionBanner
@@ -74,51 +72,76 @@ public struct ContentView: View {
         }
     }
 
-    // MARK: - Swipe Gesture (UIKit)
+    // MARK: - Card Content + Swipe Gesture
 
-    /// UIKit-based horizontal pan overlay — zero lag, 1:1 tracking.
-    /// Vertical scrolling passes through to the ScrollView in MessageThreadView.
     @ViewBuilder
-    private func swipeGestureOverlay(for card: ReplyCard) -> some View {
-        #if canImport(UIKit)
-        HorizontalSwipeGesture(
-            onChanged: { translationX in
-                // Direct assignment — no animation, pure 1:1 tracking
-                dragOffset = translationX
-            },
-            onEnded: { translationX, velocityX in
-                let width = translationX
-                // Use velocity to assist: a fast flick with lower distance still triggers
-                let effectiveWidth = width + velocityX * 0.15
+    private func cardContent(for card: ReplyCard) -> some View {
+        VStack(spacing: 0) {
+            connectionBanner
+            MessageThreadView(card: card)
+        }
+        .offset(x: dragOffset)
+        .rotationEffect(.degrees(isDraggingHorizontally ? Double(dragOffset) / 25 : 0))
+        .overlay(swipeOverlay)
+        .simultaneousGesture(
+            DragGesture(minimumDistance: directionLockDistance)
+                .onChanged { value in
+                    let horizontal = abs(value.translation.width)
+                    let vertical = abs(value.translation.height)
 
-                if effectiveWidth > swipeThreshold {
-                    // Fly off right — approve
-                    withAnimation(.easeOut(duration: 0.18)) {
-                        dragOffset = 500
+                    // Direction lock: once locked, stay locked for this gesture
+                    if !isDraggingHorizontally {
+                        // Only claim horizontal if it clearly dominates
+                        if horizontal > vertical && horizontal > directionLockDistance {
+                            isDraggingHorizontally = true
+                        } else {
+                            // Vertical or ambiguous — let ScrollView have it
+                            return
+                        }
                     }
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) {
-                        socket.approve(cardId: card.id)
-                        dragOffset = 0
+
+                    // Horizontal tracking: 1:1 finger movement
+                    dragOffset = value.translation.width
+                }
+                .onEnded { value in
+                    guard isDraggingHorizontally else {
+                        isDraggingHorizontally = false
+                        return
                     }
-                } else if effectiveWidth < -swipeThreshold {
-                    // Fly off left — reject
-                    withAnimation(.easeOut(duration: 0.18)) {
-                        dragOffset = -500
-                    }
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) {
-                        socket.dismiss(cardId: card.id)
-                        dragOffset = 0
-                    }
-                } else {
-                    // Snap back with spring
-                    withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
-                        dragOffset = 0
+
+                    let width = value.translation.width
+                    let velocityX = value.predictedEndTranslation.width - width
+                    let effectiveWidth = width + velocityX * 0.15
+
+                    if effectiveWidth > swipeThreshold {
+                        // Fly off right — approve
+                        withAnimation(.easeOut(duration: 0.18)) {
+                            dragOffset = 500
+                        }
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) {
+                            socket.approve(cardId: card.id)
+                            dragOffset = 0
+                            isDraggingHorizontally = false
+                        }
+                    } else if effectiveWidth < -swipeThreshold {
+                        // Fly off left — reject
+                        withAnimation(.easeOut(duration: 0.18)) {
+                            dragOffset = -500
+                        }
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) {
+                            socket.dismiss(cardId: card.id)
+                            dragOffset = 0
+                            isDraggingHorizontally = false
+                        }
+                    } else {
+                        // Snap back
+                        withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+                            dragOffset = 0
+                        }
+                        isDraggingHorizontally = false
                     }
                 }
-            }
         )
-        .allowsHitTesting(true)
-        #endif
     }
 
     // MARK: - Swipe Overlay
