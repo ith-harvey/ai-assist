@@ -43,11 +43,9 @@ private struct ScrollOverscrollModifier: ViewModifier {
                     let contentEnd = contentH + insetBot
                     let rawOverscroll = max(0, scrolledTo - contentEnd)
                     let amplified = rawOverscroll * 6.0
-                    print("[SCROLL-RAW] off=\(String(format:"%.0f",offsetY)) cont=\(String(format:"%.0f",containerH)) content=\(String(format:"%.0f",contentH)) inB=\(String(format:"%.0f",insetBot)) raw=\(String(format:"%.1f",rawOverscroll)) amp=\(String(format:"%.1f",amplified))")
                     overscrollDistance = amplified
                 }
-                .onScrollPhaseChange { oldPhase, newPhase in
-                    print("[SCROLL-DEBUG] phase: \(oldPhase) → \(newPhase)")
+                .onScrollPhaseChange { _, newPhase in
                     isUserInteracting = (newPhase == .interacting)
                 }
         } else {

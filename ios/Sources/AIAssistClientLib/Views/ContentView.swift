@@ -169,18 +169,12 @@ public struct ContentView: View {
             speechRecognizer.requestPermissions()
         }
         .onChange(of: overscrollDistance) { _, newDistance in
-            if newDistance > 0 {
-                print("[VOICE-DEBUG] overscroll=\(String(format: "%.1f", newDistance)) interacting=\(isUserInteracting) recording=\(isRecordingVoice) threshold=\(recordThreshold)")
-            }
             if newDistance > recordThreshold && isUserInteracting && !isRecordingVoice {
-                print("[VOICE-DEBUG] ✅ STARTING RECORDING (overscroll=\(String(format: "%.1f", newDistance)))")
                 startVoiceRecording()
             }
         }
         .onChange(of: isUserInteracting) { _, interacting in
-            print("[VOICE-DEBUG] phase interacting=\(interacting) recording=\(isRecordingVoice) overscroll=\(String(format: "%.1f", overscrollDistance))")
             if !interacting && isRecordingVoice {
-                print("[VOICE-DEBUG] ✅ STOPPING RECORDING & SENDING")
                 stopVoiceRecordingAndRefine(cardId: card.id)
             }
         }
@@ -199,15 +193,18 @@ public struct ContentView: View {
 
     private func startVoiceRecording() {
         guard speechRecognizer.isAuthorized else {
+            print("[HAPTIC] ⚠️ not authorized, requesting permissions")
             speechRecognizer.requestPermissions()
             return
         }
         // Fire haptic FIRST before any async work
+        print("[HAPTIC] 🟢 firing START haptic (heavy impact)")
         startHaptic.impactOccurred()
         startHaptic.prepare() // re-arm for next time
 
         isRecordingVoice = true
         speechRecognizer.startRecording()
+        print("[HAPTIC] recording started")
     }
 
     private func stopVoiceRecordingAndRefine(cardId: UUID) {
@@ -217,6 +214,7 @@ public struct ContentView: View {
         isRecordingVoice = false
 
         // Haptic feedback on stop/submit
+        print("[HAPTIC] 🔴 firing STOP haptic (success notification)")
         let notification = UINotificationFeedbackGenerator()
         notification.notificationOccurred(.success)
 
