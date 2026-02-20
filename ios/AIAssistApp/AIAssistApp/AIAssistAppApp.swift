@@ -12,7 +12,7 @@ import AIAssistClientLib
 struct AIAssistAppApp: App {
     var body: some Scene {
         WindowGroup {
-            AIAssistClientLib.ContentView()
+            AIAssistClientLib.MainTabView()
         }
     }
 }
