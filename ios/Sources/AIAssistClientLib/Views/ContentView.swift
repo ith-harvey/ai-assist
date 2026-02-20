@@ -146,45 +146,41 @@ public struct ContentView: View {
 
     // MARK: - Swipe Overlay
 
+    /// Edge-pinned indicator bars: green bar with checkmark on the right edge
+    /// for approve, red bar with xmark on the left edge for reject.
     @ViewBuilder
     private var swipeOverlay: some View {
         let width = dragOffset
         ZStack {
-            // Green tint + APPROVE label
-            if width > 30 {
-                Color.green
-                    .opacity(Double(min(0.25, (width - 30) / 300)))
+            // Right edge — green bar with checkmark (approve)
+            if width > 20 {
+                HStack {
+                    Spacer()
+                    ZStack {
+                        Color.green
+                        Image(systemName: "checkmark")
+                            .font(.system(size: 36, weight: .bold))
+                            .foregroundStyle(.white)
+                    }
+                    .frame(width: 60)
                     .ignoresSafeArea()
-
-                Text("APPROVE")
-                    .font(.system(size: 48, weight: .black))
-                    .foregroundStyle(.green)
-                    .rotationEffect(.degrees(-15))
-                    .opacity(Double(min(1, (width - 30) / 70)))
-                    .padding(12)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 10)
-                            .stroke(.green, lineWidth: 4)
-                            .opacity(Double(min(1, (width - 30) / 70)))
-                    )
+                }
+                .opacity(Double(min(0.4, (width - 20) / 200)))
             }
-            // Red tint + REJECT label
-            if width < -30 {
-                Color.red
-                    .opacity(Double(min(0.25, (abs(width) - 30) / 300)))
+            // Left edge — red bar with xmark (reject)
+            if width < -20 {
+                HStack {
+                    ZStack {
+                        Color.red
+                        Image(systemName: "xmark")
+                            .font(.system(size: 36, weight: .bold))
+                            .foregroundStyle(.white)
+                    }
+                    .frame(width: 60)
                     .ignoresSafeArea()
-
-                Text("REJECT")
-                    .font(.system(size: 48, weight: .black))
-                    .foregroundStyle(.red)
-                    .rotationEffect(.degrees(15))
-                    .opacity(Double(min(1, (abs(width) - 30) / 70)))
-                    .padding(12)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 10)
-                            .stroke(.red, lineWidth: 4)
-                            .opacity(Double(min(1, (abs(width) - 30) / 70)))
-                    )
+                    Spacer()
+                }
+                .opacity(Double(min(0.4, (abs(width) - 20) / 200)))
             }
         }
         .allowsHitTesting(false)
