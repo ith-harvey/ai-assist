@@ -145,6 +145,8 @@ pub enum CardAction {
     Dismiss { card_id: Uuid },
     /// Edit the reply text, then approve.
     Edit { card_id: Uuid, new_text: String },
+    /// Refine the draft with an instruction, then regenerate via LLM.
+    Refine { card_id: Uuid, instruction: String },
 }
 
 /// Messages sent over WebSocket (server → client and internal events).
@@ -159,6 +161,8 @@ pub enum WsMessage {
     CardExpired { id: Uuid },
     /// Full queue sync (sent on connect).
     CardsSync { cards: Vec<ReplyCard> },
+    /// A card was refined — full updated card for the client to replace in-place.
+    CardRefreshed { card: ReplyCard },
     /// Keepalive ping.
     Ping,
 }

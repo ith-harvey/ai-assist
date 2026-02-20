@@ -16,6 +16,7 @@ use serde::Deserialize;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
+use super::generator::CardGenerator;
 use super::model::{CardAction, ReplyCard, WsMessage};
 use super::queue::CardQueue;
 use crate::channels::email::{send_reply_email, EmailConfig};
@@ -26,13 +27,20 @@ pub struct AppState {
     pub queue: Arc<CardQueue>,
     /// Email configuration for sending replies (None if email channel is disabled).
     pub email_config: Option<EmailConfig>,
+    /// Card generator for LLM-based refinement.
+    pub generator: Arc<CardGenerator>,
 }
 
 /// Build the Axum router with card WebSocket and REST routes.
-pub fn card_routes(queue: Arc<CardQueue>, email_config: Option<EmailConfig>) -> Router {
+pub fn card_routes(
+    queue: Arc<CardQueue>,
+    email_config: Option<EmailConfig>,
+    generator: Arc<CardGenerator>,
+) -> Router {
     let state = AppState {
         queue,
         email_config,
+        generator,
     };
 
     Router::new()
@@ -42,6 +50,7 @@ pub fn card_routes(queue: Arc<CardQueue>, email_config: Option<EmailConfig>) -> 
         .route("/api/cards/{id}/approve", post(approve_card))
         .route("/api/cards/{id}/dismiss", post(dismiss_card))
         .route("/api/cards/{id}/edit", post(edit_card))
+        .route("/api/cards/{id}/refine", post(refine_card))
         .route("/api/cards/test", post(create_test_card))
         .with_state(state)
 }
@@ -62,13 +71,14 @@ async fn ws_handler(
     State(state): State<AppState>,
 ) -> impl IntoResponse {
     info!("WebSocket client connecting");
-    ws.on_upgrade(|socket| handle_socket(socket, state.queue, state.email_config))
+    ws.on_upgrade(|socket| handle_socket(socket, state.queue, state.email_config, state.generator))
 }
 
 async fn handle_socket(
     mut socket: WebSocket,
     queue: Arc<CardQueue>,
     email_config: Option<EmailConfig>,
+    generator: Arc<CardGenerator>,
 ) {
     info!("WebSocket client connected");
 
@@ -120,7 +130,7 @@ async fn handle_socket(
             result = socket.recv() => {
                 match result {
                     Some(Ok(Message::Text(text))) => {
-                        handle_client_message(&text, &queue, email_config.as_ref()).await;
+                        handle_client_message(&text, &queue, email_config.as_ref(), &generator).await;
                     }
                     Some(Ok(Message::Ping(data))) => {
                         if socket.send(Message::Pong(data)).await.is_err() {
@@ -148,6 +158,7 @@ async fn handle_client_message(
     text: &str,
     queue: &CardQueue,
     email_config: Option<&EmailConfig>,
+    generator: &CardGenerator,
 ) {
     match serde_json::from_str::<CardAction>(text) {
         Ok(action) => match action {
@@ -172,6 +183,12 @@ async fn handle_client_message(
                     send_card_reply(&card, email_config, queue).await;
                 } else {
                     warn!(card_id = %card_id, "Edit failed — card not found or not pending");
+                }
+            }
+            CardAction::Refine { card_id, instruction } => {
+                match queue.refine(card_id, instruction, generator).await {
+                    Ok(_card) => info!(card_id = %card_id, "Card refined via WS"),
+                    Err(e) => warn!(card_id = %card_id, error = %e, "Refine failed via WS"),
                 }
             }
         },
@@ -279,6 +296,45 @@ async fn edit_card(
             (StatusCode::OK, Json(serde_json::json!(card)))
         }
         None => (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "Card not found or not pending"}))),
+    }
+}
+
+#[derive(Deserialize)]
+struct RefineRequest {
+    instruction: String,
+}
+
+async fn refine_card(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<RefineRequest>,
+) -> impl IntoResponse {
+    let card_id = match Uuid::parse_str(&id) {
+        Ok(id) => id,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "Invalid card ID"})),
+            )
+                .into_response()
+        }
+    };
+
+    match state
+        .queue
+        .refine(card_id, body.instruction, &state.generator)
+        .await
+    {
+        Ok(card) => (
+            StatusCode::OK,
+            Json(serde_json::json!({"status": "refined", "card": card})),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": e})),
+        )
+            .into_response(),
     }
 }
 

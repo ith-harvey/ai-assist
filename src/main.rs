@@ -131,7 +131,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ios_router = ios_channel.router();
 
     // Spawn Axum WS/REST server for cards + iOS chat
-    let app = card_routes(card_queue.clone(), email_config_for_cards).merge(ios_router);
+    let app = card_routes(card_queue.clone(), email_config_for_cards, card_generator.clone()).merge(ios_router);
     tokio::spawn(async move {
         let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", ws_port))
             .await

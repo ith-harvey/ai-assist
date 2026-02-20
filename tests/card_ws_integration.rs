@@ -13,17 +13,56 @@ use tokio::time::timeout;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
 
+use async_trait::async_trait;
+use rust_decimal::Decimal;
+
+use ai_assist::cards::generator::{CardGenerator, GeneratorConfig};
 use ai_assist::cards::model::{CardAction, ReplyCard};
 use ai_assist::cards::queue::CardQueue;
 use ai_assist::cards::ws::card_routes;
+use ai_assist::error::LlmError;
+use ai_assist::llm::provider::{
+    CompletionRequest, CompletionResponse, FinishReason, LlmProvider,
+    ToolCompletionRequest, ToolCompletionResponse,
+};
 
 /// Maximum time any test is allowed to run before we consider it hung.
 const TEST_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Stub LLM provider for integration tests (no real API calls).
+struct StubLlm;
+
+#[async_trait]
+impl LlmProvider for StubLlm {
+    fn model_name(&self) -> &str {
+        "stub"
+    }
+    fn cost_per_token(&self) -> (Decimal, Decimal) {
+        (Decimal::ZERO, Decimal::ZERO)
+    }
+    async fn complete(&self, _request: CompletionRequest) -> Result<CompletionResponse, LlmError> {
+        Ok(CompletionResponse {
+            content: r#"[{"text": "stub reply", "confidence": 0.9}]"#.to_string(),
+            input_tokens: 0,
+            output_tokens: 0,
+            finish_reason: FinishReason::Stop,
+            response_id: None,
+        })
+    }
+    async fn complete_with_tools(
+        &self,
+        _request: ToolCompletionRequest,
+    ) -> Result<ToolCompletionResponse, LlmError> {
+        unimplemented!("not used in card tests")
+    }
+}
+
 /// Start an Axum server on a random port, return (port, queue).
 async fn start_server() -> (u16, Arc<CardQueue>) {
     let queue = CardQueue::new();
-    let app = card_routes(Arc::clone(&queue), None);
+    let llm: Arc<dyn LlmProvider> = Arc::new(StubLlm);
+    let generator = Arc::new(CardGenerator::new(llm, Arc::clone(&queue), GeneratorConfig::default()));
+    let app = card_routes(Arc::clone(&queue), None, generator);
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
