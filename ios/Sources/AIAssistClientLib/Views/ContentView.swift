@@ -169,12 +169,18 @@ public struct ContentView: View {
             speechRecognizer.requestPermissions()
         }
         .onChange(of: overscrollDistance) { _, newDistance in
+            if newDistance > 0 {
+                print("[VOICE-DEBUG] overscroll=\(newDistance) interacting=\(isUserInteracting) recording=\(isRecordingVoice) threshold=\(recordThreshold)")
+            }
             if newDistance > recordThreshold && isUserInteracting && !isRecordingVoice {
+                print("[VOICE-DEBUG] ✅ STARTING RECORDING")
                 startVoiceRecording()
             }
         }
         .onChange(of: isUserInteracting) { _, interacting in
+            print("[VOICE-DEBUG] isUserInteracting changed to \(interacting), recording=\(isRecordingVoice)")
             if !interacting && isRecordingVoice {
+                print("[VOICE-DEBUG] ✅ STOPPING RECORDING & SENDING")
                 stopVoiceRecordingAndRefine(cardId: card.id)
             }
         }

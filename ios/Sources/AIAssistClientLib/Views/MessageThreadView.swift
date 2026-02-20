@@ -46,10 +46,14 @@ private struct ScrollOverscrollModifier: ViewModifier {
                     let scrolledTo = geo.contentOffset.y + geo.containerSize.height
                     let contentEnd = geo.contentSize.height + geo.contentInsets.bottom
                     return max(0, scrolledTo - contentEnd)
-                } action: { _, newOverscroll in
+                } action: { oldOverscroll, newOverscroll in
+                    if newOverscroll > 0 || oldOverscroll > 0 {
+                        print("[SCROLL-DEBUG] overscroll: \(oldOverscroll) → \(newOverscroll)")
+                    }
                     overscrollDistance = newOverscroll
                 }
-                .onScrollPhaseChange { _, newPhase in
+                .onScrollPhaseChange { oldPhase, newPhase in
+                    print("[SCROLL-DEBUG] phase: \(oldPhase) → \(newPhase)")
                     isUserInteracting = (newPhase == .interacting)
                 }
         } else {
