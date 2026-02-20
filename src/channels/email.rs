@@ -128,10 +128,10 @@ impl EmailChannel {
             self.config.password.clone(),
         );
 
-        let transport = SmtpTransport::relay(&self.config.smtp_host)
+        let transport = SmtpTransport::starttls_relay(&self.config.smtp_host)
             .map_err(|e| ChannelError::SendFailed {
                 name: "email".into(),
-                reason: format!("SMTP relay error: {e}"),
+                reason: format!("SMTP STARTTLS error: {e}"),
             })?
             .port(self.config.smtp_port)
             .credentials(creds)
@@ -768,10 +768,10 @@ pub fn send_reply_email(
 
     let creds = Credentials::new(config.username.clone(), config.password.clone());
 
-    let transport = SmtpTransport::relay(&config.smtp_host)
+    let transport = SmtpTransport::starttls_relay(&config.smtp_host)
         .map_err(|e| ChannelError::SendFailed {
             name: "email".into(),
-            reason: format!("SMTP relay error: {e}"),
+            reason: format!("SMTP STARTTLS error: {e}"),
         })?
         .port(config.smtp_port)
         .credentials(creds)
