@@ -1,36 +1,18 @@
 import SwiftUI
 
-/// PreferenceKey that reports how far the user has overscrolled past the bottom.
-/// Positive values mean the user is pulling down past the end of content (rubber-band).
-/// Zero or negative means normal scrolling (not past bottom).
-struct OverscrollDistanceKey: PreferenceKey {
-    static let defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = nextValue()
-    }
-}
-
-/// PreferenceKey to capture the scroll viewport height from an overlay on the ScrollView.
-struct ViewportHeightKey: PreferenceKey {
-    static let defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = nextValue()
-    }
-}
-
 /// Shows the email conversation thread as iMessage-style chat bubbles.
 ///
 /// Priority: emailThread (rich headers) > thread (generic) > single message fallback.
 /// Auto-scrolls to the bottom (newest messages). The AI suggested reply appears
 /// as a faded/dashed "Draft" bubble at the end.
 ///
-/// Reports overscroll distance via `overscrollDistance` binding — positive values
-/// mean the user has scrolled past the bottom and is rubber-banding downward.
-/// Zero means normal scrolling (not past bottom).
+/// Reports overscroll distance via `overscrollDistance` binding using
+/// `onScrollGeometryChange` (iOS 18). Positive = rubber-banding past bottom.
+/// Also reports whether the user is actively touching via `isScrollInteracting`.
 struct MessageThreadView: View {
     let card: ReplyCard?
     @Binding var overscrollDistance: CGFloat
-    @State private var viewportHeight: CGFloat = 0
+    @Binding var isScrollInteracting: Bool
 
     var body: some View {
         if let card {
@@ -79,38 +61,23 @@ struct MessageThreadView: View {
                     .padding(.horizontal, 16)
                     .padding(.top, 8)
                     .padding(.bottom, 16)
-                    .background(
-                        GeometryReader { contentGeo in
-                            Color.clear
-                                .preference(
-                                    key: OverscrollDistanceKey.self,
-                                    value: {
-                                        let contentBottom = contentGeo.frame(in: .named("threadScroll")).maxY
-                                        // How far past the viewport bottom the content's bottom is
-                                        // When content is scrolled to the very end, contentBottom ≈ viewportHeight
-                                        // When user overscrolls (rubber-band), contentBottom > viewportHeight
-                                        // Positive = overscrolling past bottom
-                                        let overscroll = contentBottom - viewportHeight
-                                        return max(0, overscroll)
-                                    }()
-                                )
-                        }
-                    )
                 }
-                .coordinateSpace(name: "threadScroll")
-                .overlay(
-                    GeometryReader { viewportGeo in
-                        Color.clear.preference(
-                            key: ViewportHeightKey.self,
-                            value: viewportGeo.size.height
-                        )
-                    }
-                )
-                .onPreferenceChange(ViewportHeightKey.self) { height in
-                    viewportHeight = height
+                .onScrollGeometryChange(for: CGFloat.self) { geo in
+                    // Overscroll past bottom = how far content has been pulled
+                    // beyond its natural end. contentOffset.y is how far down
+                    // we've scrolled; when it exceeds (contentSize - container),
+                    // we're in rubber-band territory.
+                    let maxOffset = geo.contentSize.height
+                        - geo.containerSize.height
+                        + geo.contentInsets.top
+                        + geo.contentInsets.bottom
+                    let overscroll = geo.contentOffset.y - maxOffset
+                    return max(0, overscroll)
+                } action: { _, newValue in
+                    overscrollDistance = newValue
                 }
-                .onPreferenceChange(OverscrollDistanceKey.self) { distance in
-                    overscrollDistance = distance
+                .onScrollPhaseChange { _, newPhase in
+                    isScrollInteracting = (newPhase == .interacting)
                 }
                 .onAppear {
                     if !card.emailThread.isEmpty || !card.thread.isEmpty {

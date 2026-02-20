@@ -27,11 +27,12 @@ public struct ContentView: View {
     @State private var speechRecognizer = SpeechRecognizer()
     #endif
     @State private var isRecordingVoice = false
-    @State private var isDraggingDown = false
     /// How far (in points) the user has overscrolled past the bottom of the
     /// message thread.  Positive = rubber-banding downward past the last message.
     /// Recording only starts when this exceeds `recordThreshold`.
     @State private var overscrollDistance: CGFloat = 0
+    /// Whether the user's finger is actively on the scroll view.
+    @State private var isScrollInteracting = false
 
     private let swipeThreshold: CGFloat = 100
     /// Minimum movement before direction is locked. Gives ScrollView
@@ -95,88 +96,85 @@ public struct ContentView: View {
     private func cardContent(for card: ReplyCard) -> some View {
         VStack(spacing: 0) {
             connectionBanner
-            MessageThreadView(card: card, overscrollDistance: $overscrollDistance)
+            MessageThreadView(
+                card: card,
+                overscrollDistance: $overscrollDistance,
+                isScrollInteracting: $isScrollInteracting
+            )
         }
         .offset(x: dragOffset)
         .rotationEffect(.degrees(isDraggingHorizontally ? Double(dragOffset) / 25 : 0))
         .overlay(swipeOverlay)
         .overlay(alignment: .bottom) { voiceOverlay }
+        // Horizontal swipe gesture — ONLY handles approve/reject.
+        // Voice recording is driven by scroll geometry + phase, not this gesture.
         .simultaneousGesture(
             DragGesture(minimumDistance: directionLockDistance)
                 .onChanged { value in
                     let horizontal = abs(value.translation.width)
                     let vertical = abs(value.translation.height)
 
-                    // Direction lock: once locked, stay locked for this gesture
-                    if !isDraggingHorizontally && !isDraggingDown {
+                    if !isDraggingHorizontally {
                         if horizontal > vertical && horizontal > directionLockDistance {
                             isDraggingHorizontally = true
                         }
-                        // Vertical movement is always left to ScrollView here.
-                        // Voice recording is triggered separately by overscroll detection below.
                     }
 
                     if isDraggingHorizontally {
-                        // Horizontal tracking: 1:1 finger movement
                         dragOffset = value.translation.width
                     }
-
-                    // Voice recording: triggered by ScrollView rubber-band overscroll,
-                    // NOT by the drag gesture's translation. The ScrollView reports
-                    // overscrollDistance > 0 only when the user is already at the very
-                    // bottom and keeps pulling down.
-                    #if os(iOS)
-                    if !isDraggingHorizontally && overscrollDistance > recordThreshold && !isRecordingVoice {
-                        isDraggingDown = true
-                        startVoiceRecording()
-                    }
-                    #endif
                 }
                 .onEnded { value in
-                    if isDraggingHorizontally {
-                        let width = value.translation.width
-                        let velocityX = value.predictedEndTranslation.width - width
-                        let effectiveWidth = width + velocityX * 0.15
+                    guard isDraggingHorizontally else {
+                        isDraggingHorizontally = false
+                        return
+                    }
 
-                        if effectiveWidth > swipeThreshold {
-                            // Fly off right — approve
-                            withAnimation(.easeOut(duration: 0.18)) {
-                                dragOffset = 500
-                            }
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) {
-                                socket.approve(cardId: card.id)
-                                dragOffset = 0
-                                isDraggingHorizontally = false
-                            }
-                        } else if effectiveWidth < -swipeThreshold {
-                            // Fly off left — reject
-                            withAnimation(.easeOut(duration: 0.18)) {
-                                dragOffset = -500
-                            }
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) {
-                                socket.dismiss(cardId: card.id)
-                                dragOffset = 0
-                                isDraggingHorizontally = false
-                            }
-                        } else {
-                            // Snap back
-                            withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
-                                dragOffset = 0
-                            }
+                    let width = value.translation.width
+                    let velocityX = value.predictedEndTranslation.width - width
+                    let effectiveWidth = width + velocityX * 0.15
+
+                    if effectiveWidth > swipeThreshold {
+                        withAnimation(.easeOut(duration: 0.18)) {
+                            dragOffset = 500
+                        }
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) {
+                            socket.approve(cardId: card.id)
+                            dragOffset = 0
                             isDraggingHorizontally = false
                         }
-                    } else if isDraggingDown {
-                        #if os(iOS)
-                        stopVoiceRecordingAndRefine(cardId: card.id)
-                        #endif
-                        isDraggingDown = false
+                    } else if effectiveWidth < -swipeThreshold {
+                        withAnimation(.easeOut(duration: 0.18)) {
+                            dragOffset = -500
+                        }
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) {
+                            socket.dismiss(cardId: card.id)
+                            dragOffset = 0
+                            isDraggingHorizontally = false
+                        }
                     } else {
+                        withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+                            dragOffset = 0
+                        }
                         isDraggingHorizontally = false
-                        isDraggingDown = false
                     }
                 }
         )
+        // Voice recording: triggered by scroll overscroll + finger lift detection.
+        // onScrollGeometryChange reports overscroll continuously (from MessageThreadView).
+        // Start recording when overscroll exceeds threshold while finger is down.
         #if os(iOS)
+        .onChange(of: overscrollDistance) { _, newDistance in
+            if newDistance > recordThreshold && isScrollInteracting && !isRecordingVoice {
+                startVoiceRecording()
+            }
+        }
+        // Stop recording when the user lifts their finger (scroll phase leaves .interacting)
+        .onChange(of: isScrollInteracting) { wasInteracting, isNowInteracting in
+            if wasInteracting && !isNowInteracting && isRecordingVoice {
+                stopVoiceRecordingAndRefine(cardId: card.id)
+            }
+        }
         .onAppear {
             speechRecognizer.requestPermissions()
         }

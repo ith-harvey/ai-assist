@@ -4,24 +4,7 @@ import SwiftUI
 
 /// PreferenceKey to report scroll offset from inside the ScrollView.
 private struct ScrollOffsetKey: PreferenceKey {
-    static var defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = nextValue()
-    }
-}
-
-/// PreferenceKey that reports how far the user has overscrolled past the bottom in the chat.
-/// Positive = rubber-banding past the end of content. Zero = normal scrolling.
-private struct ChatOverscrollKey: PreferenceKey {
-    static let defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = nextValue()
-    }
-}
-
-/// PreferenceKey to capture the chat scroll viewport height.
-private struct ChatViewportHeightKey: PreferenceKey {
-    static let defaultValue: CGFloat = 0
+    nonisolated(unsafe) static var defaultValue: CGFloat = 0
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
         value = nextValue()
     }
@@ -53,11 +36,11 @@ public struct BrainChatView: View {
     @State private var speechRecognizer = SpeechRecognizer()
     #endif
     @State private var isRecordingVoice = false
-    @State private var isDraggingDown = false
     /// How far (in points) the user has overscrolled past the bottom.
     /// Positive = rubber-banding downward. Recording triggers when > recordThreshold.
     @State private var chatOverscroll: CGFloat = 0
-    @State private var chatViewportHeight: CGFloat = 0
+    /// Whether the user's finger is actively on the scroll view.
+    @State private var isScrollInteracting = false
 
     /// Vertical drag distance to trigger voice recording.
     private let recordThreshold: CGFloat = 60
@@ -140,62 +123,49 @@ public struct BrainChatView: View {
                 .padding(.vertical, 8)
                 .background(
                     GeometryReader { geo in
-                        let minY = geo.frame(in: .named("chatScroll")).minY
-                        let contentBottom = geo.frame(in: .named("chatScroll")).maxY
-                        let overscroll = max(0, contentBottom - chatViewportHeight)
-                        Color.clear
-                            .preference(
-                                key: ScrollOffsetKey.self,
-                                value: minY
-                            )
-                            .preference(
-                                key: ChatOverscrollKey.self,
-                                value: overscroll
-                            )
+                        Color.clear.preference(
+                            key: ScrollOffsetKey.self,
+                            value: geo.frame(in: .named("chatScroll")).minY
+                        )
                     }
                 )
             }
             .coordinateSpace(name: "chatScroll")
-            .overlay(
-                GeometryReader { viewportGeo in
-                    Color.clear.preference(
-                        key: ChatViewportHeightKey.self,
-                        value: viewportGeo.size.height
-                    )
-                }
-            )
             .onPreferenceChange(ScrollOffsetKey.self) { offset in
                 handleScrollOffset(offset)
             }
-            .onPreferenceChange(ChatViewportHeightKey.self) { height in
-                chatViewportHeight = height
+            // Overscroll detection via iOS 18 scroll geometry
+            .onScrollGeometryChange(for: CGFloat.self) { geo in
+                let maxOffset = geo.contentSize.height
+                    - geo.containerSize.height
+                    + geo.contentInsets.top
+                    + geo.contentInsets.bottom
+                let overscroll = geo.contentOffset.y - maxOffset
+                return max(0, overscroll)
+            } action: { _, newValue in
+                chatOverscroll = newValue
             }
-            .onPreferenceChange(ChatOverscrollKey.self) { distance in
-                chatOverscroll = distance
+            .onScrollPhaseChange { _, newPhase in
+                isScrollInteracting = (newPhase == .interacting)
             }
-            .simultaneousGesture(
-                DragGesture(minimumDistance: 20)
-                    .onChanged { _ in
-                        // Voice recording: triggered by ScrollView rubber-band overscroll,
-                        // NOT by the drag gesture's translation.
-                        guard !shouldSuppressVoice else { return }
-
-                        #if os(iOS)
-                        if chatOverscroll > recordThreshold && !isRecordingVoice {
-                            isDraggingDown = true
-                            startVoiceRecording()
-                        }
-                        #endif
-                    }
-                    .onEnded { _ in
-                        if isDraggingDown {
-                            #if os(iOS)
-                            stopVoiceRecordingAndSend()
-                            #endif
-                            isDraggingDown = false
-                        }
-                    }
-            )
+            // Voice recording: start when overscroll exceeds threshold
+            #if os(iOS)
+            .onChange(of: chatOverscroll) { _, newDistance in
+                if newDistance > recordThreshold
+                    && isScrollInteracting
+                    && !isRecordingVoice
+                    && !shouldSuppressVoice
+                {
+                    startVoiceRecording()
+                }
+            }
+            // Stop recording when user lifts finger
+            .onChange(of: isScrollInteracting) { wasInteracting, isNowInteracting in
+                if wasInteracting && !isNowInteracting && isRecordingVoice {
+                    stopVoiceRecordingAndSend()
+                }
+            }
+            #endif
             .onChange(of: chatSocket.messages.count) { _, _ in
                 scrollToBottom(proxy: proxy)
                 // Reveal bar when new messages arrive
