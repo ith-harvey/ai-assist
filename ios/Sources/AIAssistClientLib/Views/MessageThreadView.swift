@@ -3,6 +3,8 @@ import SwiftUI
 /// PreferenceKey that reports how far the user has overscrolled past the bottom.
 /// Positive values mean the user is pulling down past the end of content (rubber-band).
 /// Zero or negative means normal scrolling (not past bottom).
+///
+/// Fallback for iOS < 18. On iOS 18+ we use `onScrollGeometryChange` instead.
 struct OverscrollDistanceKey: PreferenceKey {
     static let defaultValue: CGFloat = 0
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
@@ -11,10 +13,49 @@ struct OverscrollDistanceKey: PreferenceKey {
 }
 
 /// PreferenceKey to capture the scroll viewport height from an overlay on the ScrollView.
+///
+/// Fallback for iOS < 18.
 struct ViewportHeightKey: PreferenceKey {
     static let defaultValue: CGFloat = 0
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
         value = nextValue()
+    }
+}
+
+/// ViewModifier that uses iOS 18+ `onScrollGeometryChange` and `onScrollPhaseChange`
+/// to report overscroll distance and user interaction state. Falls back to a no-op
+/// on iOS < 18 (where PreferenceKey-based reporting is used instead).
+private struct ScrollOverscrollModifier: ViewModifier {
+    @Binding var overscrollDistance: CGFloat
+    @Binding var isUserInteracting: Bool
+
+    func body(content: Content) -> some View {
+        if #available(iOS 18.0, macOS 15.0, *) {
+            content
+                .onScrollGeometryChange(for: CGFloat.self) { geo in
+                    // Overscroll past bottom:
+                    // contentOffset.y = how far we've scrolled down
+                    // containerSize.height = viewport height
+                    // contentSize.height = total content height
+                    // contentInsets.bottom = safe area / content inset at bottom
+                    //
+                    // At the very bottom (no overscroll):
+                    //   contentOffset.y + containerSize.height ≈ contentSize.height + contentInsets
+                    // During rubber-band past bottom:
+                    //   contentOffset.y + containerSize.height > contentSize.height + contentInsets
+                    let scrolledTo = geo.contentOffset.y + geo.containerSize.height
+                    let contentEnd = geo.contentSize.height + geo.contentInsets.bottom
+                    return max(0, scrolledTo - contentEnd)
+                } action: { _, newOverscroll in
+                    overscrollDistance = newOverscroll
+                }
+                .onScrollPhaseChange { _, newPhase in
+                    isUserInteracting = (newPhase == .interacting)
+                }
+        } else {
+            // iOS < 18: no-op. PreferenceKey path handles overscroll reporting.
+            content
+        }
     }
 }
 
@@ -27,9 +68,15 @@ struct ViewportHeightKey: PreferenceKey {
 /// Reports overscroll distance via `overscrollDistance` binding — positive values
 /// mean the user has scrolled past the bottom and is rubber-banding downward.
 /// Zero means normal scrolling (not past bottom).
+///
+/// Also reports `isUserInteracting` — true while the user's finger is actively
+/// on the scroll view (iOS 18+ only, via `onScrollPhaseChange`).
 struct MessageThreadView: View {
     let card: ReplyCard?
     @Binding var overscrollDistance: CGFloat
+    /// True while the user's finger is on the scroll view (interacting phase).
+    /// Falls to false on finger lift. Only updated on iOS 18+.
+    @Binding var isUserInteracting: Bool
     @State private var viewportHeight: CGFloat = 0
 
     var body: some View {
@@ -110,8 +157,16 @@ struct MessageThreadView: View {
                     viewportHeight = height
                 }
                 .onPreferenceChange(OverscrollDistanceKey.self) { distance in
-                    overscrollDistance = distance
+                    // Fallback for iOS < 18. On 18+ the onScrollGeometryChange
+                    // below takes precedence (fires more reliably during rubber-band).
+                    if #unavailable(iOS 18.0) {
+                        overscrollDistance = distance
+                    }
                 }
+                .modifier(ScrollOverscrollModifier(
+                    overscrollDistance: $overscrollDistance,
+                    isUserInteracting: $isUserInteracting
+                ))
                 .onAppear {
                     if !card.emailThread.isEmpty || !card.thread.isEmpty {
                         proxy.scrollTo("draft", anchor: .bottom)

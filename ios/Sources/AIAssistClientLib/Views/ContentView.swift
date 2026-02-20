@@ -4,14 +4,13 @@ import SwiftUI
 ///
 /// `MessageThreadView` fills 100% of vertical space and scrolls vertically.
 /// Horizontal drag (after 20pt direction lock) moves the whole card for
-/// approve/reject. Voice-to-refine only triggers when the user is scrolled
-/// to the bottom (AI suggestion draft visible) and overscrolls downward
-/// past 60pt. Uses SwiftUI-native `DragGesture`.
+/// approve/reject.
 ///
-/// Direction lock: first 20pt of movement decides axis. Horizontal wins →
-/// swipe approve/reject. Voice recording triggers ONLY when the ScrollView
-/// reports positive overscroll (user has scrolled to the very bottom and is
-/// rubber-banding further down). Mid-thread vertical drags are ignored.
+/// Voice-to-refine uses iOS 18+ scroll APIs (`onScrollGeometryChange` +
+/// `onScrollPhaseChange`) to detect when the user overscrolls past the bottom
+/// of the thread. Recording starts when overscroll exceeds 60pt while the
+/// user's finger is on the scroll view, and stops (+ sends) when the finger
+/// lifts. No DragGesture needed for voice — it's entirely scroll-driven.
 public struct ContentView: View {
     @State private var socket = CardWebSocket()
     @State private var showSettings = false
@@ -27,11 +26,12 @@ public struct ContentView: View {
     @State private var speechRecognizer = SpeechRecognizer()
     #endif
     @State private var isRecordingVoice = false
-    @State private var isDraggingDown = false
     /// How far (in points) the user has overscrolled past the bottom of the
     /// message thread.  Positive = rubber-banding downward past the last message.
     /// Recording only starts when this exceeds `recordThreshold`.
     @State private var overscrollDistance: CGFloat = 0
+    /// Whether the user's finger is currently on the scroll view (iOS 18+).
+    @State private var isUserInteracting = false
 
     private let swipeThreshold: CGFloat = 100
     /// Minimum movement before direction is locked. Gives ScrollView
@@ -95,42 +95,33 @@ public struct ContentView: View {
     private func cardContent(for card: ReplyCard) -> some View {
         VStack(spacing: 0) {
             connectionBanner
-            MessageThreadView(card: card, overscrollDistance: $overscrollDistance)
+            MessageThreadView(
+                card: card,
+                overscrollDistance: $overscrollDistance,
+                isUserInteracting: $isUserInteracting
+            )
         }
         .offset(x: dragOffset)
         .rotationEffect(.degrees(isDraggingHorizontally ? Double(dragOffset) / 25 : 0))
         .overlay(swipeOverlay)
         .overlay(alignment: .bottom) { voiceOverlay }
+        // Horizontal swipe gesture for approve/reject only.
+        // Voice recording is handled separately via scroll geometry (below).
         .simultaneousGesture(
             DragGesture(minimumDistance: directionLockDistance)
                 .onChanged { value in
                     let horizontal = abs(value.translation.width)
                     let vertical = abs(value.translation.height)
 
-                    // Direction lock: once locked, stay locked for this gesture
-                    if !isDraggingHorizontally && !isDraggingDown {
+                    if !isDraggingHorizontally {
                         if horizontal > vertical && horizontal > directionLockDistance {
                             isDraggingHorizontally = true
                         }
-                        // Vertical movement is always left to ScrollView here.
-                        // Voice recording is triggered separately by overscroll detection below.
                     }
 
                     if isDraggingHorizontally {
-                        // Horizontal tracking: 1:1 finger movement
                         dragOffset = value.translation.width
                     }
-
-                    // Voice recording: triggered by ScrollView rubber-band overscroll,
-                    // NOT by the drag gesture's translation. The ScrollView reports
-                    // overscrollDistance > 0 only when the user is already at the very
-                    // bottom and keeps pulling down.
-                    #if os(iOS)
-                    if !isDraggingHorizontally && overscrollDistance > recordThreshold && !isRecordingVoice {
-                        isDraggingDown = true
-                        startVoiceRecording()
-                    }
-                    #endif
                 }
                 .onEnded { value in
                     if isDraggingHorizontally {
@@ -165,20 +156,27 @@ public struct ContentView: View {
                             }
                             isDraggingHorizontally = false
                         }
-                    } else if isDraggingDown {
-                        #if os(iOS)
-                        stopVoiceRecordingAndRefine(cardId: card.id)
-                        #endif
-                        isDraggingDown = false
                     } else {
                         isDraggingHorizontally = false
-                        isDraggingDown = false
                     }
                 }
         )
+        // Voice recording: driven by scroll overscroll + phase (iOS 18+).
+        // When overscroll exceeds threshold while user is touching → start recording.
+        // When user lifts finger (isUserInteracting goes false) → stop and send.
         #if os(iOS)
         .onAppear {
             speechRecognizer.requestPermissions()
+        }
+        .onChange(of: overscrollDistance) { _, newDistance in
+            if newDistance > recordThreshold && isUserInteracting && !isRecordingVoice {
+                startVoiceRecording()
+            }
+        }
+        .onChange(of: isUserInteracting) { _, interacting in
+            if !interacting && isRecordingVoice {
+                stopVoiceRecordingAndRefine(cardId: card.id)
+            }
         }
         #endif
     }
