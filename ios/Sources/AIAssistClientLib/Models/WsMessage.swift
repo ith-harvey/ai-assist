@@ -14,6 +14,7 @@ public enum WsMessage: Sendable {
     case cardUpdate(id: UUID, status: CardStatus)
     case cardExpired(id: UUID)
     case cardsSync(cards: [ReplyCard])
+    case cardRefreshed(card: ReplyCard)
     case ping
 }
 
@@ -50,6 +51,9 @@ extension WsMessage: Decodable {
         case "cards_sync":
             let cards = try container.decode([ReplyCard].self, forKey: .cards)
             self = .cardsSync(cards: cards)
+        case "card_refreshed":
+            let card = try container.decode(ReplyCard.self, forKey: .card)
+            self = .cardRefreshed(card: card)
         case "ping":
             self = .ping
         default:
