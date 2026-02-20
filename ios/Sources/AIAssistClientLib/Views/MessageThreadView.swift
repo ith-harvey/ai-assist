@@ -32,22 +32,18 @@ private struct ScrollOverscrollModifier: ViewModifier {
     func body(content: Content) -> some View {
         if #available(iOS 18.0, macOS 15.0, *) {
             content
-                .onScrollGeometryChange(for: CGFloat.self) { geo in
-                    // Overscroll past bottom:
-                    // contentOffset.y = how far we've scrolled down
-                    // containerSize.height = viewport height
-                    // contentSize.height = total content height
-                    // contentInsets.bottom = safe area / content inset at bottom
-                    //
-                    // At the very bottom (no overscroll):
-                    //   contentOffset.y + containerSize.height ≈ contentSize.height + contentInsets
-                    // During rubber-band past bottom:
-                    //   contentOffset.y + containerSize.height > contentSize.height + contentInsets
-                    let scrolledTo = geo.contentOffset.y + geo.containerSize.height
-                    let contentEnd = geo.contentSize.height + geo.contentInsets.bottom
-                    return max(0, scrolledTo - contentEnd)
-                } action: { _, newOverscroll in
-                    overscrollDistance = newOverscroll
+                .onScrollGeometryChange(for: [CGFloat].self) { geo in
+                    [geo.contentOffset.y, geo.containerSize.height, geo.contentSize.height, geo.contentInsets.top, geo.contentInsets.bottom]
+                } action: { _, vals in
+                    let offsetY = vals[0]
+                    let containerH = vals[1]
+                    let contentH = vals[2]
+                    let insetBot = vals[4]
+                    let scrolledTo = offsetY + containerH
+                    let contentEnd = contentH + insetBot
+                    let rawOverscroll = max(0, scrolledTo - contentEnd)
+                    let amplified = rawOverscroll * 6.0
+                    overscrollDistance = amplified
                 }
                 .onScrollPhaseChange { _, newPhase in
                     isUserInteracting = (newPhase == .interacting)

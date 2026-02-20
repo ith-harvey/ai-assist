@@ -38,7 +38,7 @@ public struct ContentView: View {
     /// first crack at vertical gestures.
     private let directionLockDistance: CGFloat = 20
     /// Vertical drag distance to trigger voice recording.
-    private let recordThreshold: CGFloat = 15
+    private let recordThreshold: CGFloat = 10
 
     public init() {}
 
@@ -186,15 +186,22 @@ public struct ContentView: View {
     #if os(iOS)
     private func startVoiceRecording() {
         guard speechRecognizer.isAuthorized else {
+            print("[HAPTIC] ⚠️ not authorized, requesting permissions")
             speechRecognizer.requestPermissions()
             return
         }
+
         isRecordingVoice = true
         speechRecognizer.startRecording()
+        print("[HAPTIC] recording started")
 
-        // Haptic feedback on start
-        let generator = UIImpactFeedbackGenerator(style: .medium)
-        generator.impactOccurred()
+        // Dispatch haptic outside the scroll event callback —
+        // UIKit suppresses haptics fired synchronously during scroll.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+            print("[HAPTIC] 🟢 firing START haptic (async)")
+            let gen = UINotificationFeedbackGenerator()
+            gen.notificationOccurred(.warning)
+        }
     }
 
     private func stopVoiceRecordingAndRefine(cardId: UUID) {
@@ -204,6 +211,7 @@ public struct ContentView: View {
         isRecordingVoice = false
 
         // Haptic feedback on stop/submit
+        print("[HAPTIC] 🔴 firing STOP haptic (success notification)")
         let notification = UINotificationFeedbackGenerator()
         notification.notificationOccurred(.success)
 
@@ -228,18 +236,18 @@ public struct ContentView: View {
     }
 
     private var recordingBar: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "mic.fill")
-                .font(.system(size: 14, weight: .semibold))
-                .symbolEffect(.pulse)
-            Text("Recording...")
-                .font(.caption)
-                .fontWeight(.semibold)
+        HStack(spacing: 6) {
+            Circle()
+                .fill(Color.red)
+                .frame(width: 8, height: 8)
+            Text("recording... suggest changes")
+                .font(.caption2)
+                .fontWeight(.medium)
         }
-        .foregroundStyle(.white)
+        .foregroundStyle(.secondary)
         .frame(maxWidth: .infinity)
-        .padding(.vertical, 8)
-        .background(Color.orange)
+        .padding(.vertical, 6)
+        .background(.ultraThinMaterial)
         .transition(.move(edge: .bottom).combined(with: .opacity))
     }
 
