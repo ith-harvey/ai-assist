@@ -9,7 +9,7 @@ public struct MainTabView: View {
     public var body: some View {
         TabView(selection: $selectedTab) {
             NavigationStack {
-                BrainPlaceholderView()
+                BrainChatView()
                     .navigationTitle("Brain")
             }
             .tabItem {
