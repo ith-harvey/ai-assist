@@ -6,18 +6,21 @@ use async_trait::async_trait;
 use axum::{
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
-        State,
+        Query, State,
     },
+    http::StatusCode,
     response::IntoResponse,
     routing::get,
-    Router,
+    Json, Router,
 };
 use futures::stream;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, mpsc, Mutex};
 use tracing::{debug, info, warn};
+use uuid::Uuid;
 
 use crate::channels::{Channel, IncomingMessage, MessageStream, OutgoingResponse, StatusUpdate};
+use crate::db::Database;
 use crate::error::ChannelError;
 
 // ── JSON Protocol ───────────────────────────────────────────────────────
@@ -62,6 +65,32 @@ enum ServerMessage {
     },
 }
 
+// ── History DTOs ────────────────────────────────────────────────────────
+
+/// A single message in a chat history response.
+#[derive(Debug, Serialize)]
+struct ChatHistoryMessage {
+    id: String,
+    role: String,
+    content: String,
+    timestamp: String,
+}
+
+/// Response body for `GET /api/chat/history`.
+#[derive(Debug, Serialize)]
+struct ChatHistoryResponse {
+    thread_id: String,
+    messages: Vec<ChatHistoryMessage>,
+    has_more: bool,
+}
+
+/// Query parameters for `GET /api/chat/history`.
+#[derive(Debug, Deserialize)]
+struct HistoryQuery {
+    thread_id: Option<String>,
+    limit: Option<usize>,
+}
+
 // ── Shared State ────────────────────────────────────────────────────────
 
 /// Internal state shared between the channel and WS handlers.
@@ -74,8 +103,9 @@ struct IosChannelInner {
 
 /// Axum handler state (cloneable).
 #[derive(Clone)]
-struct WsState {
+struct IosChatState {
     inner: Arc<IosChannelInner>,
+    store: Option<Arc<dyn Database>>,
 }
 
 // ── IosChannel ──────────────────────────────────────────────────────────
@@ -91,13 +121,18 @@ struct WsState {
 ///   broadcast channel independently.
 pub struct IosChannel {
     inner: Arc<IosChannelInner>,
+    /// Conversation store for history queries.
+    store: Option<Arc<dyn Database>>,
     /// Receiver side of the incoming channel — consumed once in `start()`.
     incoming_rx: Mutex<Option<mpsc::UnboundedReceiver<IncomingMessage>>>,
 }
 
 impl IosChannel {
     /// Create a new iOS channel.
-    pub fn new() -> Self {
+    ///
+    /// Pass a `Database` to enable the `/api/chat/history` endpoint.
+    /// If `None`, history requests return empty results.
+    pub fn new(store: Option<Arc<dyn Database>>) -> Self {
         let (incoming_tx, incoming_rx) = mpsc::unbounded_channel();
         let (outgoing_tx, _) = broadcast::channel(256);
 
@@ -108,20 +143,23 @@ impl IosChannel {
 
         Self {
             inner,
+            store,
             incoming_rx: Mutex::new(Some(incoming_rx)),
         }
     }
 
-    /// Build an Axum router with the `/ws/chat` endpoint.
+    /// Build an Axum router with the `/ws/chat` and `/api/chat/history` endpoints.
     ///
     /// Call this once and merge with the main app router.
     pub fn router(&self) -> Router {
-        let state = WsState {
+        let state = IosChatState {
             inner: Arc::clone(&self.inner),
+            store: self.store.clone(),
         };
 
         Router::new()
             .route("/ws/chat", get(ws_chat_handler))
+            .route("/api/chat/history", get(history_handler))
             .with_state(state)
     }
 }
@@ -226,7 +264,7 @@ impl Channel for IosChannel {
 
 async fn ws_chat_handler(
     ws: WebSocketUpgrade,
-    State(state): State<WsState>,
+    State(state): State<IosChatState>,
 ) -> impl IntoResponse {
     info!("iOS chat client connecting");
     ws.on_upgrade(|socket| handle_chat_socket(socket, state.inner))
@@ -305,4 +343,85 @@ async fn handle_chat_socket(mut socket: WebSocket, inner: Arc<IosChannelInner>) 
     }
 
     info!("iOS chat connection closed");
+}
+
+// ── History Handler ─────────────────────────────────────────────────────
+
+async fn history_handler(
+    State(state): State<IosChatState>,
+    Query(params): Query<HistoryQuery>,
+) -> impl IntoResponse {
+    let limit = params.limit.unwrap_or(50).min(200);
+
+    // Parse thread_id — if missing or invalid, return empty
+    let thread_id_str = match params.thread_id {
+        Some(ref tid) => tid.clone(),
+        None => {
+            return Json(ChatHistoryResponse {
+                thread_id: String::new(),
+                messages: vec![],
+                has_more: false,
+            })
+            .into_response();
+        }
+    };
+
+    let thread_uuid = match Uuid::parse_str(&thread_id_str) {
+        Ok(id) => id,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "Invalid thread_id — must be a UUID"})),
+            )
+                .into_response();
+        }
+    };
+
+    // Query the store if available
+    let store = match state.store {
+        Some(ref s) => s,
+        None => {
+            return Json(ChatHistoryResponse {
+                thread_id: thread_id_str,
+                messages: vec![],
+                has_more: false,
+            })
+            .into_response();
+        }
+    };
+
+    match store.list_conversation_messages(thread_uuid).await {
+        Ok(all_messages) => {
+            let total = all_messages.len();
+            let has_more = total > limit;
+            // Take the last `limit` messages (most recent)
+            let start = total.saturating_sub(limit);
+            let messages: Vec<ChatHistoryMessage> = all_messages[start..]
+                .iter()
+                .map(|m| ChatHistoryMessage {
+                    id: m.id.to_string(),
+                    role: m.role.clone(),
+                    content: m.content.clone(),
+                    // ConversationMessage doesn't carry a timestamp yet;
+                    // return empty string as placeholder until the DB layer adds it.
+                    timestamp: String::new(),
+                })
+                .collect();
+
+            Json(ChatHistoryResponse {
+                thread_id: thread_id_str,
+                messages,
+                has_more,
+            })
+            .into_response()
+        }
+        Err(e) => {
+            warn!(error = %e, thread_id = %thread_id_str, "Failed to load chat history");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "Failed to load history"})),
+            )
+                .into_response()
+        }
+    }
 }

@@ -52,6 +52,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     eprintln!("   Model: {}", model);
     eprintln!("   Card WS: ws://0.0.0.0:{}/ws", ws_port);
     eprintln!("   Chat WS: ws://0.0.0.0:{}/ws/chat", ws_port);
+    eprintln!("   Chat API: http://0.0.0.0:{}/api/chat/history", ws_port);
     eprintln!("   Card API: http://0.0.0.0:{}/api/cards", ws_port);
     eprintln!("   Type a message and press Enter. /quit to exit.\n");
 
@@ -126,7 +127,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let email_config_for_cards = EmailConfig::from_env();
 
     // Create iOS channel (needs to exist before router build)
-    let ios_channel = IosChannel::new();
+    let ios_channel = IosChannel::new(None);
     let ios_router = ios_channel.router();
 
     // Spawn Axum WS/REST server for cards + iOS chat
