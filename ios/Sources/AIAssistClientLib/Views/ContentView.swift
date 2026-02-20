@@ -38,7 +38,7 @@ public struct ContentView: View {
     /// first crack at vertical gestures.
     private let directionLockDistance: CGFloat = 20
     /// Vertical drag distance to trigger voice recording.
-    private let recordThreshold: CGFloat = 20
+    private let recordThreshold: CGFloat = 10
 
     public init() {}
 
