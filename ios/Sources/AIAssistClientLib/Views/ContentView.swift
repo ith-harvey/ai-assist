@@ -190,14 +190,18 @@ public struct ContentView: View {
             speechRecognizer.requestPermissions()
             return
         }
-        // Use notification haptic — impact gets suppressed during scroll
-        print("[HAPTIC] 🟢 firing START haptic (warning notification)")
-        let gen = UINotificationFeedbackGenerator()
-        gen.notificationOccurred(.warning)
 
         isRecordingVoice = true
         speechRecognizer.startRecording()
         print("[HAPTIC] recording started")
+
+        // Dispatch haptic outside the scroll event callback —
+        // UIKit suppresses haptics fired synchronously during scroll.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+            print("[HAPTIC] 🟢 firing START haptic (async)")
+            let gen = UINotificationFeedbackGenerator()
+            gen.notificationOccurred(.warning)
+        }
     }
 
     private func stopVoiceRecordingAndRefine(cardId: UUID) {
