@@ -1,32 +1,30 @@
 //! Card queue — in-memory per-user card queue with broadcast to WebSocket clients.
 //!
-//! Optionally backed by a SQLite `CardStore` for persistence across restarts.
+//! Backed by the unified async `Database` trait for persistence across restarts.
 
 use std::collections::VecDeque;
 use std::sync::Arc;
 
-use tokio::sync::{broadcast, RwLock};
+use tokio::sync::{RwLock, broadcast};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 use super::generator::CardGenerator;
 use super::model::{CardStatus, ReplyCard, WsMessage};
-use crate::store::messages::MessageStatus;
-use crate::store::{CardStore, MessageStore};
+use crate::store::{Database, MessageStatus};
 
 /// Default broadcast channel capacity.
 const DEFAULT_BROADCAST_CAPACITY: usize = 256;
 
 /// In-memory card queue backed by a broadcast channel for fan-out to WS clients.
 ///
-/// When constructed with `with_store()`, all mutations are written through to SQLite.
+/// When constructed with `with_db()`, all mutations are written through to the database.
 /// If a DB write fails, we log the error and continue with the in-memory operation
 /// (graceful degradation).
 pub struct CardQueue {
     cards: RwLock<VecDeque<ReplyCard>>,
     tx: broadcast::Sender<WsMessage>,
-    store: Option<Arc<CardStore>>,
-    message_store: Option<Arc<MessageStore>>,
+    db: Option<Arc<dyn Database>>,
 }
 
 impl CardQueue {
@@ -36,31 +34,19 @@ impl CardQueue {
         Arc::new(Self {
             cards: RwLock::new(VecDeque::new()),
             tx,
-            store: None,
-            message_store: None,
+            db: None,
         })
     }
 
-    /// Create a card queue backed by a persistent CardStore.
+    /// Create a card queue backed by a `Database`.
     ///
     /// Loads pending cards from the database on creation.
-    pub fn with_store(store: Arc<CardStore>) -> Arc<Self> {
-        Self::with_stores(store, None)
-    }
-
-    /// Create a card queue backed by both CardStore and MessageStore.
-    ///
-    /// Loads pending cards from the database on creation.
-    /// When a card is approved/dismissed/sent, also updates the linked message status.
-    pub fn with_stores(
-        store: Arc<CardStore>,
-        message_store: Option<Arc<MessageStore>>,
-    ) -> Arc<Self> {
+    pub async fn with_db(db: Arc<dyn Database>) -> Arc<Self> {
         let (tx, _rx) = broadcast::channel(DEFAULT_BROADCAST_CAPACITY);
 
         // Load pending cards from DB
         let mut cards = VecDeque::new();
-        match store.get_pending() {
+        match db.get_pending_cards().await {
             Ok(pending) => {
                 info!(count = pending.len(), "Loaded pending cards from database");
                 cards.extend(pending);
@@ -73,8 +59,7 @@ impl CardQueue {
         Arc::new(Self {
             cards: RwLock::new(cards),
             tx,
-            store: Some(store),
-            message_store,
+            db: Some(db),
         })
     }
 
@@ -93,11 +78,11 @@ impl CardQueue {
             "New card pushed to queue"
         );
 
-        // Persist to DB (if store is configured)
-        if let Some(store) = &self.store
-            && let Err(e) = store.insert(&card)
-        {
-            error!(card_id = %card.id, error = %e, "Failed to persist card to DB");
+        // Persist to DB (if configured)
+        if let Some(ref db) = self.db {
+            if let Err(e) = db.insert_card(&card).await {
+                error!(card_id = %card.id, error = %e, "Failed to persist card to DB");
+            }
         }
 
         let msg = WsMessage::NewCard { card: card.clone() };
@@ -122,10 +107,10 @@ impl CardQueue {
         }
 
         // Persist to DB
-        if let Some(store) = &self.store
-            && let Err(e) = store.update_status(card_id, CardStatus::Approved)
-        {
-            error!(card_id = %card_id, error = %e, "Failed to persist approve to DB");
+        if let Some(ref db) = self.db {
+            if let Err(e) = db.update_card_status(card_id, CardStatus::Approved).await {
+                error!(card_id = %card_id, error = %e, "Failed to persist approve to DB");
+            }
         }
 
         card.status = CardStatus::Approved;
@@ -134,7 +119,8 @@ impl CardQueue {
 
         // Update linked message status → replied
         if let Some(ref msg_id) = approved.message_id {
-            self.update_message_status(msg_id, MessageStatus::Replied);
+            self.update_message_status(msg_id, MessageStatus::Replied)
+                .await;
         }
 
         info!(card_id = %card_id, "Card approved");
@@ -158,10 +144,10 @@ impl CardQueue {
             }
 
             // Persist to DB
-            if let Some(store) = &self.store
-                && let Err(e) = store.update_status(card_id, CardStatus::Dismissed)
-            {
-                error!(card_id = %card_id, error = %e, "Failed to persist dismiss to DB");
+            if let Some(ref db) = self.db {
+                if let Err(e) = db.update_card_status(card_id, CardStatus::Dismissed).await {
+                    error!(card_id = %card_id, error = %e, "Failed to persist dismiss to DB");
+                }
             }
 
             card.status = CardStatus::Dismissed;
@@ -169,7 +155,8 @@ impl CardQueue {
 
             // Update linked message status → dismissed
             if let Some(ref msg_id) = card.message_id {
-                self.update_message_status(msg_id, MessageStatus::Dismissed);
+                self.update_message_status(msg_id, MessageStatus::Dismissed)
+                    .await;
             }
 
             info!(card_id = %card_id, "Card dismissed");
@@ -197,10 +184,13 @@ impl CardQueue {
         }
 
         // Persist to DB
-        if let Some(store) = &self.store
-            && let Err(e) = store.update_reply(card_id, &new_text, CardStatus::Approved)
-        {
-            error!(card_id = %card_id, error = %e, "Failed to persist edit to DB");
+        if let Some(ref db) = self.db {
+            if let Err(e) = db
+                .update_card_reply(card_id, &new_text, CardStatus::Approved)
+                .await
+            {
+                error!(card_id = %card_id, error = %e, "Failed to persist edit to DB");
+            }
         }
 
         card.suggested_reply = new_text;
@@ -228,10 +218,15 @@ impl CardQueue {
         // Find the card and verify it's pending
         let card_snapshot = {
             let cards = self.cards.read().await;
-            let card = cards.iter().find(|c| c.id == card_id)
+            let card = cards
+                .iter()
+                .find(|c| c.id == card_id)
                 .ok_or_else(|| format!("Card {} not found", card_id))?;
             if card.status != CardStatus::Pending {
-                return Err(format!("Card {} is not pending (status: {:?})", card_id, card.status));
+                return Err(format!(
+                    "Card {} is not pending (status: {:?})",
+                    card_id, card.status
+                ));
             }
             card.clone()
         };
@@ -245,7 +240,9 @@ impl CardQueue {
         // Update card in-place
         let updated = {
             let mut cards = self.cards.write().await;
-            let card = cards.iter_mut().find(|c| c.id == card_id)
+            let card = cards
+                .iter_mut()
+                .find(|c| c.id == card_id)
                 .ok_or_else(|| format!("Card {} disappeared during refinement", card_id))?;
 
             if card.status != CardStatus::Pending {
@@ -259,8 +256,11 @@ impl CardQueue {
         };
 
         // Persist to DB (keep status as Pending)
-        if let Some(store) = &self.store {
-            if let Err(e) = store.update_reply(card_id, &updated.suggested_reply, CardStatus::Pending) {
+        if let Some(ref db) = self.db {
+            if let Err(e) = db
+                .update_card_reply(card_id, &updated.suggested_reply, CardStatus::Pending)
+                .await
+            {
                 error!(card_id = %card_id, error = %e, "Failed to persist refine to DB");
             }
         }
@@ -268,7 +268,9 @@ impl CardQueue {
         info!(card_id = %card_id, "Card refined");
 
         // Broadcast the full updated card so iOS can replace it in-place
-        let _ = self.tx.send(WsMessage::CardRefreshed { card: updated.clone() });
+        let _ = self.tx.send(WsMessage::CardRefreshed {
+            card: updated.clone(),
+        });
 
         Ok(updated)
     }
@@ -287,10 +289,10 @@ impl CardQueue {
     /// Returns the number of cards expired.
     pub async fn expire_old(&self) -> usize {
         // Expire in DB first
-        if let Some(store) = &self.store
-            && let Err(e) = store.expire_old()
-        {
-            error!(error = %e, "Failed to expire old cards in DB");
+        if let Some(ref db) = self.db {
+            if let Err(e) = db.expire_old_cards().await {
+                error!(error = %e, "Failed to expire old cards in DB");
+            }
         }
 
         let mut cards = self.cards.write().await;
@@ -320,7 +322,6 @@ impl CardQueue {
 
             let to_remove = non_pending.len().saturating_sub(100);
             if to_remove > 0 {
-                // Remove oldest non-pending cards
                 let mut removed = 0;
                 cards.retain(|c| {
                     if c.status != CardStatus::Pending && removed < to_remove {
@@ -356,10 +357,10 @@ impl CardQueue {
 
         if let Some(card) = cards.iter_mut().find(|c| c.id == card_id) {
             // Persist to DB
-            if let Some(store) = &self.store
-                && let Err(e) = store.update_status(card_id, CardStatus::Sent)
-            {
-                error!(card_id = %card_id, error = %e, "Failed to persist mark_sent to DB");
+            if let Some(ref db) = self.db {
+                if let Err(e) = db.update_card_status(card_id, CardStatus::Sent).await {
+                    error!(card_id = %card_id, error = %e, "Failed to persist mark_sent to DB");
+                }
             }
 
             card.status = CardStatus::Sent;
@@ -367,7 +368,8 @@ impl CardQueue {
 
             // Update linked message status → replied
             if let Some(ref msg_id) = card.message_id {
-                self.update_message_status(msg_id, MessageStatus::Replied);
+                self.update_message_status(msg_id, MessageStatus::Replied)
+                    .await;
             }
 
             let _ = self.tx.send(WsMessage::CardUpdate {
@@ -381,12 +383,15 @@ impl CardQueue {
         }
     }
 
-    /// Helper: update the linked message status (if MessageStore is available).
-    fn update_message_status(&self, message_id: &str, status: MessageStatus) {
-        if let Some(ref msg_store) = self.message_store
-            && let Err(e) = msg_store.update_status(message_id, status)
-        {
-            warn!(message_id = message_id, "Failed to update message status in DB: {e}");
+    /// Helper: update the linked message status (if DB is available).
+    async fn update_message_status(&self, message_id: &str, status: MessageStatus) {
+        if let Some(ref db) = self.db {
+            if let Err(e) = db.update_message_status(message_id, status).await {
+                warn!(
+                    message_id = message_id,
+                    "Failed to update message status in DB: {e}"
+                );
+            }
         }
     }
 }
@@ -406,15 +411,22 @@ pub fn spawn_expiry_task(queue: Arc<CardQueue>) -> tokio::task::JoinHandle<()> {
 mod tests {
     use super::*;
     use crate::cards::model::ReplyCard;
-    use crate::store::Database;
+    use crate::store::LibSqlBackend;
 
     fn make_card(expire_minutes: u32) -> ReplyCard {
-        ReplyCard::new("chat_1", "hello", "Alice", "hi!", 0.9, "telegram", expire_minutes)
+        ReplyCard::new(
+            "chat_1",
+            "hello",
+            "Alice",
+            "hi!",
+            0.9,
+            "telegram",
+            expire_minutes,
+        )
     }
 
-    fn make_store() -> Arc<CardStore> {
-        let db = Arc::new(Database::open_in_memory().unwrap());
-        Arc::new(CardStore::new(db))
+    async fn make_db() -> Arc<dyn Database> {
+        Arc::new(LibSqlBackend::new_memory().await.unwrap())
     }
 
     #[tokio::test]
@@ -524,16 +536,16 @@ mod tests {
     // ── Integration tests with store ────────────────────────────────────
 
     #[tokio::test]
-    async fn with_store_loads_pending_on_init() {
-        let store = make_store();
+    async fn with_db_loads_pending_on_init() {
+        let db = make_db().await;
 
         // Pre-populate the DB with a pending card
         let card = make_card(15);
         let card_id = card.id;
-        store.insert(&card).unwrap();
+        db.insert_card(&card).await.unwrap();
 
-        // Create queue with store — should load the card
-        let queue = CardQueue::with_store(store);
+        // Create queue with db — should load the card
+        let queue = CardQueue::with_db(db).await;
         assert_eq!(queue.len().await, 1);
 
         let pending = queue.pending().await;
@@ -542,67 +554,67 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn with_store_persists_push() {
-        let store = make_store();
-        let queue = CardQueue::with_store(store.clone());
+    async fn with_db_persists_push() {
+        let db = make_db().await;
+        let queue = CardQueue::with_db(db.clone()).await;
 
         let card = make_card(15);
         let card_id = card.id;
         queue.push(card).await;
 
         // Verify it's in the DB
-        let db_card = store.get_by_id(card_id).unwrap().unwrap();
+        let db_card = db.get_card(card_id).await.unwrap().unwrap();
         assert_eq!(db_card.id, card_id);
         assert_eq!(db_card.status, CardStatus::Pending);
     }
 
     #[tokio::test]
-    async fn with_store_persists_approve() {
-        let store = make_store();
-        let queue = CardQueue::with_store(store.clone());
+    async fn with_db_persists_approve() {
+        let db = make_db().await;
+        let queue = CardQueue::with_db(db.clone()).await;
 
         let card = make_card(15);
         let card_id = card.id;
         queue.push(card).await;
         queue.approve(card_id).await;
 
-        let db_card = store.get_by_id(card_id).unwrap().unwrap();
+        let db_card = db.get_card(card_id).await.unwrap().unwrap();
         assert_eq!(db_card.status, CardStatus::Approved);
     }
 
     #[tokio::test]
-    async fn with_store_persists_dismiss() {
-        let store = make_store();
-        let queue = CardQueue::with_store(store.clone());
+    async fn with_db_persists_dismiss() {
+        let db = make_db().await;
+        let queue = CardQueue::with_db(db.clone()).await;
 
         let card = make_card(15);
         let card_id = card.id;
         queue.push(card).await;
         queue.dismiss(card_id).await;
 
-        let db_card = store.get_by_id(card_id).unwrap().unwrap();
+        let db_card = db.get_card(card_id).await.unwrap().unwrap();
         assert_eq!(db_card.status, CardStatus::Dismissed);
     }
 
     #[tokio::test]
-    async fn with_store_persists_edit() {
-        let store = make_store();
-        let queue = CardQueue::with_store(store.clone());
+    async fn with_db_persists_edit() {
+        let db = make_db().await;
+        let queue = CardQueue::with_db(db.clone()).await;
 
         let card = make_card(15);
         let card_id = card.id;
         queue.push(card).await;
         queue.edit(card_id, "new reply text".into()).await;
 
-        let db_card = store.get_by_id(card_id).unwrap().unwrap();
+        let db_card = db.get_card(card_id).await.unwrap().unwrap();
         assert_eq!(db_card.suggested_reply, "new reply text");
         assert_eq!(db_card.status, CardStatus::Approved);
     }
 
     #[tokio::test]
-    async fn with_store_persists_mark_sent() {
-        let store = make_store();
-        let queue = CardQueue::with_store(store.clone());
+    async fn with_db_persists_mark_sent() {
+        let db = make_db().await;
+        let queue = CardQueue::with_db(db.clone()).await;
 
         let card = make_card(15);
         let card_id = card.id;
@@ -610,7 +622,7 @@ mod tests {
         queue.approve(card_id).await;
         queue.mark_sent(card_id).await;
 
-        let db_card = store.get_by_id(card_id).unwrap().unwrap();
+        let db_card = db.get_card(card_id).await.unwrap().unwrap();
         assert_eq!(db_card.status, CardStatus::Sent);
     }
 }

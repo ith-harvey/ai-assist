@@ -3,14 +3,14 @@
 use std::sync::Arc;
 
 use axum::{
+    Json, Router,
     extract::{
-        ws::{Message, WebSocket, WebSocketUpgrade},
         Path, State,
+        ws::{Message, WebSocket, WebSocketUpgrade},
     },
     http::StatusCode,
     response::IntoResponse,
     routing::{get, post},
-    Json, Router,
 };
 use serde::Deserialize;
 use tracing::{debug, info, warn};
@@ -19,7 +19,7 @@ use uuid::Uuid;
 use super::generator::CardGenerator;
 use super::model::{CardAction, ReplyCard, WsMessage};
 use super::queue::CardQueue;
-use crate::channels::email::{send_reply_email, EmailConfig};
+use crate::channels::email::{EmailConfig, send_reply_email};
 
 /// Application state shared across handlers.
 #[derive(Clone)]
@@ -66,10 +66,7 @@ async fn health() -> impl IntoResponse {
 
 // ── WebSocket ───────────────────────────────────────────────────────────
 
-async fn ws_handler(
-    ws: WebSocketUpgrade,
-    State(state): State<AppState>,
-) -> impl IntoResponse {
+async fn ws_handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> impl IntoResponse {
     info!("WebSocket client connecting");
     ws.on_upgrade(|socket| handle_socket(socket, state.queue, state.email_config, state.generator))
 }
@@ -185,12 +182,13 @@ async fn handle_client_message(
                     warn!(card_id = %card_id, "Edit failed — card not found or not pending");
                 }
             }
-            CardAction::Refine { card_id, instruction } => {
-                match queue.refine(card_id, instruction, generator).await {
-                    Ok(_card) => info!(card_id = %card_id, "Card refined via WS"),
-                    Err(e) => warn!(card_id = %card_id, error = %e, "Refine failed via WS"),
-                }
-            }
+            CardAction::Refine {
+                card_id,
+                instruction,
+            } => match queue.refine(card_id, instruction, generator).await {
+                Ok(_card) => info!(card_id = %card_id, "Card refined via WS"),
+                Err(e) => warn!(card_id = %card_id, error = %e, "Refine failed via WS"),
+            },
         },
         Err(e) => {
             debug!(error = %e, text = text, "Unrecognized WS message from client");
@@ -202,11 +200,7 @@ async fn handle_client_message(
 ///
 /// For email cards with reply_metadata, sends a reply-all email with threading headers.
 /// Marks the card as sent on success.
-async fn send_card_reply(
-    card: &ReplyCard,
-    email_config: Option<&EmailConfig>,
-    queue: &CardQueue,
-) {
+async fn send_card_reply(card: &ReplyCard, email_config: Option<&EmailConfig>, queue: &CardQueue) {
     if card.channel == "email" {
         if let (Some(config), Some(meta)) = (email_config, &card.reply_metadata) {
             match send_reply_email(config, meta, &card.suggested_reply) {
@@ -241,13 +235,15 @@ async fn list_cards(State(state): State<AppState>) -> impl IntoResponse {
     Json(cards)
 }
 
-async fn approve_card(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> impl IntoResponse {
+async fn approve_card(State(state): State<AppState>, Path(id): Path<String>) -> impl IntoResponse {
     let card_id = match Uuid::parse_str(&id) {
         Ok(id) => id,
-        Err(_) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "Invalid card ID"}))),
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "Invalid card ID"})),
+            );
+        }
     };
 
     match state.queue.approve(card_id).await {
@@ -255,23 +251,34 @@ async fn approve_card(
             send_card_reply(&card, state.email_config.as_ref(), &state.queue).await;
             (StatusCode::OK, Json(serde_json::json!(card)))
         }
-        None => (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "Card not found or not pending"}))),
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "Card not found or not pending"})),
+        ),
     }
 }
 
-async fn dismiss_card(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> impl IntoResponse {
+async fn dismiss_card(State(state): State<AppState>, Path(id): Path<String>) -> impl IntoResponse {
     let card_id = match Uuid::parse_str(&id) {
         Ok(id) => id,
-        Err(_) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "Invalid card ID"}))),
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "Invalid card ID"})),
+            );
+        }
     };
 
     if state.queue.dismiss(card_id).await {
-        (StatusCode::OK, Json(serde_json::json!({"status": "dismissed"})))
+        (
+            StatusCode::OK,
+            Json(serde_json::json!({"status": "dismissed"})),
+        )
     } else {
-        (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "Card not found or not pending"})))
+        (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "Card not found or not pending"})),
+        )
     }
 }
 
@@ -287,7 +294,12 @@ async fn edit_card(
 ) -> impl IntoResponse {
     let card_id = match Uuid::parse_str(&id) {
         Ok(id) => id,
-        Err(_) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "Invalid card ID"}))),
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "Invalid card ID"})),
+            );
+        }
     };
 
     match state.queue.edit(card_id, body.text).await {
@@ -295,7 +307,10 @@ async fn edit_card(
             send_card_reply(&card, state.email_config.as_ref(), &state.queue).await;
             (StatusCode::OK, Json(serde_json::json!(card)))
         }
-        None => (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "Card not found or not pending"}))),
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "Card not found or not pending"})),
+        ),
     }
 }
 
@@ -316,7 +331,7 @@ async fn refine_card(
                 StatusCode::BAD_REQUEST,
                 Json(serde_json::json!({"error": "Invalid card ID"})),
             )
-                .into_response()
+                .into_response();
         }
     };
 
@@ -354,11 +369,21 @@ struct TestCardRequest {
     confidence: f32,
 }
 
-fn default_sender() -> String { "Alice".into() }
-fn default_message() -> String { "Hey, are you free for lunch today?".into() }
-fn default_reply() -> String { "Yeah sounds good! Where were you thinking?".into() }
-fn default_channel() -> String { "telegram".into() }
-fn default_confidence() -> f32 { 0.85 }
+fn default_sender() -> String {
+    "Alice".into()
+}
+fn default_message() -> String {
+    "Hey, are you free for lunch today?".into()
+}
+fn default_reply() -> String {
+    "Yeah sounds good! Where were you thinking?".into()
+}
+fn default_channel() -> String {
+    "telegram".into()
+}
+fn default_confidence() -> f32 {
+    0.85
+}
 
 async fn create_test_card(
     State(state): State<AppState>,
@@ -376,5 +401,8 @@ async fn create_test_card(
     let card_id = card.id;
     state.queue.push(card).await;
     info!(card_id = %card_id, "Test card created");
-    (StatusCode::CREATED, Json(serde_json::json!({"card_id": card_id, "status": "created"})))
+    (
+        StatusCode::CREATED,
+        Json(serde_json::json!({"card_id": card_id, "status": "created"})),
+    )
 }

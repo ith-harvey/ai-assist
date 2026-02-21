@@ -55,9 +55,10 @@ impl Channel for CliChannel {
             }
         });
 
-        let stream = stream::unfold(rx, |mut rx| async move {
-            rx.recv().await.map(|msg| (msg, rx))
-        });
+        let stream = stream::unfold(
+            rx,
+            |mut rx| async move { rx.recv().await.map(|msg| (msg, rx)) },
+        );
 
         Ok(Box::pin(stream))
     }

@@ -3,8 +3,7 @@
 use std::time::Duration;
 
 /// Default system prompt when none is configured.
-pub const DEFAULT_SYSTEM_PROMPT: &str =
-    "You are AI Assist, a helpful and conversational AI assistant. \
+pub const DEFAULT_SYSTEM_PROMPT: &str = "You are AI Assist, a helpful and conversational AI assistant. \
      Respond naturally, concisely, and directly. \
      Don't ask what task to complete — just have a conversation.";
 

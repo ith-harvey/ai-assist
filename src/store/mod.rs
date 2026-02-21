@@ -1,9 +1,8 @@
-//! Persistence layer — SQLite-backed storage for cards, messages, and more.
+//! Persistence layer — libSQL-backed async storage for cards, messages, conversations.
 
-pub mod cards;
-pub mod db;
-pub mod messages;
+pub mod libsql_backend;
+pub mod migrations;
+pub mod traits;
 
-pub use cards::CardStore;
-pub use db::Database;
-pub use messages::MessageStore;
+pub use libsql_backend::LibSqlBackend;
+pub use traits::{ConversationMessage, Database, MessageStatus, StoredMessage};

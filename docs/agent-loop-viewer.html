@@ -1,0 +1,386 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>AI-Assist Agent Loop Architecture</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 1200px; margin: 0 auto; padding: 2rem; background: #0d1117; color: #c9d1d9; }
+  h1 { color: #58a6ff; border-bottom: 1px solid #30363d; padding-bottom: 0.5em; }
+  h2 { color: #79c0ff; margin-top: 3rem; }
+  h3 { color: #d2a8ff; }
+  .mermaid { background: #161b22; border-radius: 8px; padding: 1.5rem; margin: 1rem 0; }
+  blockquote { border-left: 3px solid #f0883e; padding-left: 1rem; color: #f0883e; }
+  code { background: #161b22; padding: 2px 6px; border-radius: 4px; color: #79c0ff; }
+  table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
+  th, td { border: 1px solid #30363d; padding: 8px 12px; text-align: left; }
+  th { background: #161b22; color: #58a6ff; }
+  .note { background: #1c1e24; border: 1px solid #30363d; border-radius: 8px; padding: 1rem; margin: 1rem 0; }
+  a { color: #58a6ff; }
+</style>
+</head>
+<body>
+
+<h1>🤖 AI-Assist Agent Loop Architecture</h1>
+<p>Generated from codebase analysis of <code>~/projects/ai-assist/src/agent/</code></p>
+
+<h2>1. High-Level System Architecture</h2>
+<p>How all the pieces connect at startup (<code>main.rs</code> → <code>Agent::run()</code>):</p>
+<div class="mermaid">
+graph TB
+    subgraph "main.rs — Startup"
+        ENV["Environment Vars<br/>ANTHROPIC_API_KEY<br/>AI_ASSIST_MODEL<br/>TELEGRAM_BOT_TOKEN"]
+        LLM["LlmProvider<br/>(Anthropic)"]
+        DB["Database<br/>(SQLite)"]
+        CARDS["CardGenerator<br/>+ CardQueue"]
+        TOOLS["ToolRegistry<br/>(empty — no tools registered)"]
+        SAFETY["SafetyLayer"]
+    end
+    subgraph "Axum Server (port 8080)"
+        WS_CARDS["/ws — Card WebSocket"]
+        WS_CHAT["/ws/chat — iOS Chat<br/>WebSocket"]
+        REST_CARDS["/api/cards — Card REST API"]
+        REST_CHAT["/api/chat/history — Chat REST"]
+    end
+    subgraph "ChannelManager"
+        CH_CLI["CliChannel<br/>(stdin/stdout)"]
+        CH_IOS["IosChannel<br/>(WebSocket)"]
+        CH_TG["TelegramChannel<br/>(Bot API, optional)"]
+        CH_EMAIL["EmailChannel<br/>(IMAP/SMTP, optional)"]
+    end
+    subgraph "Agent"
+        DEPS["AgentDeps bundle"]
+        SESS_MGR["SessionManager"]
+        CTX_MON["ContextMonitor"]
+        ROUTER["Router (/ commands)"]
+    end
+    ENV --> LLM
+    ENV --> DB
+    LLM --> CARDS
+    DB --> CARDS
+    LLM --> DEPS
+    SAFETY --> DEPS
+    TOOLS --> DEPS
+    CARDS --> DEPS
+    CH_CLI --> ChannelManager
+    CH_IOS --> ChannelManager
+    CH_TG --> ChannelManager
+    CH_EMAIL --> ChannelManager
+    DEPS --> Agent
+    ChannelManager --> Agent
+    SESS_MGR --> Agent
+    CTX_MON --> Agent
+    ROUTER --> Agent
+    Agent -->|"channels.start_all()"| MSG_STREAM["MessageStream<br/>(merged from all channels)"]
+    style TOOLS fill:#ff9999,stroke:#cc0000
+    style CARDS fill:#99ddff,stroke:#0066cc
+</div>
+<blockquote>⚠️ <code>ToolRegistry::new()</code> creates an empty registry — no tools are registered. The agentic loop infrastructure is complete but has no tools to call.</blockquote>
+
+<h2>2. Agent Main Loop (<code>Agent::run()</code>)</h2>
+<p>The outer event loop that receives messages and dispatches them:</p>
+<div class="mermaid">
+flowchart TD
+    START["Agent::run()"]
+    START --> START_CH["channels.start_all()<br/>→ merged MessageStream"]
+    START_CH --> SPAWN_PRUNE["Spawn session pruning task<br/>(every 10 min)"]
+    SPAWN_PRUNE --> READY["✅ Agent ready and listening"]
+    READY --> SELECT{"tokio::select!<br/>(biased)"}
+    SELECT -->|"Ctrl+C"| SHUTDOWN["🛑 Shutdown"]
+    SELECT -->|"message from stream"| HANDLE["handle_message(&amp;msg)"]
+    HANDLE --> RESULT{"Result?"}
+    RESULT -->|"Ok(Some(response))<br/>non-empty"| RESPOND["channels.respond(&amp;msg, response)"]
+    RESULT -->|"Ok(Some(''))<br/>empty"| SKIP["Skip (approval handled<br/>via send_status)"]
+    RESULT -->|"Ok(None)"| SHUTDOWN
+    RESULT -->|"Err(e)"| ERR_RESPOND["channels.respond(&amp;msg,<br/>Error: ...)"]
+    RESPOND --> SELECT
+    SKIP --> SELECT
+    ERR_RESPOND --> SELECT
+    SHUTDOWN --> CLEANUP["pruning_handle.abort()<br/>channels.shutdown_all()"]
+</div>
+
+<h2>3. Message Dispatch (<code>handle_message</code>)</h2>
+<p>How a raw <code>IncomingMessage</code> gets classified and routed:</p>
+<div class="mermaid">
+flowchart TD
+    MSG["IncomingMessage"]
+    MSG --> PARSE["SubmissionParser::parse(&content)"]
+    PARSE --> HYDRATE{"Has thread_id ?"}
+    HYDRATE -->|"Yes"| DO_HYDRATE["maybe_hydrate_thread()<br/>Load from DB if not in memory"]
+    HYDRATE -->|"No"| RESOLVE
+    DO_HYDRATE --> RESOLVE
+    RESOLVE["session_manager.resolve_thread()<br/>→ (Session, thread_id)"]
+    RESOLVE --> DISPATCH{"Submission Type"}
+    DISPATCH -->|"UserInput"| USER["process_user_input()"]
+    DISPATCH -->|"SystemCommand"| SYSCMD["handle_system_command()<br/>/help, /version, /tools"]
+    DISPATCH -->|"Undo"| UNDO["process_undo()"]
+    DISPATCH -->|"Redo"| REDO["process_redo()"]
+    DISPATCH -->|"Interrupt"| INT["process_interrupt()"]
+    DISPATCH -->|"Compact"| COMPACT["process_compact()"]
+    DISPATCH -->|"Clear"| CLEAR["process_clear()"]
+    DISPATCH -->|"NewThread"| NEWT["process_new_thread()"]
+    DISPATCH -->|"Heartbeat"| HB["process_heartbeat()"]
+    DISPATCH -->|"Quit"| QUIT["return Ok(None) → shutdown"]
+    DISPATCH -->|"ExecApproval /<br/>ApprovalResponse"| APPROVE["process_approval()"]
+    style USER fill:#99ddff,stroke:#0066cc
+    style APPROVE fill:#ffcc99,stroke:#cc6600
+</div>
+
+<h2>4. User Input Processing (<code>process_user_input</code>) — The Heart</h2>
+<p>Every natural language message goes through here:</p>
+<div class="mermaid">
+flowchart TD
+    INPUT["process_user_input(msg, session, thread_id, content)"]
+    INPUT --> CHECK_STATE{"Thread State?"}
+    CHECK_STATE -->|"Processing"| REJECT1["❌ Turn in progress"]
+    CHECK_STATE -->|"AwaitingApproval"| REJECT2["❌ Waiting for approval"]
+    CHECK_STATE -->|"Completed"| REJECT3["❌ Thread completed"]
+    CHECK_STATE -->|"Idle / Interrupted"| SAFETY
+    SAFETY["Safety Validation"]
+    SAFETY --> VALIDATE_INPUT["safety.validate_input(content)"]
+    VALIDATE_INPUT --> POLICY["safety.check_policy(content)"]
+    POLICY --> POLICY_CHECK{"Blocked?"}
+    POLICY_CHECK -->|"Yes"| REJECT4["❌ Input rejected"]
+    POLICY_CHECK -->|"No"| CARDS
+    CARDS["🃏 Fire-and-forget: Card Generation<br/>tokio::spawn(card_gen.generate_cards(...))"]
+    CARDS --> COMPACT_CHECK
+    COMPACT_CHECK["Auto-Compaction Check"]
+    COMPACT_CHECK --> CTX_MON{"context_monitor<br/>suggest_compaction()"}
+    CTX_MON -->|"Some(strategy)"| DO_COMPACT["ContextCompactor::compact()<br/>+ notify 'compacting...'"]
+    CTX_MON -->|"None"| CHECKPOINT
+    DO_COMPACT --> CHECKPOINT
+    CHECKPOINT["Create Undo Checkpoint"]
+    CHECKPOINT --> START_TURN["thread.start_turn(content)"]
+    START_TURN --> THINK["📡 send_status Thinking"]
+    THINK --> AGENTIC["🔄 run_agentic_loop()"]
+    AGENTIC --> FINALIZE["finalize_loop_result()"]
+    FINALIZE --> FIN_CHECK{"Result?"}
+    FIN_CHECK -->|"Response"| COMPLETE["✅ thread.complete_turn()<br/>persist to DB"]
+    FIN_CHECK -->|"NeedApproval"| AWAIT["⏸️ thread.await_approval()"]
+    FIN_CHECK -->|"Error"| FAIL["❌ thread.fail_turn()"]
+    style AGENTIC fill:#ffdd99,stroke:#cc8800,stroke-width:3px
+    style CARDS fill:#99ddff,stroke:#0066cc
+    style SAFETY fill:#ffcccc,stroke:#cc0000
+    style CHECKPOINT fill:#ccffcc,stroke:#009900
+</div>
+
+<h2>5. The Agentic Tool Loop (<code>run_agentic_loop</code>) — Core Engine</h2>
+<p>The LLM→Tool→Repeat cycle. Currently has no registered tools, but infrastructure is production-ready:</p>
+<div class="mermaid">
+flowchart TD
+    ENTRY["run_agentic_loop(msg, session, thread_id, messages, resume)"]
+    ENTRY --> LOAD_SYS["Load workspace system prompt<br/>(AGENTS.md, SOUL.md)"]
+    LOAD_SYS --> INIT["Reasoning::new(llm, safety)<br/>context_messages = initial<br/>MAX_ITERATIONS = 10"]
+    INIT --> LOOP["🔄 LOOP START"]
+    LOOP --> INC["iteration += 1"]
+    INC --> MAX{"iteration > 10?"}
+    MAX -->|"Yes"| ERR_MAX["❌ Exceeded max iterations"]
+    MAX -->|"No"| INT{"Interrupted?"}
+    INT -->|"Yes"| ERR_INT["❌ Interrupted"]
+    INT -->|"No"| REFRESH["Refresh tool_defs<br/>from ToolRegistry"]
+    REFRESH --> LLM["📡 reasoning.respond_with_tools(context)"]
+    LLM --> RESULT{"RespondResult?"}
+    RESULT -->|"Text(text)"| NUDGE{"!tools_executed<br/>&& iter < 3<br/>&& has_tools?"}
+    NUDGE -->|"Yes"| DO_NUDGE["Append: 'Please use tools...'<br/>→ back to loop"]
+    DO_NUDGE --> LOOP
+    NUDGE -->|"No"| DONE["✅ Return Response(text)"]
+    RESULT -->|"ToolCalls"| TOOLS["tools_executed = true"]
+    TOOLS --> TOOL_LOOP["For each tool_call"]
+    TOOL_LOOP --> APPROVAL{"requires_approval()?"}
+    APPROVAL -->|"Yes + not auto-approved"| PAUSE["⏸️ Return NeedApproval<br/>(saves full context)"]
+    APPROVAL -->|"No or auto-approved"| EXEC["execute_chat_tool()<br/>1. Validate params<br/>2. Timeout-wrapped execute<br/>3. Serialize result"]
+    EXEC --> SANITIZE["safety.sanitize_tool_output()<br/>safety.wrap_for_llm()"]
+    SANITIZE --> APPEND["Append tool_result<br/>to context_messages"]
+    APPEND --> NEXT{"More tools?"}
+    NEXT -->|"Yes"| TOOL_LOOP
+    NEXT -->|"No"| LOOP
+    style LOOP fill:#ffdd99,stroke:#cc8800,stroke-width:2px
+    style LLM fill:#ddbbff,stroke:#7700cc,stroke-width:2px
+    style EXEC fill:#bbddff,stroke:#0055cc
+    style PAUSE fill:#ffcc99,stroke:#cc6600
+    style DONE fill:#bbffbb,stroke:#009900
+</div>
+
+<h2>6. Tool Approval Flow</h2>
+<div class="mermaid">
+sequenceDiagram
+    participant User
+    participant Channel as ChannelManager
+    participant Agent
+    participant Session as Session/Thread
+    participant Tool as ToolRegistry
+    Note over Agent: During agentic loop...
+    Agent->>Tool: tool.requires_approval()?
+    Tool-->>Agent: true
+    Agent->>Session: session.is_tool_auto_approved?
+    Session-->>Agent: false
+    Agent->>Session: thread.await_approval(PendingApproval)
+    Note over Session: State → AwaitingApproval<br/>Stores context_messages snapshot
+    Agent->>Channel: send_status(ApprovalNeeded)
+    Channel->>User: Tool X wants to run. Approve?
+    alt User approves
+        User->>Channel: yes / always
+        Channel->>Agent: process_approval(approved=true)
+        Agent->>Tool: execute_chat_tool(name, params)
+        Tool-->>Agent: result
+        Agent->>Agent: run_agentic_loop(resume=true)
+        Note over Agent: Loop continues from where it paused
+    else User rejects
+        User->>Channel: no
+        Channel->>Agent: process_approval(approved=false)
+        Agent->>Channel: Tool rejected
+    end
+</div>
+
+<h2>7. Context Compaction Flow</h2>
+<div class="mermaid">
+flowchart TD
+    CHECK["context_monitor.suggest_compaction(messages)"]
+    CHECK --> ANALYZE["ContextBreakdown::analyze()<br/>Estimate tokens: words × 1.3"]
+    ANALYZE --> THRESHOLD{"total > 80k tokens?"}
+    THRESHOLD -->|"No"| NONE["None — no compaction"]
+    THRESHOLD -->|"Yes"| USAGE{"usage %?"}
+    USAGE -->|"80-90%"| S10["Summarize keep_recent: 10"]
+    USAGE -->|"90-95%"| S5["Summarize keep_recent: 5"]
+    USAGE -->|"> 95%"| T3["Truncate keep_recent: 3"]
+    S10 --> COMPACT["ContextCompactor::compact()"]
+    S5 --> COMPACT
+    T3 --> COMPACT
+    COMPACT --> STRAT{"Strategy?"}
+    STRAT -->|"Summarize"| SUM["LLM summarizes old turns<br/>Writes to workspace daily log<br/>Truncates thread"]
+    STRAT -->|"Truncate"| TRUNC["Just truncate, no summary"]
+    STRAT -->|"MoveToWorkspace"| MOVE["Write turns as markdown<br/>Write to workspace<br/>Truncate to 10"]
+</div>
+
+<h2>8. Card Generation (Unique to AI-Assist)</h2>
+<div class="mermaid">
+flowchart LR
+    subgraph "Incoming"
+        MSG["User message<br/>Telegram / Email / CLI"]
+    end
+    subgraph "Parallel"
+        AGENT["Agent: Agentic Loop<br/>(LLM response)"]
+        CARDS["CardGenerator<br/>(fire-and-forget)"]
+    end
+    subgraph "Card Pipeline"
+        LLM_C["LLM: Generate 3<br/>reply suggestions"]
+        PARSE["Parse ReplyCard[]<br/>suggestion, confidence, tone"]
+        QUEUE["CardQueue"]
+    end
+    subgraph "Delivery"
+        WS["/ws WebSocket → iOS"]
+        REST["/api/cards → iOS polling"]
+        DB["CardStore (SQLite)"]
+    end
+    subgraph "iOS App"
+        SWIPE["Swipe: Approve / Edit / Dismiss"]
+    end
+    MSG --> AGENT
+    MSG --> CARDS
+    CARDS --> LLM_C --> PARSE --> QUEUE
+    QUEUE --> WS
+    QUEUE --> REST
+    QUEUE --> DB
+    WS --> SWIPE
+    style CARDS fill:#99ddff,stroke:#0066cc
+</div>
+
+<h2>9. Session & Thread Model</h2>
+<div class="mermaid">
+classDiagram
+    class SessionManager {
+        +get_or_create_session(user_id)
+        +resolve_thread(user_id, channel, thread_id)
+        +prune_stale_sessions(timeout)
+        +get_undo_manager(thread_id)
+    }
+    class Session {
+        +id: Uuid
+        +user_id: String
+        +active_thread: Option~Uuid~
+        +threads: HashMap~Uuid Thread~
+        +auto_approved_tools: HashSet~String~
+        +create_thread()
+        +is_tool_auto_approved(name)
+    }
+    class Thread {
+        +id: Uuid
+        +state: ThreadState
+        +turns: Vec~Turn~
+        +pending_approval: Option~PendingApproval~
+        +last_response_id: Option~String~
+        +start_turn(content)
+        +complete_turn(response)
+        +fail_turn(error)
+        +interrupt()
+        +await_approval(pending)
+        +messages()
+    }
+    class ThreadState {
+        Idle
+        Processing
+        AwaitingApproval
+        Interrupted
+        Completed
+    }
+    class Turn {
+        +turn_number: usize
+        +user_input: String
+        +response: Option~String~
+        +tool_calls: Vec~ToolCallRecord~
+    }
+    class PendingApproval {
+        +request_id: Uuid
+        +tool_name: String
+        +parameters: Value
+        +context_messages: Vec~ChatMessage~
+    }
+    SessionManager --> Session
+    Session --> Thread
+    Thread --> Turn
+    Thread --> PendingApproval
+    Thread --> ThreadState
+</div>
+
+<h2>10. What's Missing vs IronClaw</h2>
+<div class="mermaid">
+graph LR
+    subgraph "✅ Built & Working"
+        A1["Agent main loop"]
+        A2["Agentic tool loop"]
+        A3["Tool approval flow"]
+        A4["Context compaction"]
+        A5["Undo/Redo"]
+        A6["Session management"]
+        A7["Card generation"]
+        A8["4 Channels"]
+        A9["Safety layer"]
+    end
+    subgraph "❌ Empty / Stub"
+        B1["ToolRegistry EMPTY"]
+        B2["Workspace = None"]
+        B3["ExtensionManager = None"]
+    end
+    subgraph "🔮 In IronClaw, not ported"
+        C1["Job Scheduler"]
+        C2["Self-Repair"]
+        C3["Routine Engine"]
+        C4["Heartbeat Runner"]
+        C5["Auth Mode"]
+        C6["WASM Runtime"]
+        C7["MCP Client"]
+        C8["Sandbox"]
+    end
+    style B1 fill:#ff9999,stroke:#cc0000,stroke-width:3px
+</div>
+
+<script>
+  mermaid.initialize({ 
+    startOnLoad: true, 
+    theme: 'dark',
+    flowchart: { curve: 'basis', padding: 20 },
+    sequence: { actorMargin: 50, messageFontSize: 13 }
+  });
+</script>
+</body>
+</html>

@@ -16,18 +16,18 @@ use uuid::Uuid;
 
 use crate::agent::compaction::ContextCompactor;
 use crate::agent::context_monitor::ContextMonitor;
+use crate::agent::router::Router;
 use crate::agent::session::{Session, ThreadState};
 use crate::agent::session_manager::SessionManager;
 use crate::agent::submission::{Submission, SubmissionParser, SubmissionResult};
-use crate::agent::router::Router;
 use crate::cards::generator::CardGenerator;
 use crate::channels::{ChannelManager, IncomingMessage, OutgoingResponse, StatusUpdate};
 use crate::config::AgentConfig;
-use crate::db::Database;
 use crate::error::Error;
 use crate::extensions::ExtensionManager;
 use crate::llm::{ChatMessage, LlmProvider};
 use crate::safety::SafetyLayer;
+use crate::store::Database;
 use crate::tools::registry::ToolRegistry;
 use crate::workspace::Workspace;
 
@@ -482,10 +482,7 @@ impl Agent {
                 .and_then(|v| serde_json::from_value(v.clone()).ok())
                 .unwrap_or_default();
             // Extract reply metadata for sending replies (email recipients, subject, threading)
-            let reply_metadata = message
-                .metadata
-                .get("reply_metadata")
-                .cloned();
+            let reply_metadata = message.metadata.get("reply_metadata").cloned();
             // Extract email thread with full headers (From/To/CC/Subject)
             let email_thread: Vec<crate::channels::EmailMessage> = message
                 .metadata
@@ -782,10 +779,7 @@ mod tests {
         use crate::llm::{ChatMessage, Role};
 
         /// Simulate the system prompt injection logic from process_user_input.
-        fn inject_system_prompt(
-            messages: &mut Vec<ChatMessage>,
-            system_prompt: Option<&str>,
-        ) {
+        fn inject_system_prompt(messages: &mut Vec<ChatMessage>, system_prompt: Option<&str>) {
             if let Some(prompt) = system_prompt {
                 if !messages.iter().any(|m| m.role == Role::System) {
                     messages.insert(0, ChatMessage::system(prompt));
@@ -851,7 +845,10 @@ mod tests {
 
             // The condition: !tools_executed && iteration < 3 && has_tools
             let should_nudge = !tools_executed && iteration < 3 && has_tools;
-            assert!(!should_nudge, "Should NOT nudge when no tools are registered");
+            assert!(
+                !should_nudge,
+                "Should NOT nudge when no tools are registered"
+            );
         }
 
         #[test]
@@ -861,7 +858,10 @@ mod tests {
             let iteration = 1;
 
             let should_nudge = !tools_executed && iteration < 3 && has_tools;
-            assert!(should_nudge, "SHOULD nudge when tools are available but not used");
+            assert!(
+                should_nudge,
+                "SHOULD nudge when tools are available but not used"
+            );
         }
 
         #[test]
@@ -871,7 +871,10 @@ mod tests {
             let iteration = 1;
 
             let should_nudge = !tools_executed && iteration < 3 && has_tools;
-            assert!(!should_nudge, "Should NOT nudge after tools have been executed");
+            assert!(
+                !should_nudge,
+                "Should NOT nudge after tools have been executed"
+            );
         }
 
         #[test]

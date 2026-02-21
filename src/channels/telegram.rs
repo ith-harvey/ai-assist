@@ -470,10 +470,7 @@ impl Channel for TelegramChannel {
             tracing::info!("Telegram channel listening for messages...");
 
             loop {
-                let url = format!(
-                    "https://api.telegram.org/bot{}/getUpdates",
-                    bot_token
-                );
+                let url = format!("https://api.telegram.org/bot{}/getUpdates", bot_token);
                 let body = serde_json::json!({
                     "offset": offset,
                     "timeout": 30,
@@ -511,8 +508,7 @@ impl Channel for TelegramChannel {
                             continue;
                         };
 
-                        let Some(text) =
-                            message.get("text").and_then(serde_json::Value::as_str)
+                        let Some(text) = message.get("text").and_then(serde_json::Value::as_str)
                         else {
                             continue;
                         };
@@ -586,9 +582,11 @@ impl Channel for TelegramChannel {
             }
         });
 
-        let stream = futures::stream::unfold(rx, |mut rx| async move {
-            rx.recv().await.map(|msg| (msg, rx))
-        });
+        let stream =
+            futures::stream::unfold(
+                rx,
+                |mut rx| async move { rx.recv().await.map(|msg| (msg, rx)) },
+            );
 
         Ok(Box::pin(stream))
     }

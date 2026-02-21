@@ -370,9 +370,11 @@ impl Agent {
                 name: tool_name.to_string(),
                 timeout,
             })?
-            .map_err(|e: crate::tools::tool::ToolError| crate::error::ToolError::ExecutionFailed {
-                name: tool_name.to_string(),
-                reason: e.to_string(),
+            .map_err(|e: crate::tools::tool::ToolError| {
+                crate::error::ToolError::ExecutionFailed {
+                    name: tool_name.to_string(),
+                    reason: e.to_string(),
+                }
             })?;
 
         // Convert result to string

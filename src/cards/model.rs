@@ -251,8 +251,16 @@ mod tests {
             },
         ];
 
-        let card = ReplyCard::new("chat_1", "Latest msg", "alice@example.com", "Sounds good!", 0.85, "email", 15)
-            .with_thread(thread);
+        let card = ReplyCard::new(
+            "chat_1",
+            "Latest msg",
+            "alice@example.com",
+            "Sounds good!",
+            0.85,
+            "email",
+            15,
+        )
+        .with_thread(thread);
 
         let json = serde_json::to_string(&card).unwrap();
         assert!(json.contains("\"thread\""));
@@ -407,13 +415,24 @@ mod tests {
             "references": "<msg1@test.com>",
         });
 
-        let card = ReplyCard::new("chat_1", "hello", "sender@test.com", "hi!", 0.9, "email", 15)
-            .with_reply_metadata(meta);
+        let card = ReplyCard::new(
+            "chat_1",
+            "hello",
+            "sender@test.com",
+            "hi!",
+            0.9,
+            "email",
+            15,
+        )
+        .with_reply_metadata(meta);
 
         let json = serde_json::to_string(&card).unwrap();
         let parsed: ReplyCard = serde_json::from_str(&json).unwrap();
         assert!(parsed.reply_metadata.is_some());
-        assert_eq!(parsed.reply_metadata.as_ref().unwrap()["subject"], "Re: Test");
+        assert_eq!(
+            parsed.reply_metadata.as_ref().unwrap()["subject"],
+            "Re: Test"
+        );
     }
 
     // ── email_thread tests ──────────────────────────────────────────
