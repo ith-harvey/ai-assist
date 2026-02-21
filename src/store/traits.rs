@@ -173,4 +173,108 @@ pub trait Database: Send + Sync {
         // Default no-op stub
         Ok(())
     }
+
+    // ── Routines ────────────────────────────────────────────────────
+
+    /// Create a new routine.
+    async fn create_routine(
+        &self,
+        routine: &crate::agent::routine::Routine,
+    ) -> Result<(), DatabaseError>;
+
+    /// Get a routine by ID.
+    async fn get_routine(
+        &self,
+        id: Uuid,
+    ) -> Result<Option<crate::agent::routine::Routine>, DatabaseError>;
+
+    /// Get a routine by user_id + name.
+    async fn get_routine_by_name(
+        &self,
+        user_id: &str,
+        name: &str,
+    ) -> Result<Option<crate::agent::routine::Routine>, DatabaseError>;
+
+    /// List all routines for a user.
+    async fn list_routines(
+        &self,
+        user_id: &str,
+    ) -> Result<Vec<crate::agent::routine::Routine>, DatabaseError>;
+
+    /// List all enabled event-triggered routines (for event cache).
+    async fn list_event_routines(
+        &self,
+    ) -> Result<Vec<crate::agent::routine::Routine>, DatabaseError>;
+
+    /// List all enabled cron routines whose next_fire_at <= now.
+    async fn list_due_cron_routines(
+        &self,
+    ) -> Result<Vec<crate::agent::routine::Routine>, DatabaseError>;
+
+    /// Update a routine (full replace of mutable fields).
+    async fn update_routine(
+        &self,
+        routine: &crate::agent::routine::Routine,
+    ) -> Result<(), DatabaseError>;
+
+    /// Update runtime fields after a routine fires.
+    async fn update_routine_runtime(
+        &self,
+        id: Uuid,
+        last_run_at: DateTime<Utc>,
+        next_fire_at: Option<DateTime<Utc>>,
+        run_count: u64,
+        consecutive_failures: u32,
+        state: &serde_json::Value,
+    ) -> Result<(), DatabaseError>;
+
+    /// Delete a routine.
+    async fn delete_routine(&self, id: Uuid) -> Result<bool, DatabaseError>;
+
+    // ── Routine Runs ────────────────────────────────────────────────
+
+    /// Create a routine run record.
+    async fn create_routine_run(
+        &self,
+        run: &crate::agent::routine::RoutineRun,
+    ) -> Result<(), DatabaseError>;
+
+    /// Complete a routine run (set status, summary, tokens, completed_at).
+    async fn complete_routine_run(
+        &self,
+        id: Uuid,
+        status: crate::agent::routine::RunStatus,
+        summary: Option<&str>,
+        tokens: Option<i32>,
+    ) -> Result<(), DatabaseError>;
+
+    /// List recent runs for a routine.
+    async fn list_routine_runs(
+        &self,
+        routine_id: Uuid,
+        limit: i64,
+    ) -> Result<Vec<crate::agent::routine::RoutineRun>, DatabaseError>;
+
+    /// Count currently running runs for a routine.
+    async fn count_running_routine_runs(&self, routine_id: Uuid) -> Result<i64, DatabaseError>;
+
+    // ── Settings ────────────────────────────────────────────────────
+
+    /// Get a setting value.
+    async fn get_setting(
+        &self,
+        user_id: &str,
+        key: &str,
+    ) -> Result<Option<serde_json::Value>, DatabaseError>;
+
+    /// Set a setting value.
+    async fn set_setting(
+        &self,
+        user_id: &str,
+        key: &str,
+        value: &serde_json::Value,
+    ) -> Result<(), DatabaseError>;
+
+    /// Delete a setting.
+    async fn delete_setting(&self, user_id: &str, key: &str) -> Result<bool, DatabaseError>;
 }

@@ -65,6 +65,7 @@ pub struct AgentDeps {
     pub workspace: Option<Arc<Workspace>>,
     pub extension_manager: Option<Arc<ExtensionManager>>,
     pub card_generator: Option<Arc<CardGenerator>>,
+    pub routine_engine: Option<Arc<crate::agent::routine_engine::RoutineEngine>>,
 }
 
 /// The main agent that coordinates all components.
@@ -184,6 +185,14 @@ impl Agent {
                         .channels
                         .respond(&message, OutgoingResponse::text(format!("Error: {}", e)))
                         .await;
+                }
+            }
+
+            // Check event triggers after handling each message
+            if let Some(ref engine) = self.deps.routine_engine {
+                let fired = engine.check_event_triggers(&message).await;
+                if fired > 0 {
+                    tracing::debug!("Fired {} event-triggered routines", fired);
                 }
             }
         }

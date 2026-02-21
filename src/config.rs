@@ -47,6 +47,60 @@ impl Default for AgentConfig {
     }
 }
 
+/// Configuration for the routines engine.
+#[derive(Debug, Clone)]
+pub struct RoutineConfig {
+    /// Whether routines are enabled.
+    pub enabled: bool,
+    /// Cron ticker interval in seconds.
+    pub cron_interval_secs: u64,
+    /// Maximum concurrent routine executions globally.
+    pub max_concurrent_routines: usize,
+    /// Default cooldown between routine fires in seconds.
+    pub default_cooldown_secs: u64,
+    /// Maximum output tokens for lightweight routines.
+    pub max_lightweight_tokens: u32,
+}
+
+impl Default for RoutineConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            cron_interval_secs: 15,
+            max_concurrent_routines: 10,
+            default_cooldown_secs: 300,
+            max_lightweight_tokens: 4096,
+        }
+    }
+}
+
+impl RoutineConfig {
+    /// Build RoutineConfig from environment variables.
+    pub fn from_env() -> Self {
+        Self {
+            enabled: std::env::var("ROUTINES_ENABLED")
+                .map(|v| v != "false" && v != "0")
+                .unwrap_or(true),
+            cron_interval_secs: std::env::var("ROUTINES_CRON_INTERVAL")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(15),
+            max_concurrent_routines: std::env::var("ROUTINES_MAX_CONCURRENT")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(10),
+            default_cooldown_secs: std::env::var("ROUTINES_DEFAULT_COOLDOWN")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(300),
+            max_lightweight_tokens: std::env::var("ROUTINES_MAX_TOKENS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(4096),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

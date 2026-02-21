@@ -1,12 +1,13 @@
 use std::sync::Arc;
 
+use ai_assist::agent::routine_engine::{self, RoutineEngine};
 use ai_assist::agent::{Agent, AgentDeps};
 use ai_assist::cards::generator::{CardGenerator, GeneratorConfig};
 use ai_assist::cards::queue::{self, CardQueue};
 use ai_assist::cards::ws::card_routes;
 use ai_assist::channels::email::EmailConfig;
 use ai_assist::channels::{ChannelManager, CliChannel, EmailChannel, IosChannel, TelegramChannel};
-use ai_assist::config::AgentConfig;
+use ai_assist::config::{AgentConfig, RoutineConfig};
 use ai_assist::llm::{LlmBackend, LlmConfig, create_provider};
 use ai_assist::safety::SafetyLayer;
 use ai_assist::store::{Database, LibSqlBackend};
@@ -150,6 +151,48 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         axum::serve(listener, app).await.ok();
     });
 
+    // ── Routine Engine ────────────────────────────────────────────────────
+    let routine_config = RoutineConfig::from_env();
+    let routine_engine = if routine_config.enabled {
+        let (notify_tx, mut notify_rx) =
+            tokio::sync::mpsc::channel::<ai_assist::channels::OutgoingResponse>(256);
+        let engine = Arc::new(RoutineEngine::new(
+            routine_config.clone(),
+            Arc::clone(&db),
+            llm.clone(),
+            None, // Workspace not yet implemented
+            notify_tx,
+        ));
+
+        // Refresh event cache on startup
+        engine.refresh_event_cache().await;
+
+        // Spawn cron ticker
+        let cron_interval = std::time::Duration::from_secs(routine_config.cron_interval_secs);
+        let _cron_handle = routine_engine::spawn_cron_ticker(Arc::clone(&engine), cron_interval);
+
+        // Spawn notification consumer (routes routine notifications to channels)
+        tokio::spawn(async move {
+            while let Some(response) = notify_rx.recv().await {
+                tracing::info!(
+                    routine_notification = %response.content.chars().take(100).collect::<String>(),
+                    "Routine notification"
+                );
+                // TODO: Route to channel manager when available in this scope
+            }
+        });
+
+        eprintln!(
+            "   Routines: enabled (cron every {}s, max {} concurrent)",
+            routine_config.cron_interval_secs, routine_config.max_concurrent_routines,
+        );
+
+        Some(engine)
+    } else {
+        eprintln!("   Routines: disabled");
+        None
+    };
+
     // ── Agent ───────────────────────────────────────────────────────────
     let deps = AgentDeps {
         store: Some(Arc::clone(&db)),
@@ -159,6 +202,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         workspace: None,
         extension_manager: None,
         card_generator: Some(card_generator),
+        routine_engine,
     };
 
     // Set up channels
