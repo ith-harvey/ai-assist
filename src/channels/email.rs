@@ -5,8 +5,8 @@
 
 use std::io::Write as IoWrite;
 use std::net::TcpStream;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
@@ -19,7 +19,7 @@ use crate::cards::model::ThreadMessage;
 use crate::channels::email_types::{self, EmailMessage};
 use crate::channels::{Channel, IncomingMessage, MessageStream, OutgoingResponse};
 use crate::error::ChannelError;
-use crate::store::MessageStore;
+use crate::store::Database;
 
 // ── Configuration ───────────────────────────────────────────────────
 
@@ -90,23 +90,23 @@ impl EmailConfig {
 
 /// Email channel — IMAP polling (inbound) + SMTP (outbound).
 ///
-/// When a `MessageStore` is provided, uses the database for dedup instead of
+/// When a `Database` is provided, uses the database for dedup instead of
 /// an in-memory `HashSet`. This means emails survive server restarts.
 pub struct EmailChannel {
     config: EmailConfig,
-    message_store: Option<Arc<MessageStore>>,
+    db: Option<Arc<dyn Database>>,
     shutdown: Arc<AtomicBool>,
 }
 
 impl EmailChannel {
     /// Create a new email channel.
     ///
-    /// If `message_store` is provided, emails are persisted to SQLite and deduplication
-    /// uses the database (durable). Otherwise, dedup is skipped (in-memory only was removed).
-    pub fn new(config: EmailConfig, message_store: Option<Arc<MessageStore>>) -> Self {
+    /// If `db` is provided, emails are persisted and deduplication
+    /// uses the database (durable). Otherwise, dedup is skipped.
+    pub fn new(config: EmailConfig, db: Option<Arc<dyn Database>>) -> Self {
         Self {
             config,
-            message_store,
+            db,
             shutdown: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -123,10 +123,7 @@ impl EmailChannel {
 
     /// Send an email via SMTP.
     fn send_email(&self, to: &str, subject: &str, body: &str) -> Result<(), ChannelError> {
-        let creds = Credentials::new(
-            self.config.username.clone(),
-            self.config.password.clone(),
-        );
+        let creds = Credentials::new(self.config.username.clone(), self.config.password.clone());
 
         let transport = SmtpTransport::starttls_relay(&self.config.smtp_host)
             .map_err(|e| ChannelError::SendFailed {
@@ -138,12 +135,15 @@ impl EmailChannel {
             .build();
 
         let email = Message::builder()
-            .from(self.config.from_address.parse().map_err(|e| {
-                ChannelError::SendFailed {
-                    name: "email".into(),
-                    reason: format!("Invalid from address: {e}"),
-                }
-            })?)
+            .from(
+                self.config
+                    .from_address
+                    .parse()
+                    .map_err(|e| ChannelError::SendFailed {
+                        name: "email".into(),
+                        reason: format!("Invalid from address: {e}"),
+                    })?,
+            )
             .to(to.parse().map_err(|e| ChannelError::SendFailed {
                 name: "email".into(),
                 reason: format!("Invalid to address: {e}"),
@@ -155,10 +155,12 @@ impl EmailChannel {
                 reason: format!("Failed to build email: {e}"),
             })?;
 
-        transport.send(&email).map_err(|e| ChannelError::SendFailed {
-            name: "email".into(),
-            reason: format!("SMTP send failed: {e}"),
-        })?;
+        transport
+            .send(&email)
+            .map_err(|e| ChannelError::SendFailed {
+                name: "email".into(),
+                reason: format!("SMTP send failed: {e}"),
+            })?;
 
         tracing::info!("Email sent to {to}");
         Ok(())
@@ -178,7 +180,7 @@ impl Channel for EmailChannel {
         let config = self.config.clone();
         let shutdown = Arc::clone(&self.shutdown);
         let allowed = self.config.allowed_senders.clone();
-        let msg_store = self.message_store.clone();
+        let msg_store = self.db.clone();
 
         tokio::spawn(async move {
             tracing::info!(
@@ -214,7 +216,13 @@ impl Channel for EmailChannel {
                             // DB dedup: check if we already have this message
                             let mut tracked_message_id: Option<String> = None;
                             if let Some(ref store) = msg_store {
-                                if store.get_by_external_id(&msg_id).ok().flatten().is_some() {
+                                if store
+                                    .get_message_by_external_id(&msg_id)
+                                    .await
+                                    .ok()
+                                    .flatten()
+                                    .is_some()
+                                {
                                     // Already persisted — just mark \Seen and skip
                                     uids_to_mark.push(uid);
                                     continue;
@@ -223,15 +231,18 @@ impl Channel for EmailChannel {
                                 // New message: persist to DB
                                 let received_at = chrono::DateTime::from_timestamp(ts as i64, 0)
                                     .unwrap_or_else(chrono::Utc::now);
-                                match store.insert(
-                                    &msg_id,
-                                    "email",
-                                    &sender,
-                                    Some(&subject),
-                                    &content,
-                                    received_at,
-                                    None,
-                                ) {
+                                match store
+                                    .insert_message(
+                                        &msg_id,
+                                        "email",
+                                        &sender,
+                                        Some(&subject),
+                                        &content,
+                                        received_at,
+                                        None,
+                                    )
+                                    .await
+                                {
                                     Ok(id) => tracked_message_id = Some(id),
                                     Err(e) => {
                                         tracing::error!("Failed to persist email to DB: {e}");
@@ -260,8 +271,16 @@ impl Channel for EmailChannel {
                                             );
                                         }
                                         (
-                                            if thread_msgs.is_empty() { None } else { serde_json::to_value(&thread_msgs).ok() },
-                                            if email_msgs.is_empty() { None } else { serde_json::to_value(&email_msgs).ok() },
+                                            if thread_msgs.is_empty() {
+                                                None
+                                            } else {
+                                                serde_json::to_value(&thread_msgs).ok()
+                                            },
+                                            if email_msgs.is_empty() {
+                                                None
+                                            } else {
+                                                serde_json::to_value(&email_msgs).ok()
+                                            },
                                         )
                                     }
                                     Ok(Err(e)) => {
@@ -313,11 +332,10 @@ impl Channel for EmailChannel {
                         if !uids_to_mark.is_empty() {
                             let cfg2 = config.clone();
                             let uids = uids_to_mark;
-                            if let Err(e) = tokio::task::spawn_blocking(move || {
-                                mark_seen_imap(&cfg2, &uids)
-                            })
-                            .await
-                            .unwrap_or_else(|e| Err(e.to_string().into()))
+                            if let Err(e) =
+                                tokio::task::spawn_blocking(move || mark_seen_imap(&cfg2, &uids))
+                                    .await
+                                    .unwrap_or_else(|e| Err(e.to_string().into()))
                             {
                                 tracing::warn!("Failed to mark emails as seen: {e}");
                             }
@@ -335,9 +353,11 @@ impl Channel for EmailChannel {
             }
         });
 
-        let stream = futures::stream::unfold(rx, |mut rx| async move {
-            rx.recv().await.map(|msg| (msg, rx))
-        });
+        let stream =
+            futures::stream::unfold(
+                rx,
+                |mut rx| async move { rx.recv().await.map(|msg| (msg, rx)) },
+            );
 
         Ok(Box::pin(stream))
     }
@@ -481,7 +501,15 @@ fn extract_text(parsed: &mail_parser::Message) -> String {
 }
 
 /// A fetched email: (uid, message_id, sender, content, subject, timestamp, reply_metadata).
-type FetchedEmail = (String, String, String, String, String, u64, serde_json::Value);
+type FetchedEmail = (
+    String,
+    String,
+    String,
+    String,
+    String,
+    u64,
+    serde_json::Value,
+);
 
 /// Error type for IMAP fetch operations.
 type ImapError = Box<dyn std::error::Error + Send + Sync>;
@@ -526,25 +554,24 @@ fn fetch_unseen_imap(config: &EmailConfig) -> Result<Vec<FetchedEmail>, ImapErro
             }
         };
 
-    let send_cmd =
-        |tls: &mut rustls::StreamOwned<rustls::ClientConnection, TcpStream>,
-         tag: &str,
-         cmd: &str|
-         -> Result<Vec<String>, ImapError> {
-            let full = format!("{tag} {cmd}\r\n");
-            IoWrite::write_all(tls, full.as_bytes())?;
-            IoWrite::flush(tls)?;
-            let mut lines = Vec::new();
-            loop {
-                let line = read_line(tls)?;
-                let done = line.starts_with(tag);
-                lines.push(line);
-                if done {
-                    break;
-                }
+    let send_cmd = |tls: &mut rustls::StreamOwned<rustls::ClientConnection, TcpStream>,
+                    tag: &str,
+                    cmd: &str|
+     -> Result<Vec<String>, ImapError> {
+        let full = format!("{tag} {cmd}\r\n");
+        IoWrite::write_all(tls, full.as_bytes())?;
+        IoWrite::flush(tls)?;
+        let mut lines = Vec::new();
+        loop {
+            let line = read_line(tls)?;
+            let done = line.starts_with(tag);
+            lines.push(line);
+            if done {
+                break;
             }
-            Ok(lines)
-        };
+        }
+        Ok(lines)
+    };
 
     // Read greeting
     let _greeting = read_line(&mut tls)?;
@@ -601,13 +628,8 @@ fn fetch_unseen_imap(config: &EmailConfig) -> Result<Vec<FetchedEmail>, ImapErro
                 .unwrap_or_else(|| format!("gen-{}", Uuid::new_v4()));
 
             // Build reply_metadata for reply-all send
-            let reply_metadata = build_reply_metadata(
-                &parsed,
-                &sender,
-                &subject,
-                &msg_id,
-                &config.from_address,
-            );
+            let reply_metadata =
+                build_reply_metadata(&parsed, &sender, &subject, &msg_id, &config.from_address);
 
             #[allow(clippy::cast_sign_loss)]
             let ts = parsed
@@ -634,7 +656,15 @@ fn fetch_unseen_imap(config: &EmailConfig) -> Result<Vec<FetchedEmail>, ImapErro
                         .unwrap_or(0)
                 });
 
-            results.push((uid.to_string(), msg_id, sender, content, subject, ts, reply_metadata));
+            results.push((
+                uid.to_string(),
+                msg_id,
+                sender,
+                content,
+                subject,
+                ts,
+                reply_metadata,
+            ));
         }
         // NOTE: \Seen is NOT marked here — caller marks after persisting to DB.
     }
@@ -687,25 +717,24 @@ fn mark_seen_imap(config: &EmailConfig, uids: &[String]) -> Result<(), ImapError
             }
         };
 
-    let send_cmd =
-        |tls: &mut rustls::StreamOwned<rustls::ClientConnection, TcpStream>,
-         tag: &str,
-         cmd: &str|
-         -> Result<Vec<String>, ImapError> {
-            let full = format!("{tag} {cmd}\r\n");
-            IoWrite::write_all(tls, full.as_bytes())?;
-            IoWrite::flush(tls)?;
-            let mut lines = Vec::new();
-            loop {
-                let line = read_line(tls)?;
-                let done = line.starts_with(tag);
-                lines.push(line);
-                if done {
-                    break;
-                }
+    let send_cmd = |tls: &mut rustls::StreamOwned<rustls::ClientConnection, TcpStream>,
+                    tag: &str,
+                    cmd: &str|
+     -> Result<Vec<String>, ImapError> {
+        let full = format!("{tag} {cmd}\r\n");
+        IoWrite::write_all(tls, full.as_bytes())?;
+        IoWrite::flush(tls)?;
+        let mut lines = Vec::new();
+        loop {
+            let line = read_line(tls)?;
+            let done = line.starts_with(tag);
+            lines.push(line);
+            if done {
+                break;
             }
-            Ok(lines)
-        };
+        }
+        Ok(lines)
+    };
 
     let _greeting = read_line(&mut tls)?;
 
@@ -778,12 +807,15 @@ pub fn send_reply_email(
         .build();
 
     let mut builder = Message::builder()
-        .from(config.from_address.parse().map_err(|e| {
-            ChannelError::SendFailed {
-                name: "email".into(),
-                reason: format!("Invalid from address: {e}"),
-            }
-        })?)
+        .from(
+            config
+                .from_address
+                .parse()
+                .map_err(|e| ChannelError::SendFailed {
+                    name: "email".into(),
+                    reason: format!("Invalid from address: {e}"),
+                })?,
+        )
         .to(reply_to.parse().map_err(|e| ChannelError::SendFailed {
             name: "email".into(),
             reason: format!("Invalid reply_to address: {e}"),
@@ -805,17 +837,19 @@ pub fn send_reply_email(
         builder = builder.references(refs.to_string());
     }
 
-    let email = builder.body(body.to_string()).map_err(|e| {
-        ChannelError::SendFailed {
+    let email = builder
+        .body(body.to_string())
+        .map_err(|e| ChannelError::SendFailed {
             name: "email".into(),
             reason: format!("Failed to build email: {e}"),
-        }
-    })?;
+        })?;
 
-    transport.send(&email).map_err(|e| ChannelError::SendFailed {
-        name: "email".into(),
-        reason: format!("SMTP send failed: {e}"),
-    })?;
+    transport
+        .send(&email)
+        .map_err(|e| ChannelError::SendFailed {
+            name: "email".into(),
+            reason: format!("SMTP send failed: {e}"),
+        })?;
 
     tracing::info!(
         to = reply_to,
@@ -965,25 +999,24 @@ fn fetch_thread_by_subject(
             }
         };
 
-    let send_cmd =
-        |tls: &mut rustls::StreamOwned<rustls::ClientConnection, TcpStream>,
-         tag: &str,
-         cmd: &str|
-         -> Result<Vec<String>, ImapError> {
-            let full = format!("{tag} {cmd}\r\n");
-            IoWrite::write_all(tls, full.as_bytes())?;
-            IoWrite::flush(tls)?;
-            let mut lines = Vec::new();
-            loop {
-                let line = read_line(tls)?;
-                let done = line.starts_with(tag);
-                lines.push(line);
-                if done {
-                    break;
-                }
+    let send_cmd = |tls: &mut rustls::StreamOwned<rustls::ClientConnection, TcpStream>,
+                    tag: &str,
+                    cmd: &str|
+     -> Result<Vec<String>, ImapError> {
+        let full = format!("{tag} {cmd}\r\n");
+        IoWrite::write_all(tls, full.as_bytes())?;
+        IoWrite::flush(tls)?;
+        let mut lines = Vec::new();
+        loop {
+            let line = read_line(tls)?;
+            let done = line.starts_with(tag);
+            lines.push(line);
+            if done {
+                break;
             }
-            Ok(lines)
-        };
+        }
+        Ok(lines)
+    };
 
     // Read greeting
     let _greeting = read_line(&mut tls)?;

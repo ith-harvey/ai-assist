@@ -4,24 +4,24 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use axum::{
+    Json, Router,
     extract::{
-        ws::{Message, WebSocket, WebSocketUpgrade},
         Query, State,
+        ws::{Message, WebSocket, WebSocketUpgrade},
     },
     http::StatusCode,
     response::IntoResponse,
     routing::get,
-    Json, Router,
 };
 use futures::stream;
 use serde::{Deserialize, Serialize};
-use tokio::sync::{broadcast, mpsc, Mutex};
+use tokio::sync::{Mutex, broadcast, mpsc};
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use crate::channels::{Channel, IncomingMessage, MessageStream, OutgoingResponse, StatusUpdate};
-use crate::db::Database;
 use crate::error::ChannelError;
+use crate::store::Database;
 
 // ── JSON Protocol ───────────────────────────────────────────────────────
 
@@ -171,19 +171,20 @@ impl Channel for IosChannel {
     }
 
     async fn start(&self) -> Result<MessageStream, ChannelError> {
-        let rx = self
-            .incoming_rx
-            .lock()
-            .await
-            .take()
-            .ok_or_else(|| ChannelError::StartupFailed {
-                name: "ios".to_string(),
-                reason: "start() already called".to_string(),
-            })?;
+        let rx =
+            self.incoming_rx
+                .lock()
+                .await
+                .take()
+                .ok_or_else(|| ChannelError::StartupFailed {
+                    name: "ios".to_string(),
+                    reason: "start() already called".to_string(),
+                })?;
 
-        let stream = stream::unfold(rx, |mut rx| async move {
-            rx.recv().await.map(|msg| (msg, rx))
-        });
+        let stream = stream::unfold(
+            rx,
+            |mut rx| async move { rx.recv().await.map(|msg| (msg, rx)) },
+        );
 
         Ok(Box::pin(stream))
     }
@@ -229,9 +230,7 @@ impl Channel for IosChannel {
             } => ServerMessage::Status {
                 message: format!("{}: {}", tool_name, description),
             },
-            StatusUpdate::AuthRequired {
-                extension_name, ..
-            } => ServerMessage::Status {
+            StatusUpdate::AuthRequired { extension_name, .. } => ServerMessage::Status {
                 message: extension_name,
             },
             StatusUpdate::AuthCompleted {

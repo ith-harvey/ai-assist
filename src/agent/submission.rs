@@ -635,7 +635,13 @@ mod tests {
         for input in ["yes", "y", "approve", "ok", "YES"] {
             let submission = SubmissionParser::parse(input);
             assert!(
-                matches!(submission, Submission::ApprovalResponse { approved: true, always: false }),
+                matches!(
+                    submission,
+                    Submission::ApprovalResponse {
+                        approved: true,
+                        always: false
+                    }
+                ),
                 "Expected approve for {:?}, got {:?}",
                 input,
                 submission
@@ -648,7 +654,13 @@ mod tests {
         for input in ["always", "yes always", "approve always"] {
             let submission = SubmissionParser::parse(input);
             assert!(
-                matches!(submission, Submission::ApprovalResponse { approved: true, always: true }),
+                matches!(
+                    submission,
+                    Submission::ApprovalResponse {
+                        approved: true,
+                        always: true
+                    }
+                ),
                 "Expected always-approve for {:?}, got {:?}",
                 input,
                 submission
@@ -661,7 +673,13 @@ mod tests {
         for input in ["no", "n", "deny", "reject", "cancel"] {
             let submission = SubmissionParser::parse(input);
             assert!(
-                matches!(submission, Submission::ApprovalResponse { approved: false, always: false }),
+                matches!(
+                    submission,
+                    Submission::ApprovalResponse {
+                        approved: false,
+                        always: false
+                    }
+                ),
                 "Expected deny for {:?}, got {:?}",
                 input,
                 submission

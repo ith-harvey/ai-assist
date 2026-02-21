@@ -43,11 +43,7 @@ pub struct CardGenerator {
 
 impl CardGenerator {
     /// Create a new card generator.
-    pub fn new(
-        llm: Arc<dyn LlmProvider>,
-        queue: Arc<CardQueue>,
-        config: GeneratorConfig,
-    ) -> Self {
+    pub fn new(llm: Arc<dyn LlmProvider>, queue: Arc<CardQueue>, config: GeneratorConfig) -> Self {
         Self { llm, queue, config }
     }
 
@@ -57,12 +53,7 @@ impl CardGenerator {
     }
 
     /// Should we generate a card for this message?
-    pub fn should_generate(
-        &self,
-        content: &str,
-        sender: &str,
-        _chat_id: &str,
-    ) -> bool {
+    pub fn should_generate(&self, content: &str, sender: &str, _chat_id: &str) -> bool {
         // Skip empty messages
         if content.trim().is_empty() {
             return false;
@@ -149,16 +140,15 @@ impl CardGenerator {
         let response = self.llm.complete(request).await?;
 
         // Parse JSON response and pick the best suggestion (1:1 model)
-        let mut cards = self.parse_suggestions(
-            &response.content,
-            source_message,
-            sender,
-            chat_id,
-            channel,
-        );
+        let mut cards =
+            self.parse_suggestions(&response.content, source_message, sender, chat_id, channel);
 
         // Sort by confidence descending, take only the best one
-        cards.sort_by(|a, b| b.confidence.partial_cmp(&a.confidence).unwrap_or(std::cmp::Ordering::Equal));
+        cards.sort_by(|a, b| {
+            b.confidence
+                .partial_cmp(&a.confidence)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         cards.truncate(1);
 
         // Link to tracked message if provided
@@ -354,7 +344,10 @@ fn extract_json_array(text: &str) -> String {
     }
 
     // Give up, return as-is
-    error!(text = trimmed, "Could not extract JSON array from LLM response");
+    error!(
+        text = trimmed,
+        "Could not extract JSON array from LLM response"
+    );
     trimmed.to_string()
 }
 
@@ -370,7 +363,8 @@ mod tests {
 
     #[test]
     fn extract_json_from_markdown() {
-        let input = "Here are suggestions:\n```json\n[{\"text\": \"yo\", \"confidence\": 0.8}]\n```\n";
+        let input =
+            "Here are suggestions:\n```json\n[{\"text\": \"yo\", \"confidence\": 0.8}]\n```\n";
         let result = extract_json_array(input);
         assert!(result.starts_with('['));
         assert!(result.contains("\"yo\""));
@@ -378,7 +372,8 @@ mod tests {
 
     #[test]
     fn extract_json_with_surrounding_text() {
-        let input = "Sure! Here you go: [{\"text\": \"nice\", \"confidence\": 0.7}] hope that helps";
+        let input =
+            "Sure! Here you go: [{\"text\": \"nice\", \"confidence\": 0.7}] hope that helps";
         let result = extract_json_array(input);
         assert!(result.starts_with('['));
         assert!(result.ends_with(']'));

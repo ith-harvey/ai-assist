@@ -4,12 +4,12 @@ use ai_assist::agent::{Agent, AgentDeps};
 use ai_assist::cards::generator::{CardGenerator, GeneratorConfig};
 use ai_assist::cards::queue::{self, CardQueue};
 use ai_assist::cards::ws::card_routes;
-use ai_assist::channels::{ChannelManager, CliChannel, EmailChannel, IosChannel, TelegramChannel};
 use ai_assist::channels::email::EmailConfig;
+use ai_assist::channels::{ChannelManager, CliChannel, EmailChannel, IosChannel, TelegramChannel};
 use ai_assist::config::AgentConfig;
-use ai_assist::llm::{create_provider, LlmBackend, LlmConfig};
+use ai_assist::llm::{LlmBackend, LlmConfig, create_provider};
 use ai_assist::safety::SafetyLayer;
-use ai_assist::store::{CardStore, Database, MessageStore};
+use ai_assist::store::{Database, LibSqlBackend};
 use ai_assist::tools::ToolRegistry;
 
 #[tokio::main]
@@ -35,8 +35,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(1);
     });
 
-    let model = std::env::var("AI_ASSIST_MODEL")
-        .unwrap_or_else(|_| "claude-sonnet-4-20250514".to_string());
+    let model =
+        std::env::var("AI_ASSIST_MODEL").unwrap_or_else(|_| "claude-sonnet-4-20250514".to_string());
 
     let ws_port: u16 = std::env::var("AI_ASSIST_WS_PORT")
         .unwrap_or_else(|_| "8080".to_string())
@@ -65,21 +65,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let llm = create_provider(&llm_config)?;
 
     // ── Database ─────────────────────────────────────────────────────────
-    let db_path = std::env::var("AI_ASSIST_DB_PATH")
-        .unwrap_or_else(|_| "./data/ai-assist.db".to_string());
+    let db_path =
+        std::env::var("AI_ASSIST_DB_PATH").unwrap_or_else(|_| "./data/ai-assist.db".to_string());
 
-    let db = Database::open(&db_path).unwrap_or_else(|e| {
-        eprintln!("Error: Failed to open database at {}: {}", db_path, e);
-        std::process::exit(1);
-    });
-    let db = Arc::new(db);
-    let card_store = Arc::new(CardStore::new(Arc::clone(&db)));
-    let message_store = Arc::new(MessageStore::new(Arc::clone(&db)));
+    let db_path_ref = std::path::Path::new(&db_path);
+    let db: Arc<dyn Database> = Arc::new(
+        LibSqlBackend::new_local(db_path_ref)
+            .await
+            .unwrap_or_else(|e| {
+                eprintln!("Error: Failed to open database at {}: {}", db_path, e);
+                std::process::exit(1);
+            }),
+    );
 
     eprintln!("   Database: {}", db_path);
 
     // ── Card System ─────────────────────────────────────────────────────
-    let card_queue = CardQueue::with_stores(card_store.clone(), Some(Arc::clone(&message_store)));
+    let card_queue = CardQueue::with_db(Arc::clone(&db)).await;
 
     let generator_config = GeneratorConfig {
         expire_minutes: card_expire_min,
@@ -93,15 +95,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ── Startup Recovery: reload unanswered messages as cards ──────────
     {
-        let pending_messages = message_store.get_pending().unwrap_or_default();
+        let pending_messages = db.get_pending_messages().await.unwrap_or_default();
         let mut recovered = 0;
         for msg in &pending_messages {
             // Check if there's already an active card for this message
-            if card_store.has_pending_for_message(&msg.id).unwrap_or(false) {
+            if db
+                .has_pending_card_for_message(&msg.id)
+                .await
+                .unwrap_or(false)
+            {
                 continue;
             }
             // No active card — create a placeholder card for the UI
-            // (Full re-generation via LLM would require async; this ensures visibility)
             let card = ai_assist::cards::model::ReplyCard::new(
                 &msg.sender,
                 &msg.content,
@@ -127,11 +132,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let email_config_for_cards = EmailConfig::from_env();
 
     // Create iOS channel (needs to exist before router build)
-    let ios_channel = IosChannel::new(None);
+    let ios_channel = IosChannel::new(Some(Arc::clone(&db)));
     let ios_router = ios_channel.router();
 
     // Spawn Axum WS/REST server for cards + iOS chat
-    let app = card_routes(card_queue.clone(), email_config_for_cards, card_generator.clone()).merge(ios_router);
+    let app = card_routes(
+        card_queue.clone(),
+        email_config_for_cards,
+        card_generator.clone(),
+    )
+    .merge(ios_router);
     tokio::spawn(async move {
         let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", ws_port))
             .await
@@ -142,7 +152,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ── Agent ───────────────────────────────────────────────────────────
     let deps = AgentDeps {
-        store: None,
+        store: Some(Arc::clone(&db)),
         llm,
         safety: Arc::new(SafetyLayer::new()),
         tools: Arc::new(ToolRegistry::new()),
@@ -179,7 +189,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         );
 
-        channels.add(Box::new(TelegramChannel::new(telegram_token, allowed_users)));
+        channels.add(Box::new(TelegramChannel::new(
+            telegram_token,
+            allowed_users,
+        )));
         active_channels.push("telegram");
     }
 
@@ -198,16 +211,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 senders.join(", ")
             }
         );
-        channels.add(Box::new(EmailChannel::new(email_config, Some(Arc::clone(&message_store)))));
+        channels.add(Box::new(EmailChannel::new(
+            email_config,
+            Some(Arc::clone(&db)),
+        )));
         active_channels.push("email");
     }
 
     eprintln!("   Channels: {}\n", active_channels.join(", "));
 
     // Create agent config with optional custom system prompt
-    let system_prompt = std::env::var("AI_ASSIST_SYSTEM_PROMPT").ok().or_else(|| {
-        Some(ai_assist::config::DEFAULT_SYSTEM_PROMPT.to_string())
-    });
+    let system_prompt = std::env::var("AI_ASSIST_SYSTEM_PROMPT")
+        .ok()
+        .or_else(|| Some(ai_assist::config::DEFAULT_SYSTEM_PROMPT.to_string()));
 
     let config = AgentConfig {
         system_prompt,

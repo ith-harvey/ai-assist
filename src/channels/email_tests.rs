@@ -118,10 +118,7 @@ fn strip_html_with_attributes() {
 
 #[test]
 fn strip_html_whitespace_normalized() {
-    assert_eq!(
-        strip_html("<p>  Hello   World  </p>"),
-        "Hello World"
-    );
+    assert_eq!(strip_html("<p>  Hello   World  </p>"), "Hello World");
 }
 
 #[test]
@@ -306,12 +303,11 @@ fn email_channel_sender_check_delegates_to_config() {
 
 #[test]
 fn incoming_message_metadata_has_reply_to() {
-    let msg = IncomingMessage::new("email", "user@test.com", "hello").with_metadata(
-        serde_json::json!({
+    let msg =
+        IncomingMessage::new("email", "user@test.com", "hello").with_metadata(serde_json::json!({
             "reply_to": "user@test.com",
             "subject": "Test",
-        }),
-    );
+        }));
     let reply_to = msg.metadata.get("reply_to").and_then(|v| v.as_str());
     assert_eq!(reply_to, Some("user@test.com"));
 }

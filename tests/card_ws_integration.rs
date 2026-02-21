@@ -22,8 +22,8 @@ use ai_assist::cards::queue::CardQueue;
 use ai_assist::cards::ws::card_routes;
 use ai_assist::error::LlmError;
 use ai_assist::llm::provider::{
-    CompletionRequest, CompletionResponse, FinishReason, LlmProvider,
-    ToolCompletionRequest, ToolCompletionResponse,
+    CompletionRequest, CompletionResponse, FinishReason, LlmProvider, ToolCompletionRequest,
+    ToolCompletionResponse,
 };
 
 /// Maximum time any test is allowed to run before we consider it hung.
@@ -61,7 +61,11 @@ impl LlmProvider for StubLlm {
 async fn start_server() -> (u16, Arc<CardQueue>) {
     let queue = CardQueue::new();
     let llm: Arc<dyn LlmProvider> = Arc::new(StubLlm);
-    let generator = Arc::new(CardGenerator::new(llm, Arc::clone(&queue), GeneratorConfig::default()));
+    let generator = Arc::new(CardGenerator::new(
+        llm,
+        Arc::clone(&queue),
+        GeneratorConfig::default(),
+    ));
     let app = card_routes(Arc::clone(&queue), None, generator);
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -407,9 +411,7 @@ async fn rest_edit_card() {
 
         let client = reqwest::Client::new();
         let resp = client
-            .post(format!(
-                "http://127.0.0.1:{port}/api/cards/{card_id}/edit"
-            ))
+            .post(format!("http://127.0.0.1:{port}/api/cards/{card_id}/edit"))
             .json(&serde_json::json!({"text": "edited text"}))
             .send()
             .await
@@ -476,7 +478,10 @@ async fn card_expiry_removes_from_pending() {
 
         // The card is technically pending but expired; pending() filters it.
         let pending = queue.pending().await;
-        assert!(pending.is_empty(), "expired card should not appear in pending()");
+        assert!(
+            pending.is_empty(),
+            "expired card should not appear in pending()"
+        );
 
         // expire_old should mark it expired.
         let expired_count = queue.expire_old().await;
