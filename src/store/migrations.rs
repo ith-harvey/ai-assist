@@ -17,10 +17,11 @@ struct Migration {
 }
 
 /// All migrations in order. Add new versions to the end.
-static MIGRATIONS: &[Migration] = &[Migration {
-    version: 1,
-    name: "initial_schema",
-    sql: r#"
+static MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        name: "initial_schema",
+        sql: r#"
             CREATE TABLE IF NOT EXISTS cards (
                 id TEXT PRIMARY KEY,
                 conversation_id TEXT NOT NULL,
@@ -81,7 +82,67 @@ static MIGRATIONS: &[Migration] = &[Migration {
             CREATE INDEX IF NOT EXISTS idx_conversation_messages_conversation
                 ON conversation_messages(conversation_id);
         "#,
-}];
+    },
+    Migration {
+        version: 2,
+        name: "routines_system",
+        sql: r#"
+            CREATE TABLE IF NOT EXISTS routines (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                user_id TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                trigger_type TEXT NOT NULL,
+                trigger_config TEXT NOT NULL,
+                action_type TEXT NOT NULL,
+                action_config TEXT NOT NULL,
+                cooldown_secs INTEGER NOT NULL DEFAULT 300,
+                max_concurrent INTEGER NOT NULL DEFAULT 1,
+                dedup_window_secs INTEGER,
+                notify_channel TEXT,
+                notify_user TEXT NOT NULL DEFAULT 'default',
+                notify_on_success INTEGER NOT NULL DEFAULT 0,
+                notify_on_failure INTEGER NOT NULL DEFAULT 1,
+                notify_on_attention INTEGER NOT NULL DEFAULT 1,
+                state TEXT NOT NULL DEFAULT '{}',
+                last_run_at TEXT,
+                next_fire_at TEXT,
+                run_count INTEGER NOT NULL DEFAULT 0,
+                consecutive_failures INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                UNIQUE (user_id, name)
+            );
+            CREATE INDEX IF NOT EXISTS idx_routines_user ON routines(user_id);
+            CREATE INDEX IF NOT EXISTS idx_routines_next_fire ON routines(next_fire_at);
+
+            CREATE TABLE IF NOT EXISTS routine_runs (
+                id TEXT PRIMARY KEY,
+                routine_id TEXT NOT NULL REFERENCES routines(id) ON DELETE CASCADE,
+                trigger_type TEXT NOT NULL,
+                trigger_detail TEXT,
+                started_at TEXT NOT NULL DEFAULT (datetime('now')),
+                completed_at TEXT,
+                status TEXT NOT NULL DEFAULT 'running',
+                result_summary TEXT,
+                tokens_used INTEGER,
+                job_id TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_routine_runs_routine ON routine_runs(routine_id);
+            CREATE INDEX IF NOT EXISTS idx_routine_runs_status ON routine_runs(status);
+
+            CREATE TABLE IF NOT EXISTS settings (
+                user_id TEXT NOT NULL,
+                key TEXT NOT NULL,
+                value TEXT NOT NULL,
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                PRIMARY KEY (user_id, key)
+            );
+        "#,
+    },
+];
 
 /// Run all pending migrations against the given connection.
 ///
@@ -255,13 +316,16 @@ mod tests {
         let conn = test_conn().await;
         run_migrations(&conn).await.unwrap();
 
-        // Check all tables exist
+        // Check all tables exist (V1 + V2)
         for table in &[
             "cards",
             "messages",
             "conversations",
             "conversation_messages",
             "_migrations",
+            "routines",
+            "routine_runs",
+            "settings",
         ] {
             let mut rows = conn
                 .query(
@@ -283,9 +347,9 @@ mod tests {
         // Running again should not fail
         run_migrations(&conn).await.unwrap();
 
-        // Version should still be 1
+        // Version should be at the latest migration
         let version = get_current_version(&conn).await.unwrap();
-        assert_eq!(version, 1);
+        assert_eq!(version, 2);
     }
 
     #[tokio::test]
@@ -363,10 +427,16 @@ mod tests {
             .query("SELECT version, name FROM _migrations ORDER BY version", ())
             .await
             .unwrap();
-        let row = rows.next().await.unwrap().unwrap();
-        let version: i64 = row.get(0).unwrap();
-        let name: String = row.get(1).unwrap();
-        assert_eq!(version, 1);
-        assert_eq!(name, "initial_schema");
+        let row1 = rows.next().await.unwrap().unwrap();
+        let v1: i64 = row1.get(0).unwrap();
+        let n1: String = row1.get(1).unwrap();
+        assert_eq!(v1, 1);
+        assert_eq!(n1, "initial_schema");
+
+        let row2 = rows.next().await.unwrap().unwrap();
+        let v2: i64 = row2.get(0).unwrap();
+        let n2: String = row2.get(1).unwrap();
+        assert_eq!(v2, 2);
+        assert_eq!(n2, "routines_system");
     }
 }
