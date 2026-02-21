@@ -32,18 +32,15 @@ private struct ScrollOverscrollModifier: ViewModifier {
     func body(content: Content) -> some View {
         if #available(iOS 18.0, macOS 15.0, *) {
             content
-                .onScrollGeometryChange(for: [CGFloat].self) { geo in
-                    [geo.contentOffset.y, geo.containerSize.height, geo.contentSize.height, geo.contentInsets.top, geo.contentInsets.bottom]
-                } action: { _, vals in
-                    let offsetY = vals[0]
-                    let containerH = vals[1]
-                    let contentH = vals[2]
-                    let insetBot = vals[4]
-                    let scrolledTo = offsetY + containerH
-                    let contentEnd = contentH + insetBot
-                    let rawOverscroll = max(0, scrolledTo - contentEnd)
-                    let amplified = rawOverscroll * 6.0
-                    overscrollDistance = amplified
+                .onScrollGeometryChange(for: CGFloat.self) { geo in
+                    // Raw overscroll past the bottom of content.
+                    // iOS rubber-band dampens finger movement ~4-6x,
+                    // so we amplify to approximate actual finger travel.
+                    let scrolledTo = geo.contentOffset.y + geo.containerSize.height
+                    let contentEnd = geo.contentSize.height + geo.contentInsets.bottom
+                    return max(0, scrolledTo - contentEnd) * 6.0
+                } action: { _, newOverscroll in
+                    overscrollDistance = newOverscroll
                 }
                 .onScrollPhaseChange { _, newPhase in
                     isUserInteracting = (newPhase == .interacting)

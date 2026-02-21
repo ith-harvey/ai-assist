@@ -8,9 +8,10 @@ import SwiftUI
 ///
 /// Voice-to-refine uses iOS 18+ scroll APIs (`onScrollGeometryChange` +
 /// `onScrollPhaseChange`) to detect when the user overscrolls past the bottom
-/// of the thread. Recording starts when overscroll exceeds 60pt while the
-/// user's finger is on the scroll view, and stops (+ sends) when the finger
-/// lifts. No DragGesture needed for voice — it's entirely scroll-driven.
+/// of the thread. Raw overscroll is amplified 6x to counteract iOS rubber-band
+/// dampening. Recording starts when the amplified value exceeds `recordThreshold`
+/// while the user's finger is on the scroll view, and stops (+ sends) when the
+/// finger lifts. No DragGesture needed for voice — it's entirely scroll-driven.
 public struct ContentView: View {
     @State private var socket = CardWebSocket()
     @State private var showSettings = false
@@ -186,19 +187,16 @@ public struct ContentView: View {
     #if os(iOS)
     private func startVoiceRecording() {
         guard speechRecognizer.isAuthorized else {
-            print("[HAPTIC] ⚠️ not authorized, requesting permissions")
             speechRecognizer.requestPermissions()
             return
         }
 
         isRecordingVoice = true
         speechRecognizer.startRecording()
-        print("[HAPTIC] recording started")
 
         // Dispatch haptic outside the scroll event callback —
         // UIKit suppresses haptics fired synchronously during scroll.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-            print("[HAPTIC] 🟢 firing START haptic (async)")
             let gen = UINotificationFeedbackGenerator()
             gen.notificationOccurred(.warning)
         }
@@ -211,7 +209,6 @@ public struct ContentView: View {
         isRecordingVoice = false
 
         // Haptic feedback on stop/submit
-        print("[HAPTIC] 🔴 firing STOP haptic (success notification)")
         let notification = UINotificationFeedbackGenerator()
         notification.notificationOccurred(.success)
 
