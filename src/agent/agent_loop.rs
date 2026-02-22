@@ -166,10 +166,14 @@ impl Agent {
 
             match self.handle_message(&message).await {
                 Ok(Some(response)) if !response.is_empty() => {
-                    let _ = self
-                        .channels
-                        .respond(&message, OutgoingResponse::text(response))
-                        .await;
+                    // Email outbound goes through card approval only — never respond directly.
+                    // Card generation (fire-and-forget above) handles email reply drafting.
+                    if message.channel != "email" {
+                        let _ = self
+                            .channels
+                            .respond(&message, OutgoingResponse::text(response))
+                            .await;
+                    }
                 }
                 Ok(Some(_)) => {
                     // Empty response, nothing to send (e.g. approval handled via send_status)
@@ -181,10 +185,12 @@ impl Agent {
                 }
                 Err(e) => {
                     tracing::error!("Error handling message: {}", e);
-                    let _ = self
-                        .channels
-                        .respond(&message, OutgoingResponse::text(format!("Error: {}", e)))
-                        .await;
+                    if message.channel != "email" {
+                        let _ = self
+                            .channels
+                            .respond(&message, OutgoingResponse::text(format!("Error: {}", e)))
+                            .await;
+                    }
                 }
             }
 
