@@ -273,7 +273,7 @@ fn build_triage_system_prompt() -> String {
      - High confidence (>0.8) only for straightforward replies\n\
      - When in doubt between notify and draft_reply, choose notify\n\
      - Omit fields that don't apply (e.g., no \"draft\" for notify actions)\n\
-     - For draft_reply: include \"tone\" (max 10 words, e.g. \"casual and friendly\") and optionally \"style_notes\" (max 15 words, e.g. \"match their emoji use, keep it brief\")"
+     - For draft_reply: include \"tone\" (max 10 words, e.g. \"casual and friendly\") and optionally \"style_notes\" (max 15 words, e.g. \"uses first names, keep it brief\")"
         .to_string()
 }
 
@@ -601,7 +601,7 @@ mod tests {
 
     #[test]
     fn parse_draft_reply_with_tone_and_style() {
-        let raw = r#"{"action": "draft_reply", "summary": "Meeting request", "draft": "Sure thing!", "confidence": 0.9, "tone": "casual and upbeat", "style_notes": "match their emoji use"}"#;
+        let raw = r#"{"action": "draft_reply", "summary": "Meeting request", "draft": "Sure thing!", "confidence": 0.9, "tone": "casual and upbeat", "style_notes": "uses first names, keep it brief"}"#;
         let action = parse_triage_response(raw).unwrap();
         match action {
             TriageAction::DraftReply {
@@ -610,7 +610,7 @@ mod tests {
                 ..
             } => {
                 assert_eq!(tone.as_deref(), Some("casual and upbeat"));
-                assert_eq!(style_notes.as_deref(), Some("match their emoji use"));
+                assert_eq!(style_notes.as_deref(), Some("uses first names, keep it brief"));
             }
             other => panic!("Expected DraftReply, got {:?}", other),
         }

@@ -118,7 +118,7 @@ pub enum TriageAction {
         /// Short tone descriptor (e.g. "casual", "formal but warm"). Max ~10 words.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         tone: Option<String>,
-        /// Brief style guidance for refinement (e.g. "match their emoji use"). Max ~15 words.
+        /// Brief style guidance for refinement (e.g. "uses first names, keep it brief"). Max ~15 words.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         style_notes: Option<String>,
     },
