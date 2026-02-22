@@ -148,8 +148,8 @@ static MIGRATIONS: &[Migration] = &[
         sql: r#"
             CREATE TABLE IF NOT EXISTS llm_calls (
                 id TEXT PRIMARY KEY,
-                conversation_id TEXT REFERENCES conversations(id),
-                routine_run_id TEXT REFERENCES routine_runs(id),
+                conversation_id TEXT,
+                routine_run_id TEXT,
                 provider TEXT NOT NULL,
                 model TEXT NOT NULL,
                 input_tokens INTEGER NOT NULL,
@@ -158,6 +158,30 @@ static MIGRATIONS: &[Migration] = &[
                 purpose TEXT,
                 created_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
+            CREATE INDEX IF NOT EXISTS idx_llm_calls_conversation ON llm_calls(conversation_id);
+            CREATE INDEX IF NOT EXISTS idx_llm_calls_provider ON llm_calls(provider);
+            CREATE INDEX IF NOT EXISTS idx_llm_calls_created ON llm_calls(created_at);
+        "#,
+    },
+    Migration {
+        version: 4,
+        name: "relax_llm_calls_fk",
+        sql: r#"
+            CREATE TABLE IF NOT EXISTS llm_calls_new (
+                id TEXT PRIMARY KEY,
+                conversation_id TEXT,
+                routine_run_id TEXT,
+                provider TEXT NOT NULL,
+                model TEXT NOT NULL,
+                input_tokens INTEGER NOT NULL,
+                output_tokens INTEGER NOT NULL,
+                cost TEXT NOT NULL,
+                purpose TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            INSERT OR IGNORE INTO llm_calls_new SELECT * FROM llm_calls;
+            DROP TABLE IF EXISTS llm_calls;
+            ALTER TABLE llm_calls_new RENAME TO llm_calls;
             CREATE INDEX IF NOT EXISTS idx_llm_calls_conversation ON llm_calls(conversation_id);
             CREATE INDEX IF NOT EXISTS idx_llm_calls_provider ON llm_calls(provider);
             CREATE INDEX IF NOT EXISTS idx_llm_calls_created ON llm_calls(created_at);
@@ -371,7 +395,7 @@ mod tests {
 
         // Version should be at the latest migration
         let version = get_current_version(&conn).await.unwrap();
-        assert_eq!(version, 3);
+        assert_eq!(version, 4);
     }
 
     #[tokio::test]
@@ -417,7 +441,7 @@ mod tests {
 
         // Verify all migrations applied (legacy seed V1 + V2 routines + V3 llm_calls)
         let version = get_current_version(&conn).await.unwrap();
-        assert_eq!(version, 3);
+        assert_eq!(version, 4);
 
         // Verify conversation tables were created
         let mut rows = conn
