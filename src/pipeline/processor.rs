@@ -196,7 +196,19 @@ impl MessageProcessor {
                 summary: _,
                 draft,
                 confidence,
+                tone,
+                style_notes,
             } => {
+                // Merge tone/style_notes into reply_metadata so downstream
+                // (card refinement, iOS display) can access them.
+                let mut metadata = message.reply_metadata.clone();
+                if let Some(t) = tone {
+                    metadata["tone"] = serde_json::Value::String(t.clone());
+                }
+                if let Some(s) = style_notes {
+                    metadata["style_notes"] = serde_json::Value::String(s.clone());
+                }
+
                 let card = ReplyCard::new(
                     &message.id,
                     &message.content,
@@ -206,12 +218,13 @@ impl MessageProcessor {
                     &message.channel,
                     CARD_EXPIRE_MINUTES,
                 )
-                .with_reply_metadata(message.reply_metadata.clone());
+                .with_reply_metadata(metadata);
 
                 self.card_queue.push(card).await;
                 info!(
                     id = %message.id,
                     confidence = confidence,
+                    tone = tone.as_deref().unwrap_or("none"),
                     "Created draft reply card"
                 );
                 Ok(())
@@ -253,13 +266,14 @@ fn build_triage_system_prompt() -> String {
      - \"draft_reply\": needs a response — draft one. Provide summary, draft, confidence (0.0-1.0).\n\
      - \"digest\": low priority — can be batched into a periodic summary. Provide summary.\n\n\
      Respond with ONLY a JSON object:\n\
-     {\"action\": \"...\", \"reason\": \"...\", \"summary\": \"...\", \"draft\": \"...\", \"confidence\": 0.0}\n\n\
+     {\"action\": \"...\", \"reason\": \"...\", \"summary\": \"...\", \"draft\": \"...\", \"confidence\": 0.0, \"tone\": \"...\", \"style_notes\": \"...\"}\n\n\
      Rules:\n\
      - Be concise in summaries (1 sentence max)\n\
      - Draft replies should sound natural, not robotic\n\
      - High confidence (>0.8) only for straightforward replies\n\
      - When in doubt between notify and draft_reply, choose notify\n\
-     - Omit fields that don't apply (e.g., no \"draft\" for notify actions)"
+     - Omit fields that don't apply (e.g., no \"draft\" for notify actions)\n\
+     - For draft_reply: include \"tone\" (max 10 words, e.g. \"casual and friendly\") and optionally \"style_notes\" (max 15 words, e.g. \"uses first names, keep it brief\")"
         .to_string()
 }
 
@@ -327,6 +341,10 @@ struct TriageResponse {
     draft: String,
     #[serde(default)]
     confidence: f32,
+    #[serde(default)]
+    tone: String,
+    #[serde(default)]
+    style_notes: String,
 }
 
 /// Parse the LLM triage response into a `TriageAction`.
@@ -351,19 +369,33 @@ fn parse_triage_response(raw: &str) -> Result<TriageAction, String> {
                 response.summary
             },
         }),
-        "draft_reply" => Ok(TriageAction::DraftReply {
-            summary: if response.summary.is_empty() {
-                "Message needs reply".into()
+        "draft_reply" => {
+            let tone = if response.tone.is_empty() {
+                None
             } else {
-                response.summary
-            },
-            draft: if response.draft.is_empty() {
-                return Err("draft_reply action requires a draft field".into());
+                Some(response.tone)
+            };
+            let style_notes = if response.style_notes.is_empty() {
+                None
             } else {
-                response.draft
-            },
-            confidence: response.confidence.clamp(0.0, 1.0),
-        }),
+                Some(response.style_notes)
+            };
+            Ok(TriageAction::DraftReply {
+                summary: if response.summary.is_empty() {
+                    "Message needs reply".into()
+                } else {
+                    response.summary
+                },
+                draft: if response.draft.is_empty() {
+                    return Err("draft_reply action requires a draft field".into());
+                } else {
+                    response.draft
+                },
+                confidence: response.confidence.clamp(0.0, 1.0),
+                tone,
+                style_notes,
+            })
+        }
         "digest" => Ok(TriageAction::Digest {
             summary: if response.summary.is_empty() {
                 "Low priority message".into()
@@ -553,10 +585,49 @@ mod tests {
                 summary,
                 draft,
                 confidence,
+                tone,
+                style_notes,
             } => {
                 assert_eq!(summary, "Asks about meeting");
                 assert_eq!(draft, "Sure, Tuesday works for me!");
                 assert!((confidence - 0.85).abs() < 0.01);
+                // No tone/style_notes in input → None
+                assert!(tone.is_none());
+                assert!(style_notes.is_none());
+            }
+            other => panic!("Expected DraftReply, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_draft_reply_with_tone_and_style() {
+        let raw = r#"{"action": "draft_reply", "summary": "Meeting request", "draft": "Sure thing!", "confidence": 0.9, "tone": "casual and upbeat", "style_notes": "uses first names, keep it brief"}"#;
+        let action = parse_triage_response(raw).unwrap();
+        match action {
+            TriageAction::DraftReply {
+                tone,
+                style_notes,
+                ..
+            } => {
+                assert_eq!(tone.as_deref(), Some("casual and upbeat"));
+                assert_eq!(style_notes.as_deref(), Some("uses first names, keep it brief"));
+            }
+            other => panic!("Expected DraftReply, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_draft_reply_empty_tone_becomes_none() {
+        let raw = r#"{"action": "draft_reply", "summary": "x", "draft": "y", "confidence": 0.8, "tone": "", "style_notes": ""}"#;
+        let action = parse_triage_response(raw).unwrap();
+        match action {
+            TriageAction::DraftReply {
+                tone,
+                style_notes,
+                ..
+            } => {
+                assert!(tone.is_none());
+                assert!(style_notes.is_none());
             }
             other => panic!("Expected DraftReply, got {:?}", other),
         }
@@ -746,6 +817,38 @@ mod tests {
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].suggested_reply, "Sure, Tuesday works!");
         assert!((pending[0].confidence - 0.9).abs() < 0.01);
+    }
+
+    #[tokio::test]
+    async fn processor_draft_reply_stores_tone_in_metadata() {
+        let llm: Arc<dyn LlmProvider> = Arc::new(MockTriageLlm {
+            response: r#"{"action": "draft_reply", "summary": "Question about meeting", "draft": "Tuesday works!", "confidence": 0.9, "tone": "casual and friendly", "style_notes": "keep it brief"}"#.into(),
+        });
+        let queue = CardQueue::new();
+        let processor = MessageProcessor::new(llm, queue.clone(), RulesEngine::empty());
+
+        let msg = InboundMessage {
+            id: "tone-test".into(),
+            channel: "email".into(),
+            sender: "bob@x.com".into(),
+            sender_name: None,
+            content: "Can we chat Tuesday?".into(),
+            subject: None,
+            thread_context: vec![],
+            reply_metadata: serde_json::json!({"reply_to": "bob@x.com"}),
+            received_at: Utc::now(),
+            priority_hints: crate::pipeline::types::PriorityHints::default(),
+        };
+
+        let _result = processor.process(msg).await.unwrap();
+        let pending = queue.pending().await;
+        assert_eq!(pending.len(), 1);
+
+        let meta = pending[0].reply_metadata.as_ref().unwrap();
+        assert_eq!(meta["tone"], "casual and friendly");
+        assert_eq!(meta["style_notes"], "keep it brief");
+        // Original metadata preserved
+        assert_eq!(meta["reply_to"], "bob@x.com");
     }
 
     #[tokio::test]
