@@ -5,6 +5,7 @@
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use rust_decimal::Decimal;
 use uuid::Uuid;
 
 use crate::cards::model::{CardStatus, ReplyCard};
@@ -16,6 +17,41 @@ pub struct ConversationMessage {
     pub id: Uuid,
     pub role: String,
     pub content: String,
+    pub created_at: DateTime<Utc>,
+}
+
+/// Record of a single LLM API call, for cost tracking.
+pub struct LlmCallRecord<'a> {
+    pub conversation_id: Option<Uuid>,
+    pub routine_run_id: Option<Uuid>,
+    pub provider: &'a str,
+    pub model: &'a str,
+    pub input_tokens: u32,
+    pub output_tokens: u32,
+    pub cost: Decimal,
+    pub purpose: Option<&'a str>,
+}
+
+/// Summary of a conversation for listing views.
+#[derive(Debug, Clone)]
+pub struct ConversationSummary {
+    pub id: Uuid,
+    /// First user message, truncated to 100 chars.
+    pub title: Option<String>,
+    pub message_count: i64,
+    pub started_at: DateTime<Utc>,
+    pub last_activity: DateTime<Utc>,
+    /// Thread type extracted from metadata (e.g. "assistant", "thread").
+    pub thread_type: Option<String>,
+}
+
+/// Aggregated LLM cost summary.
+#[derive(Debug, Clone, Default)]
+pub struct LlmCostSummary {
+    pub total_cost: Decimal,
+    pub total_input_tokens: u64,
+    pub total_output_tokens: u64,
+    pub call_count: u64,
 }
 
 /// Status of a tracked message.
@@ -173,6 +209,46 @@ pub trait Database: Send + Sync {
         // Default no-op stub
         Ok(())
     }
+
+    // ── LLM Call Tracking ────────────────────────────────────────────
+
+    /// Record an LLM API call for cost tracking.
+    async fn record_llm_call(&self, record: &LlmCallRecord<'_>) -> Result<Uuid, DatabaseError>;
+
+    /// Get aggregated cost for a specific conversation.
+    async fn get_conversation_cost(
+        &self,
+        conversation_id: Uuid,
+    ) -> Result<LlmCostSummary, DatabaseError>;
+
+    /// Get aggregated cost for a time period.
+    async fn get_costs_by_period(
+        &self,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+    ) -> Result<LlmCostSummary, DatabaseError>;
+
+    /// Get total spend across all time.
+    async fn get_total_spend(&self) -> Result<LlmCostSummary, DatabaseError>;
+
+    // ── Conversation Listing ────────────────────────────────────────
+
+    /// List conversations with preview (title from first user message).
+    async fn list_conversations_with_preview(
+        &self,
+        user_id: &str,
+        channel: &str,
+        limit: i64,
+    ) -> Result<Vec<ConversationSummary>, DatabaseError>;
+
+    /// List conversation messages with cursor-based pagination.
+    /// Returns (messages_oldest_first, has_more).
+    async fn list_conversation_messages_paginated(
+        &self,
+        conversation_id: Uuid,
+        before: Option<DateTime<Utc>>,
+        limit: i64,
+    ) -> Result<(Vec<ConversationMessage>, bool), DatabaseError>;
 
     // ── Routines ────────────────────────────────────────────────────
 

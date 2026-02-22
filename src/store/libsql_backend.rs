@@ -635,7 +635,7 @@ impl Database for LibSqlBackend {
         let conn = self.conn();
         let mut rows = conn
             .query(
-                "SELECT id, role, content FROM conversation_messages
+                "SELECT id, role, content, created_at FROM conversation_messages
                  WHERE conversation_id = ?1 ORDER BY created_at ASC",
                 params![thread_id.to_string()],
             )
@@ -647,10 +647,12 @@ impl Database for LibSqlBackend {
             let id_str: String = row.get(0).unwrap_or_default();
             let role: String = row.get(1).unwrap_or_default();
             let content: String = row.get(2).unwrap_or_default();
+            let created_str: String = row.get(3).unwrap_or_default();
             messages.push(ConversationMessage {
                 id: Uuid::parse_str(&id_str).unwrap_or_else(|_| Uuid::nil()),
                 role,
                 content,
+                created_at: parse_datetime(&created_str),
             });
         }
         Ok(messages)
@@ -724,6 +726,197 @@ impl Database for LibSqlBackend {
         .map_err(|e| DatabaseError::Query(format!("update metadata: {e}")))?;
 
         Ok(())
+    }
+
+    // ── LLM Call Tracking ────────────────────────────────────────────
+
+    async fn record_llm_call(
+        &self,
+        record: &crate::store::traits::LlmCallRecord<'_>,
+    ) -> Result<Uuid, DatabaseError> {
+        let conn = self.conn();
+        let id = Uuid::new_v4();
+        let conv_id: libsql::Value = match record.conversation_id {
+            Some(cid) => libsql::Value::Text(cid.to_string()),
+            None => libsql::Value::Null,
+        };
+        let run_id: libsql::Value = match record.routine_run_id {
+            Some(rid) => libsql::Value::Text(rid.to_string()),
+            None => libsql::Value::Null,
+        };
+        let purpose: libsql::Value = match record.purpose {
+            Some(p) => libsql::Value::Text(p.to_string()),
+            None => libsql::Value::Null,
+        };
+
+        conn.execute(
+            "INSERT INTO llm_calls (id, conversation_id, routine_run_id, provider, model, input_tokens, output_tokens, cost, purpose) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                id.to_string(),
+                conv_id,
+                run_id,
+                record.provider,
+                record.model,
+                record.input_tokens as i64,
+                record.output_tokens as i64,
+                record.cost.to_string(),
+                purpose,
+            ],
+        )
+        .await
+        .map_err(|e| DatabaseError::Query(format!("record_llm_call: {e}")))?;
+
+        Ok(id)
+    }
+
+    async fn get_conversation_cost(
+        &self,
+        conversation_id: Uuid,
+    ) -> Result<crate::store::traits::LlmCostSummary, DatabaseError> {
+        let conn = self.conn();
+        let mut rows = conn
+            .query(
+                "SELECT TOTAL(CAST(cost AS REAL)), TOTAL(input_tokens), TOTAL(output_tokens), COUNT(*) FROM llm_calls WHERE conversation_id = ?1",
+                params![conversation_id.to_string()],
+            )
+            .await
+            .map_err(|e| DatabaseError::Query(format!("get_conversation_cost: {e}")))?;
+
+        parse_cost_summary_row(&mut rows).await
+    }
+
+    async fn get_costs_by_period(
+        &self,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+    ) -> Result<crate::store::traits::LlmCostSummary, DatabaseError> {
+        let conn = self.conn();
+        let mut rows = conn
+            .query(
+                "SELECT TOTAL(CAST(cost AS REAL)), TOTAL(input_tokens), TOTAL(output_tokens), COUNT(*) FROM llm_calls WHERE created_at >= ?1 AND created_at < ?2",
+                params![start.to_rfc3339(), end.to_rfc3339()],
+            )
+            .await
+            .map_err(|e| DatabaseError::Query(format!("get_costs_by_period: {e}")))?;
+
+        parse_cost_summary_row(&mut rows).await
+    }
+
+    async fn get_total_spend(&self) -> Result<crate::store::traits::LlmCostSummary, DatabaseError> {
+        let conn = self.conn();
+        let mut rows = conn
+            .query(
+                "SELECT TOTAL(CAST(cost AS REAL)), TOTAL(input_tokens), TOTAL(output_tokens), COUNT(*) FROM llm_calls",
+                (),
+            )
+            .await
+            .map_err(|e| DatabaseError::Query(format!("get_total_spend: {e}")))?;
+
+        parse_cost_summary_row(&mut rows).await
+    }
+
+    // ── Conversation Listing ────────────────────────────────────────
+
+    async fn list_conversations_with_preview(
+        &self,
+        user_id: &str,
+        channel: &str,
+        limit: i64,
+    ) -> Result<Vec<crate::store::traits::ConversationSummary>, DatabaseError> {
+        let conn = self.conn();
+        let mut rows = conn
+            .query(
+                r#"
+                SELECT
+                    c.id,
+                    c.started_at,
+                    c.last_activity,
+                    c.metadata,
+                    (SELECT COUNT(*) FROM conversation_messages m WHERE m.conversation_id = c.id) AS message_count,
+                    (SELECT substr(m2.content, 1, 100)
+                     FROM conversation_messages m2
+                     WHERE m2.conversation_id = c.id AND m2.role = 'user'
+                     ORDER BY m2.created_at ASC
+                     LIMIT 1
+                    ) AS title
+                FROM conversations c
+                WHERE c.user_id = ?1 AND c.channel = ?2
+                ORDER BY c.last_activity DESC
+                LIMIT ?3
+                "#,
+                params![user_id, channel, limit],
+            )
+            .await
+            .map_err(|e| DatabaseError::Query(format!("list_conversations_with_preview: {e}")))?;
+
+        let mut results = Vec::new();
+        while let Ok(Some(row)) = rows.next().await {
+            let metadata_str: String = row.get(3).unwrap_or_else(|_| "{}".to_string());
+            let metadata: serde_json::Value =
+                serde_json::from_str(&metadata_str).unwrap_or(serde_json::json!({}));
+            let thread_type = metadata
+                .get("thread_type")
+                .and_then(|v| v.as_str())
+                .map(String::from);
+            let id_str: String = row.get(0).unwrap_or_default();
+            let started_str: String = row.get(1).unwrap_or_default();
+            let last_str: String = row.get(2).unwrap_or_default();
+
+            results.push(crate::store::traits::ConversationSummary {
+                id: id_str.parse().unwrap_or_default(),
+                started_at: parse_datetime(&started_str),
+                last_activity: parse_datetime(&last_str),
+                message_count: row.get::<i64>(4).unwrap_or(0),
+                title: row.get::<String>(5).ok(),
+                thread_type,
+            });
+        }
+        Ok(results)
+    }
+
+    async fn list_conversation_messages_paginated(
+        &self,
+        conversation_id: Uuid,
+        before: Option<DateTime<Utc>>,
+        limit: i64,
+    ) -> Result<(Vec<ConversationMessage>, bool), DatabaseError> {
+        let conn = self.conn();
+        let fetch_limit = limit + 1;
+        let cid = conversation_id.to_string();
+
+        let mut rows = if let Some(before_ts) = before {
+            conn.query(
+                "SELECT id, role, content, created_at FROM conversation_messages WHERE conversation_id = ?1 AND created_at < ?2 ORDER BY created_at DESC LIMIT ?3",
+                params![cid, before_ts.to_rfc3339(), fetch_limit],
+            )
+            .await
+        } else {
+            conn.query(
+                "SELECT id, role, content, created_at FROM conversation_messages WHERE conversation_id = ?1 ORDER BY created_at DESC LIMIT ?2",
+                params![cid, fetch_limit],
+            )
+            .await
+        }
+        .map_err(|e| DatabaseError::Query(format!("list_conversation_messages_paginated: {e}")))?;
+
+        let mut all = Vec::new();
+        while let Ok(Some(row)) = rows.next().await {
+            let id_str: String = row.get(0).unwrap_or_default();
+            let role: String = row.get(1).unwrap_or_default();
+            let content: String = row.get(2).unwrap_or_default();
+            let created_str: String = row.get(3).unwrap_or_default();
+            all.push(ConversationMessage {
+                id: Uuid::parse_str(&id_str).unwrap_or_else(|_| Uuid::nil()),
+                role,
+                content,
+                created_at: parse_datetime(&created_str),
+            });
+        }
+
+        let has_more = all.len() as i64 > limit;
+        all.truncate(limit as usize);
+        all.reverse(); // oldest first
+        Ok((all, has_more))
     }
 
     // ── Routines ────────────────────────────────────────────────────
@@ -1181,6 +1374,33 @@ impl Database for LibSqlBackend {
 const ROUTINE_COLUMNS: &str = "id, name, description, user_id, enabled, trigger_type, trigger_config, action_type, action_config, cooldown_secs, max_concurrent, dedup_window_secs, notify_channel, notify_user, notify_on_success, notify_on_failure, notify_on_attention, state, last_run_at, next_fire_at, run_count, consecutive_failures, created_at, updated_at";
 
 const ROUTINE_RUN_COLUMNS: &str = "id, routine_id, trigger_type, trigger_detail, started_at, status, completed_at, result_summary, tokens_used, job_id, created_at";
+
+/// Parse a cost summary from an aggregate query row.
+async fn parse_cost_summary_row(
+    rows: &mut libsql::Rows,
+) -> Result<crate::store::traits::LlmCostSummary, DatabaseError> {
+    use rust_decimal::Decimal;
+    use std::str::FromStr;
+
+    match rows.next().await {
+        Ok(Some(row)) => {
+            // TOTAL() always returns f64 in SQLite/libsql
+            let cost_f64: f64 = row.get(0).unwrap_or(0.0);
+            let total_cost = Decimal::from_str(&format!("{cost_f64:.10}")).unwrap_or(Decimal::ZERO);
+            let input_tokens: f64 = row.get(1).unwrap_or(0.0);
+            let output_tokens: f64 = row.get(2).unwrap_or(0.0);
+            let call_count = row.get::<i64>(3).unwrap_or(0);
+
+            Ok(crate::store::traits::LlmCostSummary {
+                total_cost,
+                total_input_tokens: input_tokens as u64,
+                total_output_tokens: output_tokens as u64,
+                call_count: call_count as u64,
+            })
+        }
+        _ => Ok(crate::store::traits::LlmCostSummary::default()),
+    }
+}
 
 fn row_to_routine(row: &libsql::Row) -> Result<crate::agent::routine::Routine, DatabaseError> {
     use crate::agent::routine::*;
@@ -2251,5 +2471,350 @@ mod tests {
         let db = test_db().await;
         let result = db.get_setting("nobody", "nothing").await.unwrap();
         assert!(result.is_none());
+    }
+
+    // ── LLM Call Tracking tests ─────────────────────────────────────
+
+    fn make_test_llm_record<'a>(
+        conv_id: Option<Uuid>,
+        run_id: Option<Uuid>,
+    ) -> crate::store::traits::LlmCallRecord<'a> {
+        crate::store::traits::LlmCallRecord {
+            conversation_id: conv_id,
+            routine_run_id: run_id,
+            provider: "anthropic",
+            model: "claude-3-5-sonnet",
+            input_tokens: 1000,
+            output_tokens: 500,
+            cost: rust_decimal_macros::dec!(0.0045),
+            purpose: Some("chat"),
+        }
+    }
+
+    #[tokio::test]
+    async fn record_and_get_total_spend() {
+        let db = test_db().await;
+
+        // No calls yet
+        let empty = db.get_total_spend().await.unwrap();
+        assert_eq!(empty.call_count, 0);
+        assert_eq!(empty.total_input_tokens, 0);
+
+        // Record two calls
+        db.record_llm_call(&make_test_llm_record(None, None))
+            .await
+            .unwrap();
+        db.record_llm_call(&make_test_llm_record(None, None))
+            .await
+            .unwrap();
+
+        let total = db.get_total_spend().await.unwrap();
+        assert_eq!(total.call_count, 2);
+        assert_eq!(total.total_input_tokens, 2000);
+        assert_eq!(total.total_output_tokens, 1000);
+        assert!(total.total_cost > rust_decimal::Decimal::ZERO);
+    }
+
+    #[tokio::test]
+    async fn record_llm_call_returns_uuid() {
+        let db = test_db().await;
+        let id = db
+            .record_llm_call(&make_test_llm_record(None, None))
+            .await
+            .unwrap();
+        assert_ne!(id, Uuid::nil());
+    }
+
+    #[tokio::test]
+    async fn get_conversation_cost() {
+        let db = test_db().await;
+
+        // Create a conversation
+        let conv_id = Uuid::new_v4();
+        db.ensure_conversation(conv_id, "cli", "user1", None)
+            .await
+            .unwrap();
+
+        // Record calls for this conversation
+        let mut rec = make_test_llm_record(Some(conv_id), None);
+        db.record_llm_call(&rec).await.unwrap();
+
+        rec.input_tokens = 2000;
+        rec.output_tokens = 1000;
+        rec.cost = rust_decimal_macros::dec!(0.009);
+        db.record_llm_call(&rec).await.unwrap();
+
+        // Also record a call for a different conversation (shouldn't count)
+        db.record_llm_call(&make_test_llm_record(None, None))
+            .await
+            .unwrap();
+
+        let cost = db.get_conversation_cost(conv_id).await.unwrap();
+        assert_eq!(cost.call_count, 2);
+        assert_eq!(cost.total_input_tokens, 3000);
+        assert_eq!(cost.total_output_tokens, 1500);
+    }
+
+    #[tokio::test]
+    async fn get_costs_by_period() {
+        let db = test_db().await;
+
+        // Record a call (gets current timestamp)
+        db.record_llm_call(&make_test_llm_record(None, None))
+            .await
+            .unwrap();
+
+        // Query for current period (should find it)
+        let now = Utc::now();
+        let start = now - chrono::Duration::hours(1);
+        let end = now + chrono::Duration::hours(1);
+        let cost = db.get_costs_by_period(start, end).await.unwrap();
+        assert_eq!(cost.call_count, 1);
+
+        // Query for past period (should not find it)
+        let old_start = now - chrono::Duration::days(30);
+        let old_end = now - chrono::Duration::days(29);
+        let old_cost = db.get_costs_by_period(old_start, old_end).await.unwrap();
+        assert_eq!(old_cost.call_count, 0);
+    }
+
+    #[tokio::test]
+    async fn record_llm_call_with_routine_run() {
+        use crate::agent::routine::*;
+        let db = test_db().await;
+
+        let routine = make_test_routine("cost-track");
+        db.create_routine(&routine).await.unwrap();
+
+        let run = RoutineRun {
+            id: Uuid::new_v4(),
+            routine_id: routine.id,
+            trigger_type: "manual".to_string(),
+            trigger_detail: None,
+            started_at: Utc::now(),
+            completed_at: None,
+            status: RunStatus::Running,
+            result_summary: None,
+            tokens_used: None,
+            job_id: None,
+            created_at: Utc::now(),
+        };
+        db.create_routine_run(&run).await.unwrap();
+
+        let rec = make_test_llm_record(None, Some(run.id));
+        db.record_llm_call(&rec).await.unwrap();
+
+        let total = db.get_total_spend().await.unwrap();
+        assert_eq!(total.call_count, 1);
+    }
+
+    // ── Conversation Listing tests ──────────────────────────────────
+
+    #[tokio::test]
+    async fn list_conversations_with_preview_basic() {
+        let db = test_db().await;
+
+        // Create two conversations
+        let c1 = Uuid::new_v4();
+        let c2 = Uuid::new_v4();
+        db.ensure_conversation(c1, "cli", "user1", None)
+            .await
+            .unwrap();
+        db.ensure_conversation(c2, "cli", "user1", None)
+            .await
+            .unwrap();
+        db.update_conversation_metadata_field(c2, "thread_type", &serde_json::json!("assistant"))
+            .await
+            .unwrap();
+
+        // Add messages
+        db.add_conversation_message(c1, "user", "Hello world, this is a test")
+            .await
+            .unwrap();
+        db.add_conversation_message(c1, "assistant", "Hi there!")
+            .await
+            .unwrap();
+        db.add_conversation_message(c2, "user", "Second conversation")
+            .await
+            .unwrap();
+
+        let list = db
+            .list_conversations_with_preview("user1", "cli", 10)
+            .await
+            .unwrap();
+        assert_eq!(list.len(), 2);
+
+        // Should have titles from first user message
+        let titles: Vec<Option<&str>> = list.iter().map(|c| c.title.as_deref()).collect();
+        assert!(titles.contains(&Some("Hello world, this is a test")));
+        assert!(titles.contains(&Some("Second conversation")));
+
+        // c1 should have 2 messages
+        let c1_summary = list.iter().find(|c| c.id == c1).unwrap();
+        assert_eq!(c1_summary.message_count, 2);
+    }
+
+    #[tokio::test]
+    async fn list_conversations_filters_by_channel() {
+        let db = test_db().await;
+
+        let c1 = Uuid::new_v4();
+        let c2 = Uuid::new_v4();
+        db.ensure_conversation(c1, "cli", "user1", None)
+            .await
+            .unwrap();
+        db.ensure_conversation(c2, "telegram", "user1", None)
+            .await
+            .unwrap();
+
+        let cli_list = db
+            .list_conversations_with_preview("user1", "cli", 10)
+            .await
+            .unwrap();
+        assert_eq!(cli_list.len(), 1);
+        assert_eq!(cli_list[0].id, c1);
+    }
+
+    #[tokio::test]
+    async fn list_conversations_empty() {
+        let db = test_db().await;
+        let list = db
+            .list_conversations_with_preview("nobody", "cli", 10)
+            .await
+            .unwrap();
+        assert!(list.is_empty());
+    }
+
+    // ── Paginated Messages tests ────────────────────────────────────
+
+    #[tokio::test]
+    async fn paginated_messages_basic() {
+        let db = test_db().await;
+        let conv = Uuid::new_v4();
+        db.ensure_conversation(conv, "cli", "user1", None)
+            .await
+            .unwrap();
+
+        // Add 5 messages
+        for i in 0..5 {
+            db.add_conversation_message(conv, "user", &format!("Message {i}"))
+                .await
+                .unwrap();
+        }
+
+        // Get all (no cursor)
+        let (msgs, has_more) = db
+            .list_conversation_messages_paginated(conv, None, 10)
+            .await
+            .unwrap();
+        assert_eq!(msgs.len(), 5);
+        assert!(!has_more);
+        // All messages should be present
+        let contents: Vec<&str> = msgs.iter().map(|m| m.content.as_str()).collect();
+        for i in 0..5 {
+            assert!(
+                contents.contains(&format!("Message {i}").as_str()),
+                "Missing Message {i}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn paginated_messages_limit_and_has_more() {
+        let db = test_db().await;
+        let conv = Uuid::new_v4();
+        db.ensure_conversation(conv, "cli", "user1", None)
+            .await
+            .unwrap();
+
+        for i in 0..5 {
+            db.add_conversation_message(conv, "user", &format!("Msg {i}"))
+                .await
+                .unwrap();
+        }
+
+        // Request only 3
+        let (msgs, has_more) = db
+            .list_conversation_messages_paginated(conv, None, 3)
+            .await
+            .unwrap();
+        assert_eq!(msgs.len(), 3);
+        assert!(has_more);
+    }
+
+    #[tokio::test]
+    async fn paginated_messages_cursor() {
+        let db = test_db().await;
+        let conv = Uuid::new_v4();
+        db.ensure_conversation(conv, "cli", "user1", None)
+            .await
+            .unwrap();
+
+        // Insert messages with explicit timestamps for deterministic ordering
+        let conn = db.conn();
+        let base = Utc::now() - chrono::Duration::minutes(10);
+        for i in 0..5 {
+            let ts = (base + chrono::Duration::seconds(i * 60)).to_rfc3339();
+            conn.execute(
+                "INSERT INTO conversation_messages (id, conversation_id, role, content, created_at) VALUES (?1, ?2, 'user', ?3, ?4)",
+                params![Uuid::new_v4().to_string(), conv.to_string(), format!("Msg {i}"), ts],
+            ).await.unwrap();
+        }
+
+        // Get most recent 3 (returned oldest-first after internal reverse)
+        let (page1, has_more1) = db
+            .list_conversation_messages_paginated(conv, None, 3)
+            .await
+            .unwrap();
+        assert_eq!(page1.len(), 3);
+        assert!(has_more1);
+
+        // Use the earliest message on page1 as cursor
+        let cursor = page1[0].created_at;
+        let (page2, has_more2) = db
+            .list_conversation_messages_paginated(conv, Some(cursor), 10)
+            .await
+            .unwrap();
+        assert!(!has_more2);
+        // All page2 messages should have created_at strictly before cursor
+        for msg in &page2 {
+            assert!(msg.created_at < cursor);
+        }
+        // page1 (3) + page2 should cover all 5
+        assert_eq!(page1.len() + page2.len(), 5);
+    }
+
+    #[tokio::test]
+    async fn paginated_messages_empty_conversation() {
+        let db = test_db().await;
+        let conv = Uuid::new_v4();
+        db.ensure_conversation(conv, "cli", "user1", None)
+            .await
+            .unwrap();
+
+        let (msgs, has_more) = db
+            .list_conversation_messages_paginated(conv, None, 10)
+            .await
+            .unwrap();
+        assert!(msgs.is_empty());
+        assert!(!has_more);
+    }
+
+    #[tokio::test]
+    async fn conversation_message_has_created_at() {
+        let db = test_db().await;
+        let conv = Uuid::new_v4();
+        db.ensure_conversation(conv, "cli", "user1", None)
+            .await
+            .unwrap();
+        db.add_conversation_message(conv, "user", "hello")
+            .await
+            .unwrap();
+
+        let msgs = db.list_conversation_messages(conv).await.unwrap();
+        assert_eq!(msgs.len(), 1);
+        // created_at should be recent (within last minute)
+        let age = Utc::now().signed_duration_since(msgs[0].created_at);
+        assert!(age.num_seconds() < 60);
     }
 }
