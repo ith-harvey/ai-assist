@@ -12,6 +12,7 @@ use ai_assist::llm::{LlmBackend, LlmConfig, create_provider};
 use ai_assist::safety::SafetyLayer;
 use ai_assist::store::{Database, LibSqlBackend};
 use ai_assist::tools::ToolRegistry;
+use ai_assist::workspace::Workspace;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -193,19 +194,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         None
     };
 
+    // ── Workspace ─────────────────────────────────────────────────────────
+    let workspace_path = std::env::var("AI_ASSIST_WORKSPACE")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| {
+            let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+            std::path::PathBuf::from(home).join(".ai-assist/workspace")
+        });
+    let workspace = Arc::new(Workspace::new(workspace_path.clone()));
+    if let Err(e) = workspace.ensure_dirs().await {
+        eprintln!("   Warning: Could not create workspace dirs: {}", e);
+    }
+    eprintln!("   Workspace: {}", workspace_path.display());
+
     // ── Tools ────────────────────────────────────────────────────────────
     let tools = Arc::new(ToolRegistry::new());
+    // Shell + file tools (Phase 1)
     tools.register_sync(Arc::new(ai_assist::tools::builtin::shell::ShellTool::new()));
-    tools.register_sync(Arc::new(
-        ai_assist::tools::builtin::file::ReadFileTool::new(),
-    ));
-    tools.register_sync(Arc::new(
-        ai_assist::tools::builtin::file::WriteFileTool::new(),
-    ));
+    tools.register_sync(Arc::new(ai_assist::tools::builtin::file::ReadFileTool::new()));
+    tools.register_sync(Arc::new(ai_assist::tools::builtin::file::WriteFileTool::new()));
     tools.register_sync(Arc::new(ai_assist::tools::builtin::file::ListDirTool::new()));
-    tools.register_sync(Arc::new(
-        ai_assist::tools::builtin::file::ApplyPatchTool::new(),
-    ));
+    tools.register_sync(Arc::new(ai_assist::tools::builtin::file::ApplyPatchTool::new()));
+    // Routine tools (Phase 2)
+    if let Some(ref engine) = routine_engine {
+        tools.register_routine_tools(Arc::clone(&db), Arc::clone(engine));
+    }
+    // Memory tools (Phase 2)
+    tools.register_memory_tools(Arc::clone(&workspace));
     eprintln!("   Tools: {} registered", tools.count());
 
     // ── Agent ───────────────────────────────────────────────────────────
@@ -214,7 +229,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         llm,
         safety: Arc::new(SafetyLayer::new()),
         tools,
-        workspace: None,
+        workspace: Some(Arc::clone(&workspace)),
         extension_manager: None,
         card_generator: Some(card_generator),
         routine_engine,

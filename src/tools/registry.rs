@@ -6,7 +6,9 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 use crate::llm::ToolDefinition;
+use crate::store::Database;
 use crate::tools::tool::{Tool, ToolDomain};
+use crate::workspace::Workspace;
 
 /// Names of built-in tools that cannot be shadowed by dynamic registrations.
 const PROTECTED_TOOL_NAMES: &[&str] = &[
@@ -23,6 +25,11 @@ const PROTECTED_TOOL_NAMES: &[&str] = &[
     "memory_write",
     "memory_read",
     "memory_tree",
+    "routine_create",
+    "routine_list",
+    "routine_update",
+    "routine_delete",
+    "routine_history",
 ];
 
 /// Registry of available tools.
@@ -140,6 +147,29 @@ impl ToolRegistry {
                 parameters: tool.parameters_schema(),
             })
             .collect()
+    }
+
+    /// Register all routine management tools.
+    pub fn register_routine_tools(
+        &self,
+        store: Arc<dyn Database>,
+        engine: Arc<crate::agent::routine_engine::RoutineEngine>,
+    ) {
+        use crate::tools::builtin::routine::*;
+        self.register_sync(Arc::new(RoutineCreateTool::new(store.clone(), engine.clone())));
+        self.register_sync(Arc::new(RoutineListTool::new(store.clone())));
+        self.register_sync(Arc::new(RoutineUpdateTool::new(store.clone(), engine.clone())));
+        self.register_sync(Arc::new(RoutineDeleteTool::new(store.clone(), engine)));
+        self.register_sync(Arc::new(RoutineHistoryTool::new(store)));
+    }
+
+    /// Register all memory/workspace tools.
+    pub fn register_memory_tools(&self, workspace: Arc<Workspace>) {
+        use crate::tools::builtin::memory::*;
+        self.register_sync(Arc::new(MemorySearchTool::new(workspace.clone())));
+        self.register_sync(Arc::new(MemoryWriteTool::new(workspace.clone())));
+        self.register_sync(Arc::new(MemoryReadTool::new(workspace.clone())));
+        self.register_sync(Arc::new(MemoryTreeTool::new(workspace)));
     }
 }
 

@@ -749,8 +749,9 @@ impl Database for LibSqlBackend {
             None => libsql::Value::Null,
         };
 
+        let now = Utc::now().to_rfc3339();
         conn.execute(
-            "INSERT INTO llm_calls (id, conversation_id, routine_run_id, provider, model, input_tokens, output_tokens, cost, purpose) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            "INSERT INTO llm_calls (id, conversation_id, routine_run_id, provider, model, input_tokens, output_tokens, cost, purpose, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 id.to_string(),
                 conv_id,
@@ -761,6 +762,7 @@ impl Database for LibSqlBackend {
                 record.output_tokens as i64,
                 record.cost.to_string(),
                 purpose,
+                now,
             ],
         )
         .await
