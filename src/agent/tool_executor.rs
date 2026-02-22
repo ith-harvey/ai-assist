@@ -206,10 +206,38 @@ impl Agent {
                             && tool.requires_approval()
                         {
                             // Check if auto-approved for this session
-                            let is_auto_approved = {
+                            let mut is_auto_approved = {
                                 let sess = session.lock().await;
                                 sess.is_tool_auto_approved(&tc.name)
                             };
+
+                            // Override auto-approval for destructive shell commands
+                            if is_auto_approved && tc.name == "shell" {
+                                let cmd = tc
+                                    .arguments
+                                    .get("command")
+                                    .and_then(|c| c.as_str().map(String::from))
+                                    .or_else(|| {
+                                        tc.arguments
+                                            .as_str()
+                                            .and_then(|s| {
+                                                serde_json::from_str::<serde_json::Value>(s).ok()
+                                            })
+                                            .and_then(|v| {
+                                                v.get("command")
+                                                    .and_then(|c| c.as_str().map(String::from))
+                                            })
+                                    });
+                                if let Some(ref cmd) = cmd
+                                    && crate::tools::builtin::shell::requires_explicit_approval(cmd)
+                                {
+                                    tracing::info!(
+                                        "Shell command requires explicit approval despite auto-approve: {}",
+                                        &cmd[..cmd.len().min(80)]
+                                    );
+                                    is_auto_approved = false;
+                                }
+                            }
 
                             if !is_auto_approved {
                                 // Need approval - store pending request and return
