@@ -229,7 +229,7 @@ pub async fn run_migrations(conn: &Connection) -> Result<(), DatabaseError> {
 
         seed_version(conn, 1, "initial_schema").await?;
         tracing::info!("Legacy database detected — seeded migration V1");
-        return Ok(());
+        // Fall through to apply V2+ migrations
     }
 
     // Apply pending migrations
@@ -412,12 +412,12 @@ mod tests {
         .await
         .unwrap();
 
-        // Now run migrations — should detect legacy and seed V1
+        // Now run migrations — should detect legacy, seed V1, then apply V2+V3
         run_migrations(&conn).await.unwrap();
 
-        // Verify V1 was seeded
+        // Verify all migrations applied (legacy seed V1 + V2 routines + V3 llm_calls)
         let version = get_current_version(&conn).await.unwrap();
-        assert_eq!(version, 1);
+        assert_eq!(version, 3);
 
         // Verify conversation tables were created
         let mut rows = conn
