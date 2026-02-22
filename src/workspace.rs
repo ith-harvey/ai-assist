@@ -212,29 +212,27 @@ impl Workspace {
                     if !name_str.starts_with('.') && name_str != "node_modules" && name_str != "target" {
                         self.search_dir(&path, terms, results).await?;
                     }
-                } else if metadata.is_file() {
-                    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-                    if matches!(ext, "md" | "txt" | "toml" | "yaml" | "yml") {
-                        if let Ok(content) = fs::read_to_string(&path).await {
-                            let rel_path = path
-                                .strip_prefix(&self.base_path)
-                                .unwrap_or(&path)
-                                .to_string_lossy()
-                                .to_string();
+                } else if metadata.is_file()
+                    && matches!(path.extension().and_then(|e| e.to_str()), Some("md" | "txt" | "toml" | "yaml" | "yml"))
+                    && let Ok(content) = fs::read_to_string(&path).await
+                {
+                    let rel_path = path
+                        .strip_prefix(&self.base_path)
+                        .unwrap_or(&path)
+                        .to_string_lossy()
+                        .to_string();
 
-                            for (line_num, line) in content.lines().enumerate() {
-                                let line_lower = line.to_lowercase();
-                                let matched: usize = terms.iter().filter(|t| line_lower.contains(*t)).count();
-                                if matched > 0 {
-                                    let score = matched as f32 / terms.len() as f32;
-                                    results.push(SearchResult {
-                                        path: rel_path.clone(),
-                                        line_number: line_num + 1,
-                                        snippet: line.chars().take(200).collect(),
-                                        score,
-                                    });
-                                }
-                            }
+                    for (line_num, line) in content.lines().enumerate() {
+                        let line_lower = line.to_lowercase();
+                        let matched: usize = terms.iter().filter(|t| line_lower.contains(*t)).count();
+                        if matched > 0 {
+                            let score = matched as f32 / terms.len() as f32;
+                            results.push(SearchResult {
+                                path: rel_path.clone(),
+                                line_number: line_num + 1,
+                                snippet: line.chars().take(200).collect(),
+                                score,
+                            });
                         }
                     }
                 }
@@ -248,12 +246,8 @@ impl Workspace {
         let mut parts = Vec::new();
         for &file in IDENTITY_FILES {
             let path = self.resolve_path(file);
-            if path.exists() {
-                if let Ok(content) = fs::read_to_string(&path).await {
-                    if !content.trim().is_empty() {
-                        parts.push(format!("# {}\n\n{}", file, content));
-                    }
-                }
+            if path.exists() && let Ok(content) = fs::read_to_string(&path).await && !content.trim().is_empty() {
+                parts.push(format!("# {}\n\n{}", file, content));
             }
         }
         Ok(parts.join("\n\n---\n\n"))

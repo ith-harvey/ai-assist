@@ -8,6 +8,7 @@ pub mod context;
 pub mod error;
 pub mod extensions;
 pub mod llm;
+pub mod pipeline;
 pub mod safety;
 pub mod store;
 pub mod tools;
