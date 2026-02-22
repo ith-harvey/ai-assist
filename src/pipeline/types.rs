@@ -115,6 +115,12 @@ pub enum TriageAction {
         summary: String,
         draft: String,
         confidence: f32,
+        /// Short tone descriptor (e.g. "casual", "formal but warm"). Max ~10 words.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tone: Option<String>,
+        /// Brief style guidance for refinement (e.g. "match their emoji use"). Max ~15 words.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        style_notes: Option<String>,
     },
     /// Low priority — batch into a periodic digest.
     Digest { summary: String },
@@ -251,7 +257,9 @@ mod tests {
             TriageAction::DraftReply {
                 summary: "x".into(),
                 draft: "y".into(),
-                confidence: 0.9
+                confidence: 0.9,
+                tone: None,
+                style_notes: None,
             }
             .label(),
             "draft_reply"
@@ -268,12 +276,30 @@ mod tests {
             summary: "User asks about meeting".into(),
             draft: "I'll check my schedule and get back to you.".into(),
             confidence: 0.85,
+            tone: Some("casual and friendly".into()),
+            style_notes: Some("match their brevity".into()),
         };
         let json = serde_json::to_value(&action).unwrap();
         assert_eq!(json["action"], "draft_reply");
+        assert_eq!(json["tone"], "casual and friendly");
+        assert_eq!(json["style_notes"], "match their brevity");
         assert!(json["summary"].is_string());
         assert!(json["draft"].is_string());
         assert!(json["confidence"].is_f64());
+    }
+
+    #[test]
+    fn triage_action_serialization_omits_none_fields() {
+        let action = TriageAction::DraftReply {
+            summary: "Quick question".into(),
+            draft: "Yes, that works.".into(),
+            confidence: 0.9,
+            tone: None,
+            style_notes: None,
+        };
+        let json = serde_json::to_value(&action).unwrap();
+        assert!(json.get("tone").is_none());
+        assert!(json.get("style_notes").is_none());
     }
 
     #[test]
