@@ -33,6 +33,9 @@ pub enum Error {
 
     #[error("Workspace error: {0}")]
     Workspace(#[from] WorkspaceError),
+
+    #[error("Pipeline error: {0}")]
+    Pipeline(#[from] PipelineError),
 }
 
 /// Configuration-related errors.
@@ -262,6 +265,28 @@ pub enum WorkspaceError {
 
     #[error("File not found: {0}")]
     FileNotFound(String),
+}
+
+/// Pipeline-related errors.
+#[derive(Debug, thiserror::Error)]
+pub enum PipelineError {
+    #[error("Triage failed: {0}")]
+    Triage(String),
+
+    #[error("Card creation failed: {0}")]
+    CardCreation(String),
+
+    #[error("Channel fetch failed: {0}")]
+    ChannelFetch(String),
+
+    #[error("Channel send failed: {0}")]
+    ChannelSend(String),
+
+    #[error("Rules evaluation failed: {0}")]
+    Rules(String),
+
+    #[error("LLM error: {0}")]
+    Llm(#[from] LlmError),
 }
 
 /// Result type alias for the agent.
