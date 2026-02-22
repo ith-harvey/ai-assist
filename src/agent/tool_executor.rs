@@ -10,6 +10,7 @@ use crate::channels::{IncomingMessage, StatusUpdate};
 use crate::context::JobContext;
 use crate::error::Error;
 use crate::llm::{ChatMessage, Reasoning, ReasoningContext, RespondResult};
+use crate::store::traits::LlmCallRecord;
 
 use super::agent_loop::Agent;
 
@@ -116,6 +117,27 @@ impl Agent {
                 output.usage.input_tokens,
                 output.usage.output_tokens
             );
+
+            // Record LLM call for cost tracking
+            if let Some(store) = self.store() {
+                let (input_cost, output_cost) = self.llm().cost_per_token();
+                let cost = input_cost * rust_decimal::Decimal::from(output.usage.input_tokens)
+                    + output_cost * rust_decimal::Decimal::from(output.usage.output_tokens);
+                let model_name = self.llm().model_name().to_string();
+                let record = LlmCallRecord {
+                    conversation_id: Some(thread_id),
+                    routine_run_id: None,
+                    provider: &model_name,
+                    model: &model_name,
+                    input_tokens: output.usage.input_tokens,
+                    output_tokens: output.usage.output_tokens,
+                    cost,
+                    purpose: Some("chat"),
+                };
+                if let Err(e) = store.record_llm_call(&record).await {
+                    tracing::warn!("Failed to record LLM call cost: {}", e);
+                }
+            }
 
             match output.result {
                 RespondResult::Text(text) => {

@@ -142,6 +142,27 @@ static MIGRATIONS: &[Migration] = &[
             );
         "#,
     },
+    Migration {
+        version: 3,
+        name: "llm_call_tracking",
+        sql: r#"
+            CREATE TABLE IF NOT EXISTS llm_calls (
+                id TEXT PRIMARY KEY,
+                conversation_id TEXT REFERENCES conversations(id),
+                routine_run_id TEXT REFERENCES routine_runs(id),
+                provider TEXT NOT NULL,
+                model TEXT NOT NULL,
+                input_tokens INTEGER NOT NULL,
+                output_tokens INTEGER NOT NULL,
+                cost TEXT NOT NULL,
+                purpose TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_llm_calls_conversation ON llm_calls(conversation_id);
+            CREATE INDEX IF NOT EXISTS idx_llm_calls_provider ON llm_calls(provider);
+            CREATE INDEX IF NOT EXISTS idx_llm_calls_created ON llm_calls(created_at);
+        "#,
+    },
 ];
 
 /// Run all pending migrations against the given connection.
@@ -316,7 +337,7 @@ mod tests {
         let conn = test_conn().await;
         run_migrations(&conn).await.unwrap();
 
-        // Check all tables exist (V1 + V2)
+        // Check all tables exist (V1 + V2 + V3)
         for table in &[
             "cards",
             "messages",
@@ -326,6 +347,7 @@ mod tests {
             "routines",
             "routine_runs",
             "settings",
+            "llm_calls",
         ] {
             let mut rows = conn
                 .query(
@@ -349,7 +371,7 @@ mod tests {
 
         // Version should be at the latest migration
         let version = get_current_version(&conn).await.unwrap();
-        assert_eq!(version, 2);
+        assert_eq!(version, 3);
     }
 
     #[tokio::test]
@@ -438,5 +460,11 @@ mod tests {
         let n2: String = row2.get(1).unwrap();
         assert_eq!(v2, 2);
         assert_eq!(n2, "routines_system");
+
+        let row3 = rows.next().await.unwrap().unwrap();
+        let v3: i64 = row3.get(0).unwrap();
+        let n3: String = row3.get(1).unwrap();
+        assert_eq!(v3, 3);
+        assert_eq!(n3, "llm_call_tracking");
     }
 }

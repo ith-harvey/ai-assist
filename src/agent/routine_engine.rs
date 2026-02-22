@@ -302,7 +302,7 @@ async fn execute_routine(ctx: EngineContext, routine: Routine, run: RoutineRun) 
             prompt,
             context_paths,
             max_tokens,
-        } => execute_lightweight(&ctx, &routine, prompt, context_paths, *max_tokens).await,
+        } => execute_lightweight(&ctx, &routine, run.id, prompt, context_paths, *max_tokens).await,
         RoutineAction::FullJob { description, .. } => {
             // TODO: Full job mode — currently falls back to lightweight execution.
             // Full scheduler/tool integration will come in a follow-up.
@@ -310,7 +310,15 @@ async fn execute_routine(ctx: EngineContext, routine: Routine, run: RoutineRun) 
                 routine = %routine.name,
                 "FullJob mode executing as lightweight (scheduler integration pending)"
             );
-            execute_lightweight(&ctx, &routine, description, &[], ctx.max_lightweight_tokens).await
+            execute_lightweight(
+                &ctx,
+                &routine,
+                run.id,
+                description,
+                &[],
+                ctx.max_lightweight_tokens,
+            )
+            .await
         }
     };
 
@@ -377,6 +385,7 @@ async fn execute_routine(ctx: EngineContext, routine: Routine, run: RoutineRun) 
 async fn execute_lightweight(
     ctx: &EngineContext,
     routine: &Routine,
+    routine_run_id: Uuid,
     prompt: &str,
     context_paths: &[String],
     max_tokens: u32,
@@ -435,6 +444,30 @@ async fn execute_lightweight(
 
     let content = response.content.trim();
     let tokens_used = Some((response.input_tokens + response.output_tokens) as i32);
+
+    // Record LLM call for cost tracking
+    {
+        let (input_cost, output_cost) = ctx.llm.cost_per_token();
+        let cost = input_cost * rust_decimal::Decimal::from(response.input_tokens)
+            + output_cost * rust_decimal::Decimal::from(response.output_tokens);
+        let model_name = ctx.llm.model_name().to_string();
+        let record = crate::store::traits::LlmCallRecord {
+            conversation_id: None,
+            routine_run_id: Some(routine_run_id),
+            provider: &model_name,
+            model: &model_name,
+            input_tokens: response.input_tokens,
+            output_tokens: response.output_tokens,
+            cost,
+            purpose: Some("routine"),
+        };
+        if let Err(e) = ctx.store.record_llm_call(&record).await {
+            tracing::warn!(
+                routine = %routine.name,
+                "Failed to record LLM call cost: {}", e
+            );
+        }
+    }
 
     if content.is_empty() {
         return if response.finish_reason == FinishReason::Length {
