@@ -180,6 +180,7 @@ impl Channel for EmailChannel {
         let config = self.config.clone();
         let shutdown = Arc::clone(&self.shutdown);
         let allowed = self.config.allowed_senders.clone();
+        let from_addr = self.config.from_address.clone();
         let msg_store = self.db.clone();
 
         tokio::spawn(async move {
@@ -206,6 +207,13 @@ impl Channel for EmailChannel {
                         let mut uids_to_mark: Vec<String> = Vec::new();
 
                         for (uid, msg_id, sender, content, subject, ts, reply_meta) in messages {
+                            // Self-loop prevention: never process our own outbound emails
+                            if sender.eq_ignore_ascii_case(&from_addr) {
+                                tracing::debug!(sender = %sender, "Skipping self-sent email (loop prevention)");
+                                uids_to_mark.push(uid);
+                                continue;
+                            }
+
                             // Allowlist check
                             if !is_sender_allowed(&allowed, &sender) {
                                 tracing::warn!("Blocked email from {sender}");
