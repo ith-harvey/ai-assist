@@ -256,6 +256,12 @@ pub enum WorkspaceError {
 
     #[error("Heartbeat error: {reason}")]
     HeartbeatError { reason: String },
+
+    #[error("IO error: {0}")]
+    Io(#[from] std::io::Error),
+
+    #[error("File not found: {0}")]
+    FileNotFound(String),
 }
 
 /// Result type alias for the agent.
