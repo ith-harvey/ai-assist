@@ -193,12 +193,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         None
     };
 
+    // ── Tools ────────────────────────────────────────────────────────────
+    let tools = Arc::new(ToolRegistry::new());
+    tools.register_sync(Arc::new(ai_assist::tools::builtin::shell::ShellTool::new()));
+    tools.register_sync(Arc::new(
+        ai_assist::tools::builtin::file::ReadFileTool::new(),
+    ));
+    tools.register_sync(Arc::new(
+        ai_assist::tools::builtin::file::WriteFileTool::new(),
+    ));
+    tools.register_sync(Arc::new(ai_assist::tools::builtin::file::ListDirTool::new()));
+    tools.register_sync(Arc::new(
+        ai_assist::tools::builtin::file::ApplyPatchTool::new(),
+    ));
+    eprintln!("   Tools: {} registered", tools.count());
+
     // ── Agent ───────────────────────────────────────────────────────────
     let deps = AgentDeps {
         store: Some(Arc::clone(&db)),
         llm,
         safety: Arc::new(SafetyLayer::new()),
-        tools: Arc::new(ToolRegistry::new()),
+        tools,
         workspace: None,
         extension_manager: None,
         card_generator: Some(card_generator),
