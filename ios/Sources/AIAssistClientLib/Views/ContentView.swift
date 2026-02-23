@@ -6,9 +6,9 @@ import SwiftUI
 /// Horizontal drag (after 20pt direction lock) moves the whole card for
 /// approve/reject.
 ///
-/// Voice-to-refine via dedicated mic button (VoiceMicButton) positioned
-/// between the card content and the tab bar. Long-press to record, release
-/// to send transcript as a refine instruction.
+/// Voice/text refine via Telegram-style input bar with mic/send button swap.
+/// Empty field → compact mic button (long-press to voice-refine).
+/// Text entered → send button (refine with typed instruction).
 public struct ContentView: View {
     @State private var socket = CardWebSocket()
     @State private var showSettings = false
@@ -18,6 +18,12 @@ public struct ContentView: View {
     // Swipe state
     @State private var dragOffset: CGFloat = 0
     @State private var isDraggingHorizontally = false
+
+    // Refine input state
+    @State private var refineText = ""
+    #if os(iOS)
+    @State private var isKeyboardVisible = false
+    #endif
 
     private let swipeThreshold: CGFloat = 100
     /// Minimum movement before direction is locked. Gives ScrollView
@@ -70,6 +76,14 @@ public struct ContentView: View {
             .onDisappear {
                 socket.disconnect()
             }
+            #if os(iOS)
+            .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
+                isKeyboardVisible = true
+            }
+            .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
+                isKeyboardVisible = false
+            }
+            #endif
         }
     }
 
@@ -80,14 +94,7 @@ public struct ContentView: View {
         VStack(spacing: 0) {
             connectionBanner
             MessageThreadView(card: card)
-
-            #if os(iOS)
-            VoiceMicButton { transcript in
-                socket.refine(cardId: card.id, instruction: transcript)
-            }
-            .padding(.vertical, 6)
-            #endif
-
+            refineInputBar(for: card)
             voiceOverlay
         }
         .offset(x: dragOffset)
@@ -150,7 +157,71 @@ public struct ContentView: View {
         )
     }
 
-    // Voice recording is handled by VoiceMicButton in cardContent.
+    // MARK: - Refine Input Bar (Telegram-style mic/send swap)
+
+    /// Whether the refine text field has sendable content.
+    private var canRefine: Bool {
+        !refineText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    @ViewBuilder
+    private func refineInputBar(for card: ReplyCard) -> some View {
+        HStack(spacing: 8) {
+            TextField("Refine this reply...", text: $refineText, axis: .vertical)
+                .textFieldStyle(.plain)
+                .font(.body)
+                .lineLimit(1...3)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                #if os(iOS)
+                .background(Color(uiColor: .systemGray6))
+                #else
+                .background(Color.gray.opacity(0.12))
+                #endif
+                .clipShape(RoundedRectangle(cornerRadius: 18))
+                .onSubmit {
+                    sendRefine(for: card)
+                }
+
+            // Telegram-style swap: send button when text entered, mic when empty
+            ZStack {
+                if canRefine {
+                    Button {
+                        sendRefine(for: card)
+                    } label: {
+                        Image(systemName: "arrow.up.circle.fill")
+                            .font(.system(size: 30))
+                            .foregroundStyle(.blue)
+                    }
+                    .transition(.scale.combined(with: .opacity))
+                } else {
+                    #if os(iOS)
+                    VoiceMicButton(compact: true) { transcript in
+                        socket.refine(cardId: card.id, instruction: transcript)
+                    }
+                    .transition(.scale.combined(with: .opacity))
+                    #else
+                    Button {} label: {
+                        Image(systemName: "arrow.up.circle.fill")
+                            .font(.system(size: 30))
+                            .foregroundStyle(.gray.opacity(0.4))
+                    }
+                    .disabled(true)
+                    #endif
+                }
+            }
+            .animation(.spring(response: 0.3, dampingFraction: 0.7), value: canRefine)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(.bar)
+    }
+
+    private func sendRefine(for card: ReplyCard) {
+        guard canRefine else { return }
+        socket.refine(cardId: card.id, instruction: refineText)
+        refineText = ""
+    }
 
     // MARK: - Voice Overlay
 
