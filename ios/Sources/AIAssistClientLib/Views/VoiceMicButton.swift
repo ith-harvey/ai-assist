@@ -37,7 +37,7 @@ public struct VoiceMicButton: View {
     private let iconSize: CGFloat = 20
 
     /// Scale factor when recording.
-    private let recordingScale: CGFloat = 1.5
+    private let recordingScale: CGFloat = 3.0
 
     public init(
         shouldSuppress: Bool = false,
