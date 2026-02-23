@@ -118,6 +118,7 @@ public struct BrainChatView: View {
                     }
                 )
             }
+            .scrollDismissesKeyboard(.interactively)
             .coordinateSpace(name: "chatScroll")
             .onPreferenceChange(ScrollOffsetKey.self) { offset in
                 handleScrollOffset(offset)
