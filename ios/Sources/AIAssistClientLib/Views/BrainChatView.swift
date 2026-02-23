@@ -10,9 +10,6 @@ private struct ScrollOffsetKey: PreferenceKey {
     }
 }
 
-// OverscrollDistanceKey, ViewportHeightKey, and ScrollOverscrollModifier are in
-// Utilities/ScrollOverscrollModifier.swift (shared with ContentView/MessageThreadView).
-
 /// Terminal-style full-screen chat view for the Brain tab.
 /// Full-width messages (not chat bubbles), text input bar at bottom,
 /// thinking indicator, and streaming support with auto-scroll.
@@ -20,9 +17,8 @@ private struct ScrollOffsetKey: PreferenceKey {
 /// The input bar and status indicator slide off-screen when scrolling up
 /// (iMessage-style) and reappear when scrolling back to the bottom.
 ///
-/// Pull-down overscroll at the bottom of the chat triggers voice recording
-/// (same pattern as card refine in ContentView). Releasing submits the
-/// transcript as a chat message.
+/// Voice input via dedicated mic button (VoiceMicButton) positioned above
+/// the input bar. Long-press to record, release to send transcript.
 public struct BrainChatView: View {
     @State private var chatSocket = ChatWebSocket()
     @State private var inputText = ""
@@ -33,19 +29,6 @@ public struct BrainChatView: View {
 
     /// Whether the keyboard is currently shown.
     @State private var isKeyboardVisible = false
-
-    // Voice-to-chat state
-    #if os(iOS)
-    @State private var voiceManager = VoiceRecordingManager()
-    #endif
-    /// How far (in points) the user has overscrolled past the bottom.
-    /// Positive = rubber-banding downward. Recording triggers when > recordThreshold.
-    @State private var overscrollDistance: CGFloat = 0
-    /// Whether the user's finger is currently on the scroll view (iOS 18+).
-    @State private var isUserInteracting = false
-
-    /// Vertical overscroll distance to trigger voice recording.
-    private let recordThreshold: CGFloat = 10
 
     public init() {}
 
@@ -59,16 +42,12 @@ public struct BrainChatView: View {
         VStack(spacing: 0) {
             connectionBanner
 
-            ZStack(alignment: .bottom) {
-                ZStack {
-                    messageList
-                    emptyState
-                }
-
-                voiceOverlay
+            ZStack {
+                messageList
+                emptyState
             }
 
-            // Status indicator + input bar slide together
+            // Status indicator + input bar + mic button slide together
             bottomBar
         }
         .onAppear {
@@ -78,9 +57,6 @@ public struct BrainChatView: View {
             chatSocket.disconnect()
         }
         #if os(iOS)
-        .onAppear {
-            voiceManager.requestPermissions()
-        }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
             isKeyboardVisible = true
             isInputBarVisible = true
@@ -101,15 +77,18 @@ public struct BrainChatView: View {
 
     @ViewBuilder
     private var bottomBar: some View {
-        #if os(iOS)
-        let recording = voiceManager.isRecording
-        #else
-        let recording = false
-        #endif
-        let visible = (isInputBarVisible || shouldForceShowBar) && !recording
+        let visible = isInputBarVisible || shouldForceShowBar
 
         VStack(spacing: 0) {
             statusIndicator
+
+            #if os(iOS)
+            VoiceMicButton(shouldSuppress: shouldSuppressVoice) { transcript in
+                chatSocket.send(text: transcript)
+            }
+            .padding(.vertical, 6)
+            #endif
+
             inputBar
         }
         .offset(y: visible ? 0 : 120)
@@ -143,28 +122,6 @@ public struct BrainChatView: View {
             .onPreferenceChange(ScrollOffsetKey.self) { offset in
                 handleScrollOffset(offset)
             }
-            // iOS 18+ scroll-driven voice recording (same pattern as ContentView).
-            // No DragGesture needed — reads scroll geometry without competing gestures.
-            .modifier(ScrollOverscrollModifier(
-                overscrollDistance: $overscrollDistance,
-                isUserInteracting: $isUserInteracting
-            ))
-            #if os(iOS)
-            .onChange(of: overscrollDistance) { _, newDistance in
-                guard !shouldSuppressVoice else { return }
-                if newDistance > recordThreshold && isUserInteracting && !voiceManager.isRecording {
-                    voiceManager.startRecording()
-                }
-            }
-            .onChange(of: isUserInteracting) { _, interacting in
-                if !interacting && voiceManager.isRecording {
-                    let transcript = voiceManager.stopRecording()
-                    if !transcript.isEmpty {
-                        chatSocket.send(text: transcript)
-                    }
-                }
-            }
-            #endif
             .onChange(of: chatSocket.messages.count) { _, _ in
                 scrollToBottom(proxy: proxy)
                 // Reveal bar when new messages arrive
@@ -291,30 +248,7 @@ public struct BrainChatView: View {
         }
     }
 
-    // Voice recording is handled by VoiceRecordingManager (see onChange handlers in messageList).
-
-    // MARK: - Voice Overlay
-
-    @ViewBuilder
-    private var voiceOverlay: some View {
-        #if os(iOS)
-        if voiceManager.isRecording {
-            HStack(spacing: 8) {
-                Image(systemName: "mic.fill")
-                    .font(.system(size: 14, weight: .semibold))
-                    .symbolEffect(.pulse)
-                Text("Recording...")
-                    .font(.caption)
-                    .fontWeight(.semibold)
-            }
-            .foregroundStyle(.white)
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 8)
-            .background(Color.orange)
-            .transition(.move(edge: .bottom).combined(with: .opacity))
-        }
-        #endif
-    }
+    // Voice recording is handled by VoiceMicButton in bottomBar.
 
     // MARK: - Input Bar
 
