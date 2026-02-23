@@ -93,10 +93,26 @@ public struct ContentView: View {
     private func cardContent(for card: ReplyCard) -> some View {
         VStack(spacing: 0) {
             connectionBanner
+
+            // Card container — rounded, shadowed, padded so it looks swipeable
             MessageThreadView(card: card)
+                .background(
+                    RoundedRectangle(cornerRadius: 16)
+                        .fill(Color(uiColor: .systemBackground))
+                        .shadow(color: .black.opacity(0.08), radius: 8, y: 2)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 16)
+                        .stroke(Color(uiColor: .separator).opacity(0.3), lineWidth: 1)
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 16))
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+
             refineInputBar(for: card)
             voiceOverlay
         }
+        .background(Color(uiColor: .secondarySystemBackground))
         .offset(x: dragOffset)
         .rotationEffect(.degrees(isDraggingHorizontally ? Double(dragOffset) / 25 : 0))
         .overlay(swipeOverlay)
