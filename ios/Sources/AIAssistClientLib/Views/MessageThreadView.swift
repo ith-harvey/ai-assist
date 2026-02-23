@@ -56,6 +56,7 @@ struct MessageThreadView: View {
                     .padding(.top, 8)
                     .padding(.bottom, 16)
                 }
+                .scrollDismissesKeyboard(.interactively)
                 .onAppear {
                     if !card.emailThread.isEmpty || !card.thread.isEmpty {
                         proxy.scrollTo("draft", anchor: .bottom)
