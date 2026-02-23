@@ -5,23 +5,33 @@ import SwiftUI
 ///
 /// Long press (500ms) starts recording with heavy haptic feedback.
 /// Release stops recording and delivers transcript via callback.
-/// Right-aligned, scales up 2.25× with red glow when recording.
+///
+/// Two modes:
+/// - **Standalone** (`compact: false`, default): 56pt button, right-aligned,
+///   scales 2.25× with red glow. Used in ContentView.
+/// - **Compact** (`compact: true`): 30pt button, no self-alignment or padding,
+///   scales 1.75×. Designed to sit inline in an input bar (BrainChatView).
 ///
 /// Visual states:
-/// - **Idle**: mic.fill icon, tinted blue, right-aligned
-/// - **Recording**: scaled 2.25×, red glow with concentric pulsing rings
+/// - **Idle**: mic.fill icon, tinted blue
+/// - **Recording**: scaled up, red glow with concentric pulsing rings
 /// - **Suppressed**: greyed out, not interactive (keyboard visible or text in field)
 /// - **Unauthorized**: greyed mic.slash icon
 ///
 /// Usage:
 /// ```swift
-/// VoiceMicButton(shouldSuppress: isKeyboardVisible || hasText) { transcript in
-///     send(transcript)
-/// }
+/// // Standalone (ContentView)
+/// VoiceMicButton { transcript in send(transcript) }
+///
+/// // Compact (BrainChatView input bar)
+/// VoiceMicButton(compact: true) { transcript in send(transcript) }
 /// ```
 public struct VoiceMicButton: View {
     /// When true, the button is disabled (keyboard visible, text in field, etc.)
     let shouldSuppress: Bool
+
+    /// When true, renders at 30pt with no self-alignment (for inline input bar use).
+    let compact: Bool
 
     /// Called with the trimmed transcript when recording stops.
     let onTranscript: (String) -> Void
@@ -32,13 +42,21 @@ public struct VoiceMicButton: View {
     @State private var pulsePhase = false
 
     /// Button diameter (base layout size — scale is visual only).
-    private let buttonSize: CGFloat = 56
+    private var buttonSize: CGFloat { compact ? 30 : 56 }
+
+    /// Scale factor when recording.
+    private var recordingScale: CGFloat { compact ? 1.75 : 2.25 }
+
+    /// Icon size adapts to button size.
+    private var iconSize: CGFloat { compact ? 14 : 22 }
 
     public init(
         shouldSuppress: Bool = false,
+        compact: Bool = false,
         onTranscript: @escaping (String) -> Void
     ) {
         self.shouldSuppress = shouldSuppress
+        self.compact = compact
         self.onTranscript = onTranscript
     }
 
@@ -74,17 +92,16 @@ public struct VoiceMicButton: View {
                 )
 
             Image(systemName: buttonIcon)
-                .font(.system(size: 22, weight: .semibold))
+                .font(.system(size: iconSize, weight: .semibold))
                 .foregroundStyle(iconColor)
         }
         // Scale up when recording — visual only, doesn't affect layout
-        .scaleEffect(voiceManager.isRecording ? 2.25 : 1.0)
+        .scaleEffect(voiceManager.isRecording ? recordingScale : 1.0)
         .animation(.spring(response: 0.35, dampingFraction: 0.6), value: voiceManager.isRecording)
         // Fixed frame so scaled button doesn't push layout
         .frame(width: buttonSize, height: buttonSize)
-        // Right-align within parent
-        .frame(maxWidth: .infinity, alignment: .trailing)
-        .padding(.trailing, 16)
+        // Right-align within parent (standalone mode only)
+        .modifier(StandaloneAlignmentModifier(enabled: !compact))
         .opacity(shouldSuppress ? 0.4 : 1.0)
         .allowsHitTesting(!shouldSuppress)
         .gesture(
@@ -168,6 +185,24 @@ public struct VoiceMicButton: View {
         let transcript = voiceManager.stopRecording()
         if !transcript.isEmpty {
             onTranscript(transcript)
+        }
+    }
+}
+
+// MARK: - Standalone Alignment
+
+/// Applies right-alignment + trailing padding only when enabled (standalone mode).
+/// Compact mode skips this so the button sits inline in an HStack.
+private struct StandaloneAlignmentModifier: ViewModifier {
+    let enabled: Bool
+
+    func body(content: Content) -> some View {
+        if enabled {
+            content
+                .frame(maxWidth: .infinity, alignment: .trailing)
+                .padding(.trailing, 16)
+        } else {
+            content
         }
     }
 }

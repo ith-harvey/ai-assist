@@ -17,8 +17,9 @@ private struct ScrollOffsetKey: PreferenceKey {
 /// The input bar and status indicator slide off-screen when scrolling up
 /// (iMessage-style) and reappear when scrolling back to the bottom.
 ///
-/// Voice input via dedicated mic button (VoiceMicButton) positioned above
-/// the input bar. Long-press to record, release to send transcript.
+/// Voice input via Telegram-style mic/send button swap in the input bar.
+/// Empty field → compact mic button. Text entered → send button.
+/// Long-press mic to record, release to send transcript.
 public struct BrainChatView: View {
     @State private var chatSocket = ChatWebSocket()
     @State private var inputText = ""
@@ -32,12 +33,6 @@ public struct BrainChatView: View {
 
     public init() {}
 
-    /// Whether voice recording should be suppressed (keyboard up or text in field).
-    private var shouldSuppressVoice: Bool {
-        isKeyboardVisible
-            || !inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
-
     public var body: some View {
         VStack(spacing: 0) {
             connectionBanner
@@ -47,7 +42,7 @@ public struct BrainChatView: View {
                 emptyState
             }
 
-            // Status indicator + input bar + mic button slide together
+            // Status indicator + input bar (with inline mic/send swap) slide together
             bottomBar
         }
         .onAppear {
@@ -81,14 +76,6 @@ public struct BrainChatView: View {
 
         VStack(spacing: 0) {
             statusIndicator
-
-            #if os(iOS)
-            VoiceMicButton(shouldSuppress: shouldSuppressVoice) { transcript in
-                chatSocket.send(text: transcript)
-            }
-            .padding(.vertical, 6)
-            #endif
-
             inputBar
         }
         .offset(y: visible ? 0 : 120)
@@ -248,9 +235,7 @@ public struct BrainChatView: View {
         }
     }
 
-    // Voice recording is handled by VoiceMicButton in bottomBar.
-
-    // MARK: - Input Bar
+    // MARK: - Input Bar (Telegram-style mic/send swap)
 
     private var inputBar: some View {
         HStack(spacing: 8) {
@@ -270,14 +255,34 @@ public struct BrainChatView: View {
                     sendMessage()
                 }
 
-            Button {
-                sendMessage()
-            } label: {
-                Image(systemName: "arrow.up.circle.fill")
-                    .font(.system(size: 30))
-                    .foregroundStyle(canSend ? .blue : .gray.opacity(0.4))
+            // Telegram-style swap: send button when text entered, mic when empty
+            ZStack {
+                if canSend {
+                    Button {
+                        sendMessage()
+                    } label: {
+                        Image(systemName: "arrow.up.circle.fill")
+                            .font(.system(size: 30))
+                            .foregroundStyle(.blue)
+                    }
+                    .transition(.scale.combined(with: .opacity))
+                } else {
+                    #if os(iOS)
+                    VoiceMicButton(compact: true) { transcript in
+                        chatSocket.send(text: transcript)
+                    }
+                    .transition(.scale.combined(with: .opacity))
+                    #else
+                    Button {} label: {
+                        Image(systemName: "arrow.up.circle.fill")
+                            .font(.system(size: 30))
+                            .foregroundStyle(.gray.opacity(0.4))
+                    }
+                    .disabled(true)
+                    #endif
+                }
             }
-            .disabled(!canSend)
+            .animation(.spring(response: 0.3, dampingFraction: 0.7), value: canSend)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
