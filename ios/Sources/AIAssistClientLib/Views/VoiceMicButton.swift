@@ -37,7 +37,7 @@ public struct VoiceMicButton: View {
     private let iconSize: CGFloat = 20
 
     /// Scale factor when recording.
-    private let recordingScale: CGFloat = 2.25
+    private let recordingScale: CGFloat = 1.5
 
     public init(
         shouldSuppress: Bool = false,
@@ -49,30 +49,35 @@ public struct VoiceMicButton: View {
 
     public var body: some View {
         ZStack {
-            // Concentric pulsing red rings (Telegram-style glow)
+            // Concentric pulsing rings
             if voiceManager.isRecording {
                 // Outer ring
                 Circle()
-                    .stroke(Color.red.opacity(0.3), lineWidth: 2)
+                    .stroke(Color.orange.opacity(0.3), lineWidth: 2)
                     .frame(width: buttonSize, height: buttonSize)
                     .scaleEffect(pulsePhase ? 3.0 : 1.5)
                     .opacity(pulsePhase ? 0.0 : 0.3)
 
                 // Inner ring
                 Circle()
-                    .stroke(Color.red.opacity(0.3), lineWidth: 2.5)
+                    .stroke(Color.orange.opacity(0.3), lineWidth: 2.5)
                     .frame(width: buttonSize, height: buttonSize)
                     .scaleEffect(pulsePhase ? 2.2 : 1.2)
                     .opacity(pulsePhase ? 0.0 : 0.4)
             }
 
+            // Button outline (always visible — makes button stand out)
+            Circle()
+                .stroke(voiceManager.isRecording ? Color.orange : Color.blue.opacity(0.5), lineWidth: 2)
+                .frame(width: buttonSize, height: buttonSize)
+
             // Button circle
             Circle()
                 .fill(buttonBackground)
-                .frame(width: buttonSize, height: buttonSize)
+                .frame(width: buttonSize - 4, height: buttonSize - 4)
                 .shadow(
-                    color: voiceManager.isRecording ? .red.opacity(0.6) : .black.opacity(0.15),
-                    radius: voiceManager.isRecording ? 16 : 4,
+                    color: voiceManager.isRecording ? .orange.opacity(0.6) : .black.opacity(0.15),
+                    radius: voiceManager.isRecording ? 12 : 4,
                     y: voiceManager.isRecording ? 0 : 2
                 )
 
@@ -130,7 +135,7 @@ public struct VoiceMicButton: View {
 
     private var buttonBackground: Color {
         if voiceManager.isRecording {
-            return .red
+            return .orange
         }
         if !voiceManager.isAuthorized {
             return Color(uiColor: .systemGray5)
