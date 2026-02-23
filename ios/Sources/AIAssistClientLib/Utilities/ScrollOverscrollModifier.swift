@@ -41,11 +41,12 @@ public struct ScrollOverscrollModifier: ViewModifier {
             content
                 .onScrollGeometryChange(for: CGFloat.self) { geo in
                     // Raw overscroll past the bottom of content.
-                    // iOS rubber-band dampens finger movement ~4-6x,
-                    // so we amplify to approximate actual finger travel.
+                    // We only care whether overscroll is positive (> 0) — the
+                    // duration-based trigger in VoiceRecordingManager handles
+                    // the rest, so no amplification is needed.
                     let scrolledTo = geo.contentOffset.y + geo.containerSize.height
                     let contentEnd = geo.contentSize.height + geo.contentInsets.bottom
-                    return max(0, scrolledTo - contentEnd) * 6.0
+                    return max(0, scrolledTo - contentEnd)
                 } action: { _, newOverscroll in
                     overscrollDistance = newOverscroll
                 }

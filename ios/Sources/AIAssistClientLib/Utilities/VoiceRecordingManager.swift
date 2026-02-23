@@ -1,11 +1,14 @@
 #if os(iOS)
+import Foundation
 import Observation
 import UIKit
 
 /// Shared voice recording manager wrapping SpeechRecognizer + recording state + haptics.
 ///
-/// Extracts duplicated start/stop/haptic logic from ContentView and BrainChatView.
-/// Both views use this instead of managing SpeechRecognizer + isRecordingVoice + haptics independently.
+/// Uses a duration-based trigger: the caller invokes `beginHoldTimer()` when the user
+/// starts overscrolling and `cancelHoldTimer()` when they stop or scroll back.
+/// After `holdDuration` seconds of continuous hold, recording starts automatically.
+/// This makes the trigger consistent regardless of content length or scroll physics.
 ///
 /// Usage:
 /// ```swift
@@ -14,10 +17,13 @@ import UIKit
 /// // On appear
 /// voiceManager.requestPermissions()
 ///
-/// // Start recording (with haptic)
-/// voiceManager.startRecording()
+/// // When overscroll detected + user interacting:
+/// voiceManager.beginHoldTimer()
 ///
-/// // Stop and get transcript
+/// // When overscroll ends or finger lifts:
+/// voiceManager.cancelHoldTimer()
+///
+/// // When finger lifts and recording is active:
 /// let transcript = voiceManager.stopRecording()
 /// ```
 @Observable
@@ -33,9 +39,15 @@ public final class VoiceRecordingManager {
     /// Whether speech recognition is authorized.
     public var isAuthorized: Bool { speechRecognizer.isAuthorized }
 
+    // MARK: - Configuration
+
+    /// How long (seconds) the user must hold the overscroll before recording starts.
+    public var holdDuration: TimeInterval = 0.5
+
     // MARK: - Private
 
     private let speechRecognizer = SpeechRecognizer()
+    private var holdTimer: Timer?
 
     // MARK: - Init
 
@@ -48,6 +60,27 @@ public final class VoiceRecordingManager {
         speechRecognizer.requestPermissions()
     }
 
+    // MARK: - Hold Timer
+
+    /// Begin counting down to recording. If the user holds the overscroll
+    /// for `holdDuration` seconds, recording starts automatically.
+    ///
+    /// Safe to call multiple times — restarts only if no timer is running.
+    public func beginHoldTimer() {
+        guard holdTimer == nil, !isRecording else { return }
+        holdTimer = Timer.scheduledTimer(withTimeInterval: holdDuration, repeats: false) { [weak self] _ in
+            guard let self else { return }
+            self.holdTimer = nil
+            self.startRecording()
+        }
+    }
+
+    /// Cancel the hold timer without starting recording.
+    public func cancelHoldTimer() {
+        holdTimer?.invalidate()
+        holdTimer = nil
+    }
+
     // MARK: - Recording
 
     /// Start recording with haptic feedback.
@@ -58,6 +91,7 @@ public final class VoiceRecordingManager {
             speechRecognizer.requestPermissions()
             return
         }
+        guard !isRecording else { return }
 
         isRecording = true
         speechRecognizer.startRecording()
@@ -72,9 +106,11 @@ public final class VoiceRecordingManager {
 
     /// Stop recording and return the trimmed transcript.
     ///
-    /// Fires a success haptic. Returns empty string if nothing was recognized.
+    /// Also cancels any pending hold timer. Fires a success haptic.
+    /// Returns empty string if nothing was recognized.
     @discardableResult
     public func stopRecording() -> String {
+        cancelHoldTimer()
         guard isRecording else { return "" }
 
         speechRecognizer.stopRecording()

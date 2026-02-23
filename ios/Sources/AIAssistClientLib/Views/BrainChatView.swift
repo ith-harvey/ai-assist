@@ -39,13 +39,10 @@ public struct BrainChatView: View {
     @State private var voiceManager = VoiceRecordingManager()
     #endif
     /// How far (in points) the user has overscrolled past the bottom.
-    /// Positive = rubber-banding downward. Recording triggers when > recordThreshold.
+    /// Any positive value + held for 500ms → recording starts.
     @State private var overscrollDistance: CGFloat = 0
     /// Whether the user's finger is currently on the scroll view (iOS 18+).
     @State private var isUserInteracting = false
-
-    /// Vertical overscroll distance to trigger voice recording.
-    private let recordThreshold: CGFloat = 10
 
     public init() {}
 
@@ -151,16 +148,24 @@ public struct BrainChatView: View {
             ))
             #if os(iOS)
             .onChange(of: overscrollDistance) { _, newDistance in
-                guard !shouldSuppressVoice else { return }
-                if newDistance > recordThreshold && isUserInteracting && !voiceManager.isRecording {
-                    voiceManager.startRecording()
+                guard !shouldSuppressVoice else {
+                    voiceManager.cancelHoldTimer()
+                    return
+                }
+                if newDistance > 0 && isUserInteracting && !voiceManager.isRecording {
+                    voiceManager.beginHoldTimer()
+                } else if newDistance <= 0 {
+                    voiceManager.cancelHoldTimer()
                 }
             }
             .onChange(of: isUserInteracting) { _, interacting in
-                if !interacting && voiceManager.isRecording {
-                    let transcript = voiceManager.stopRecording()
-                    if !transcript.isEmpty {
-                        chatSocket.send(text: transcript)
+                if !interacting {
+                    voiceManager.cancelHoldTimer()
+                    if voiceManager.isRecording {
+                        let transcript = voiceManager.stopRecording()
+                        if !transcript.isEmpty {
+                            chatSocket.send(text: transcript)
+                        }
                     }
                 }
             }

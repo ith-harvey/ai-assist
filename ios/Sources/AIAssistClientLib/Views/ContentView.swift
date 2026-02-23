@@ -8,10 +8,9 @@ import SwiftUI
 ///
 /// Voice-to-refine uses iOS 18+ scroll APIs (`onScrollGeometryChange` +
 /// `onScrollPhaseChange`) to detect when the user overscrolls past the bottom
-/// of the thread. Raw overscroll is amplified 6x to counteract iOS rubber-band
-/// dampening. Recording starts when the amplified value exceeds `recordThreshold`
-/// while the user's finger is on the scroll view, and stops (+ sends) when the
-/// finger lifts. No DragGesture needed for voice — it's entirely scroll-driven.
+/// of the thread. Any positive overscroll held for 500ms triggers recording.
+/// Stops (+ sends) when the finger lifts. Duration-based, not distance-based,
+/// so it feels identical regardless of content length.
 public struct ContentView: View {
     @State private var socket = CardWebSocket()
     @State private var showSettings = false
@@ -27,8 +26,7 @@ public struct ContentView: View {
     @State private var voiceManager = VoiceRecordingManager()
     #endif
     /// How far (in points) the user has overscrolled past the bottom of the
-    /// message thread.  Positive = rubber-banding downward past the last message.
-    /// Recording only starts when this exceeds `recordThreshold`.
+    /// message thread. Any positive value + held for 500ms → recording starts.
     @State private var overscrollDistance: CGFloat = 0
     /// Whether the user's finger is currently on the scroll view (iOS 18+).
     @State private var isUserInteracting = false
@@ -37,8 +35,6 @@ public struct ContentView: View {
     /// Minimum movement before direction is locked. Gives ScrollView
     /// first crack at vertical gestures.
     private let directionLockDistance: CGFloat = 20
-    /// Vertical drag distance to trigger voice recording.
-    private let recordThreshold: CGFloat = 10
 
     public init() {}
 
@@ -163,21 +159,27 @@ public struct ContentView: View {
         )
         // Voice recording: driven by scroll overscroll + phase (iOS 18+).
         // When overscroll exceeds threshold while user is touching → start recording.
-        // When user lifts finger (isUserInteracting goes false) → stop and send.
+        // Voice: any positive overscroll held for 500ms → recording starts.
+        // When finger lifts → stop and send transcript as refine instruction.
         #if os(iOS)
         .onAppear {
             voiceManager.requestPermissions()
         }
         .onChange(of: overscrollDistance) { _, newDistance in
-            if newDistance > recordThreshold && isUserInteracting && !voiceManager.isRecording {
-                voiceManager.startRecording()
+            if newDistance > 0 && isUserInteracting && !voiceManager.isRecording {
+                voiceManager.beginHoldTimer()
+            } else if newDistance <= 0 {
+                voiceManager.cancelHoldTimer()
             }
         }
         .onChange(of: isUserInteracting) { _, interacting in
-            if !interacting && voiceManager.isRecording {
-                let transcript = voiceManager.stopRecording()
-                if !transcript.isEmpty {
-                    socket.refine(cardId: card.id, instruction: transcript)
+            if !interacting {
+                voiceManager.cancelHoldTimer()
+                if voiceManager.isRecording {
+                    let transcript = voiceManager.stopRecording()
+                    if !transcript.isEmpty {
+                        socket.refine(cardId: card.id, instruction: transcript)
+                    }
                 }
             }
         }
