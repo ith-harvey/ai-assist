@@ -24,9 +24,8 @@ public struct ContentView: View {
 
     // Voice-to-refine state
     #if os(iOS)
-    @State private var speechRecognizer = SpeechRecognizer()
+    @State private var voiceManager = VoiceRecordingManager()
     #endif
-    @State private var isRecordingVoice = false
     /// How far (in points) the user has overscrolled past the bottom of the
     /// message thread.  Positive = rubber-banding downward past the last message.
     /// Recording only starts when this exceeds `recordThreshold`.
@@ -167,69 +166,41 @@ public struct ContentView: View {
         // When user lifts finger (isUserInteracting goes false) → stop and send.
         #if os(iOS)
         .onAppear {
-            speechRecognizer.requestPermissions()
+            voiceManager.requestPermissions()
         }
         .onChange(of: overscrollDistance) { _, newDistance in
-            if newDistance > recordThreshold && isUserInteracting && !isRecordingVoice {
-                startVoiceRecording()
+            if newDistance > recordThreshold && isUserInteracting && !voiceManager.isRecording {
+                voiceManager.startRecording()
             }
         }
         .onChange(of: isUserInteracting) { _, interacting in
-            if !interacting && isRecordingVoice {
-                stopVoiceRecordingAndRefine(cardId: card.id)
+            if !interacting && voiceManager.isRecording {
+                let transcript = voiceManager.stopRecording()
+                if !transcript.isEmpty {
+                    socket.refine(cardId: card.id, instruction: transcript)
+                }
             }
         }
         #endif
     }
 
-    // MARK: - Voice Recording
-
-    #if os(iOS)
-    private func startVoiceRecording() {
-        guard speechRecognizer.isAuthorized else {
-            speechRecognizer.requestPermissions()
-            return
-        }
-
-        isRecordingVoice = true
-        speechRecognizer.startRecording()
-
-        // Dispatch haptic outside the scroll event callback —
-        // UIKit suppresses haptics fired synchronously during scroll.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-            let gen = UINotificationFeedbackGenerator()
-            gen.notificationOccurred(.warning)
-        }
-    }
-
-    private func stopVoiceRecordingAndRefine(cardId: UUID) {
-        guard isRecordingVoice else { return }
-
-        speechRecognizer.stopRecording()
-        isRecordingVoice = false
-
-        // Haptic feedback on stop/submit
-        let notification = UINotificationFeedbackGenerator()
-        notification.notificationOccurred(.success)
-
-        let transcript = speechRecognizer.transcript.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !transcript.isEmpty else { return }
-
-        socket.refine(cardId: cardId, instruction: transcript)
-    }
-    #endif
+    // Voice recording is handled by VoiceRecordingManager (see onChange handlers above).
 
     // MARK: - Voice Overlay
 
     @ViewBuilder
     private var voiceOverlay: some View {
-        if isRecordingVoice {
-            // Pulsing amber bar while recording
+        #if os(iOS)
+        if voiceManager.isRecording {
             recordingBar
         } else if socket.isRefining {
-            // "Refining..." bar while waiting for server
             refiningBar
         }
+        #else
+        if socket.isRefining {
+            refiningBar
+        }
+        #endif
     }
 
     private var recordingBar: some View {
