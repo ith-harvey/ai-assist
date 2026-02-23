@@ -1,14 +1,15 @@
 #if os(iOS)
 import SwiftUI
 
-/// Shared circular mic button for voice recording.
+/// Shared circular mic button for voice recording (Telegram-style).
 ///
-/// Long press (500ms) starts recording with haptic feedback.
+/// Long press (500ms) starts recording with heavy haptic feedback.
 /// Release stops recording and delivers transcript via callback.
+/// Right-aligned, scales up 2.25× with red glow when recording.
 ///
 /// Visual states:
-/// - **Idle**: mic.fill icon, tinted blue
-/// - **Recording**: pulsing red circle with mic icon
+/// - **Idle**: mic.fill icon, tinted blue, right-aligned
+/// - **Recording**: scaled 2.25×, red glow with concentric pulsing rings
 /// - **Suppressed**: greyed out, not interactive (keyboard visible or text in field)
 /// - **Unauthorized**: greyed mic.slash icon
 ///
@@ -27,8 +28,10 @@ public struct VoiceMicButton: View {
 
     @State private var voiceManager = VoiceRecordingManager()
     @State private var isPressed = false
+    /// Drives the repeating pulse animation for glow rings.
+    @State private var pulsePhase = false
 
-    /// Button diameter
+    /// Button diameter (base layout size — scale is visual only).
     private let buttonSize: CGFloat = 56
 
     public init(
@@ -40,29 +43,48 @@ public struct VoiceMicButton: View {
     }
 
     public var body: some View {
+        // Fixed frame reserves exactly buttonSize height so the 2.25× scale
+        // overlays without pushing siblings.
         ZStack {
-            // Pulsing ring when recording
+            // Concentric pulsing red rings (Telegram-style glow)
             if voiceManager.isRecording {
+                // Outer ring
                 Circle()
-                    .stroke(Color.red.opacity(0.4), lineWidth: 3)
-                    .frame(width: buttonSize + 12, height: buttonSize + 12)
-                    .scaleEffect(isPressed ? 1.3 : 1.0)
-                    .opacity(isPressed ? 0.0 : 1.0)
-                    .animation(
-                        .easeInOut(duration: 1.0).repeatForever(autoreverses: false),
-                        value: isPressed
-                    )
+                    .stroke(Color.red.opacity(0.3), lineWidth: 2)
+                    .frame(width: buttonSize, height: buttonSize)
+                    .scaleEffect(pulsePhase ? 3.0 : 1.5)
+                    .opacity(pulsePhase ? 0.0 : 0.3)
+
+                // Inner ring
+                Circle()
+                    .stroke(Color.red.opacity(0.3), lineWidth: 2.5)
+                    .frame(width: buttonSize, height: buttonSize)
+                    .scaleEffect(pulsePhase ? 2.2 : 1.2)
+                    .opacity(pulsePhase ? 0.0 : 0.4)
             }
 
+            // Button circle
             Circle()
                 .fill(buttonBackground)
                 .frame(width: buttonSize, height: buttonSize)
-                .shadow(color: .black.opacity(0.15), radius: 4, y: 2)
+                .shadow(
+                    color: voiceManager.isRecording ? .red.opacity(0.6) : .black.opacity(0.15),
+                    radius: voiceManager.isRecording ? 16 : 4,
+                    y: voiceManager.isRecording ? 0 : 2
+                )
 
             Image(systemName: buttonIcon)
                 .font(.system(size: 22, weight: .semibold))
                 .foregroundStyle(iconColor)
         }
+        // Scale up when recording — visual only, doesn't affect layout
+        .scaleEffect(voiceManager.isRecording ? 2.25 : 1.0)
+        .animation(.spring(response: 0.35, dampingFraction: 0.6), value: voiceManager.isRecording)
+        // Fixed frame so scaled button doesn't push layout
+        .frame(width: buttonSize, height: buttonSize)
+        // Right-align within parent
+        .frame(maxWidth: .infinity, alignment: .trailing)
+        .padding(.trailing, 16)
         .opacity(shouldSuppress ? 0.4 : 1.0)
         .allowsHitTesting(!shouldSuppress)
         .gesture(
@@ -88,7 +110,21 @@ public struct VoiceMicButton: View {
         .onAppear {
             voiceManager.requestPermissions()
         }
-        .sensoryFeedback(.impact(weight: .light), trigger: voiceManager.isRecording)
+        .onChange(of: voiceManager.isRecording) { _, recording in
+            if recording {
+                // Kick off the repeating pulse
+                pulsePhase = false
+                withAnimation(.easeOut(duration: 1.2).repeatForever(autoreverses: false)) {
+                    pulsePhase = true
+                }
+            } else {
+                // Reset pulse
+                withAnimation(.none) {
+                    pulsePhase = false
+                }
+            }
+        }
+        .sensoryFeedback(.impact(weight: .heavy), trigger: voiceManager.isRecording)
     }
 
     // MARK: - Visual State
