@@ -196,9 +196,10 @@ public struct ContentView: View {
                     .transition(.scale.combined(with: .opacity))
                 } else {
                     #if os(iOS)
-                    VoiceMicButton(compact: true) { transcript in
+                    VoiceMicButton { transcript in
                         socket.refine(cardId: card.id, instruction: transcript)
                     }
+                    .zIndex(1)
                     .transition(.scale.combined(with: .opacity))
                     #else
                     Button {} label: {

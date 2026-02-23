@@ -269,9 +269,10 @@ public struct BrainChatView: View {
                     .transition(.scale.combined(with: .opacity))
                 } else {
                     #if os(iOS)
-                    VoiceMicButton(compact: true) { transcript in
+                    VoiceMicButton { transcript in
                         chatSocket.send(text: transcript)
                     }
+                    .zIndex(1)
                     .transition(.scale.combined(with: .opacity))
                     #else
                     Button {} label: {
