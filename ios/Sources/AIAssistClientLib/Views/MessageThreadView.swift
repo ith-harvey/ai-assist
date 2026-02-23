@@ -1,27 +1,12 @@
 import SwiftUI
 
-// PreferenceKeys and ScrollOverscrollModifier are now in
-// Utilities/ScrollOverscrollModifier.swift (shared with BrainChatView).
-
 /// Shows the email conversation thread as iMessage-style chat bubbles.
 ///
 /// Priority: emailThread (rich headers) > thread (generic) > single message fallback.
 /// Auto-scrolls to the bottom (newest messages). The AI suggested reply appears
 /// as a faded/dashed "Draft" bubble at the end.
-///
-/// Reports overscroll distance via `overscrollDistance` binding — positive values
-/// mean the user has scrolled past the bottom and is rubber-banding downward.
-/// Zero means normal scrolling (not past bottom).
-///
-/// Also reports `isUserInteracting` — true while the user's finger is actively
-/// on the scroll view (iOS 18+ only, via `onScrollPhaseChange`).
 struct MessageThreadView: View {
     let card: ReplyCard?
-    @Binding var overscrollDistance: CGFloat
-    /// True while the user's finger is on the scroll view (interacting phase).
-    /// Falls to false on finger lift. Only updated on iOS 18+.
-    @Binding var isUserInteracting: Bool
-    @State private var viewportHeight: CGFloat = 0
 
     var body: some View {
         if let card {
@@ -70,47 +55,7 @@ struct MessageThreadView: View {
                     .padding(.horizontal, 16)
                     .padding(.top, 8)
                     .padding(.bottom, 16)
-                    .background(
-                        GeometryReader { contentGeo in
-                            Color.clear
-                                .preference(
-                                    key: OverscrollDistanceKey.self,
-                                    value: {
-                                        let contentBottom = contentGeo.frame(in: .named("threadScroll")).maxY
-                                        // How far past the viewport bottom the content's bottom is
-                                        // When content is scrolled to the very end, contentBottom ≈ viewportHeight
-                                        // When user overscrolls (rubber-band), contentBottom > viewportHeight
-                                        // Positive = overscrolling past bottom
-                                        let overscroll = contentBottom - viewportHeight
-                                        return max(0, overscroll)
-                                    }()
-                                )
-                        }
-                    )
                 }
-                .coordinateSpace(name: "threadScroll")
-                .overlay(
-                    GeometryReader { viewportGeo in
-                        Color.clear.preference(
-                            key: ViewportHeightKey.self,
-                            value: viewportGeo.size.height
-                        )
-                    }
-                )
-                .onPreferenceChange(ViewportHeightKey.self) { height in
-                    viewportHeight = height
-                }
-                .onPreferenceChange(OverscrollDistanceKey.self) { distance in
-                    // Fallback for iOS < 18. On 18+ the onScrollGeometryChange
-                    // below takes precedence (fires more reliably during rubber-band).
-                    if #unavailable(iOS 18.0) {
-                        overscrollDistance = distance
-                    }
-                }
-                .modifier(ScrollOverscrollModifier(
-                    overscrollDistance: $overscrollDistance,
-                    isUserInteracting: $isUserInteracting
-                ))
                 .onAppear {
                     if !card.emailThread.isEmpty || !card.thread.isEmpty {
                         proxy.scrollTo("draft", anchor: .bottom)

@@ -6,12 +6,9 @@ import SwiftUI
 /// Horizontal drag (after 20pt direction lock) moves the whole card for
 /// approve/reject.
 ///
-/// Voice-to-refine uses iOS 18+ scroll APIs (`onScrollGeometryChange` +
-/// `onScrollPhaseChange`) to detect when the user overscrolls past the bottom
-/// of the thread. Raw overscroll is amplified 6x to counteract iOS rubber-band
-/// dampening. Recording starts when the amplified value exceeds `recordThreshold`
-/// while the user's finger is on the scroll view, and stops (+ sends) when the
-/// finger lifts. No DragGesture needed for voice — it's entirely scroll-driven.
+/// Voice-to-refine via dedicated mic button (VoiceMicButton) positioned
+/// between the card content and the tab bar. Long-press to record, release
+/// to send transcript as a refine instruction.
 public struct ContentView: View {
     @State private var socket = CardWebSocket()
     @State private var showSettings = false
@@ -22,23 +19,10 @@ public struct ContentView: View {
     @State private var dragOffset: CGFloat = 0
     @State private var isDraggingHorizontally = false
 
-    // Voice-to-refine state
-    #if os(iOS)
-    @State private var voiceManager = VoiceRecordingManager()
-    #endif
-    /// How far (in points) the user has overscrolled past the bottom of the
-    /// message thread.  Positive = rubber-banding downward past the last message.
-    /// Recording only starts when this exceeds `recordThreshold`.
-    @State private var overscrollDistance: CGFloat = 0
-    /// Whether the user's finger is currently on the scroll view (iOS 18+).
-    @State private var isUserInteracting = false
-
     private let swipeThreshold: CGFloat = 100
     /// Minimum movement before direction is locked. Gives ScrollView
     /// first crack at vertical gestures.
     private let directionLockDistance: CGFloat = 20
-    /// Vertical drag distance to trigger voice recording.
-    private let recordThreshold: CGFloat = 10
 
     public init() {}
 
@@ -95,18 +79,21 @@ public struct ContentView: View {
     private func cardContent(for card: ReplyCard) -> some View {
         VStack(spacing: 0) {
             connectionBanner
-            MessageThreadView(
-                card: card,
-                overscrollDistance: $overscrollDistance,
-                isUserInteracting: $isUserInteracting
-            )
+            MessageThreadView(card: card)
+
+            #if os(iOS)
+            VoiceMicButton { transcript in
+                socket.refine(cardId: card.id, instruction: transcript)
+            }
+            .padding(.vertical, 6)
+            #endif
+
+            voiceOverlay
         }
         .offset(x: dragOffset)
         .rotationEffect(.degrees(isDraggingHorizontally ? Double(dragOffset) / 25 : 0))
         .overlay(swipeOverlay)
-        .overlay(alignment: .bottom) { voiceOverlay }
         // Horizontal swipe gesture for approve/reject only.
-        // Voice recording is handled separately via scroll geometry (below).
         .simultaneousGesture(
             DragGesture(minimumDistance: directionLockDistance)
                 .onChanged { value in
@@ -161,62 +148,17 @@ public struct ContentView: View {
                     }
                 }
         )
-        // Voice recording: driven by scroll overscroll + phase (iOS 18+).
-        // When overscroll exceeds threshold while user is touching → start recording.
-        // When user lifts finger (isUserInteracting goes false) → stop and send.
-        #if os(iOS)
-        .onAppear {
-            voiceManager.requestPermissions()
-        }
-        .onChange(of: overscrollDistance) { _, newDistance in
-            if newDistance > recordThreshold && isUserInteracting && !voiceManager.isRecording {
-                voiceManager.startRecording()
-            }
-        }
-        .onChange(of: isUserInteracting) { _, interacting in
-            if !interacting && voiceManager.isRecording {
-                let transcript = voiceManager.stopRecording()
-                if !transcript.isEmpty {
-                    socket.refine(cardId: card.id, instruction: transcript)
-                }
-            }
-        }
-        #endif
     }
 
-    // Voice recording is handled by VoiceRecordingManager (see onChange handlers above).
+    // Voice recording is handled by VoiceMicButton in cardContent.
 
     // MARK: - Voice Overlay
 
     @ViewBuilder
     private var voiceOverlay: some View {
-        #if os(iOS)
-        if voiceManager.isRecording {
-            recordingBar
-        } else if socket.isRefining {
-            refiningBar
-        }
-        #else
         if socket.isRefining {
             refiningBar
         }
-        #endif
-    }
-
-    private var recordingBar: some View {
-        HStack(spacing: 6) {
-            Circle()
-                .fill(Color.red)
-                .frame(width: 8, height: 8)
-            Text("recording... suggest changes")
-                .font(.caption2)
-                .fontWeight(.medium)
-        }
-        .foregroundStyle(.secondary)
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 6)
-        .background(.ultraThinMaterial)
-        .transition(.move(edge: .bottom).combined(with: .opacity))
     }
 
     private var refiningBar: some View {
