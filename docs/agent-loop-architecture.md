@@ -1,6 +1,6 @@
-# AI-Assist Agent Loop Architecture
+# AI-Assist Architecture
 
-Generated from codebase analysis of `~/projects/ai-assist/src/agent/`.
+Generated from codebase analysis. Last updated: 2026-02-25.
 
 ---
 
@@ -11,26 +11,30 @@ How all the pieces connect at startup (`main.rs` → `Agent::run()`):
 ```mermaid
 graph TB
     subgraph "main.rs — Startup"
-        ENV["Environment Vars<br/>ANTHROPIC_API_KEY<br/>AI_ASSIST_MODEL<br/>TELEGRAM_BOT_TOKEN"]
-        LLM["LlmProvider<br/>(Anthropic)"]
-        DB["Database<br/>(SQLite)"]
+        ENV["Environment Vars<br/>ANTHROPIC_API_KEY<br/>AI_ASSIST_MODEL<br/>TELEGRAM_BOT_TOKEN<br/>IMAP_HOST / SMTP_HOST"]
+        LLM["LlmProvider<br/>(Anthropic via rig-core)"]
+        DB["Database<br/>(libSQL/SQLite)"]
         CARDS["CardGenerator<br/>+ CardQueue"]
-        TOOLS["ToolRegistry<br/>(empty — no tools registered yet)"]
+        TOOLS["ToolRegistry<br/>(13 tools registered)"]
         SAFETY["SafetyLayer"]
+        WORKSPACE["Workspace<br/>(~/.ai-assist/workspace)"]
+        ROUTINE["RoutineEngine<br/>(cron/event/webhook)"]
     end
 
     subgraph "Axum Server (port 8080)"
         WS_CARDS["/ws — Card WebSocket"]
-        WS_CHAT["/ws/chat — iOS Chat WebSocket"]
-        REST_CARDS["/api/cards — Card REST API"]
-        REST_CHAT["/api/chat/history — Chat REST"]
+        WS_CHAT["/ws/chat — iOS Chat"]
+        WS_TODOS["/ws/todos — Todo Sync"]
+        REST_CARDS["/api/cards — Card REST"]
+        REST_CHAT["/api/chat/history"]
+        REST_TODOS["/api/todos/test"]
     end
 
     subgraph "ChannelManager"
         CH_CLI["CliChannel<br/>(stdin/stdout)"]
         CH_IOS["IosChannel<br/>(WebSocket)"]
-        CH_TG["TelegramChannel<br/>(Bot API, optional)"]
-        CH_EMAIL["EmailChannel<br/>(IMAP/SMTP, optional)"]
+        CH_TG["TelegramChannel<br/>(Bot API)"]
+        CH_EMAIL["EmailChannel<br/>(IMAP/SMTP)"]
     end
 
     subgraph "Agent"
@@ -49,6 +53,9 @@ graph TB
     SAFETY --> DEPS
     TOOLS --> DEPS
     CARDS --> DEPS
+    WORKSPACE --> DEPS
+    ROUTINE --> DEPS
+    DB --> DEPS
 
     CH_CLI --> ChannelManager
     CH_IOS --> ChannelManager
@@ -63,11 +70,11 @@ graph TB
 
     Agent -->|"channels.start_all()"| MSG_STREAM["MessageStream<br/>(merged from all channels)"]
 
-    style TOOLS fill:#ff9999,stroke:#cc0000
+    style TOOLS fill:#99ff99,stroke:#009900
     style CARDS fill:#99ddff,stroke:#0066cc
+    style ROUTINE fill:#ffcc99,stroke:#cc6600
+    style DB fill:#ddbbff,stroke:#7700cc
 ```
-
-> ⚠️ **Note:** `ToolRegistry::new()` creates an empty registry — no tools are registered in the current codebase. The agentic loop infrastructure is complete but has no tools to call.
 
 ---
 
@@ -153,9 +160,9 @@ flowchart TD
 
 ---
 
-## 4. User Input Processing (`process_user_input`) — The Heart
+## 4. User Input Processing (`process_user_input`)
 
-This is where the magic happens. Every natural language message goes through here:
+Every natural language message goes through here:
 
 ```mermaid
 flowchart TD
@@ -175,7 +182,7 @@ flowchart TD
     POLICY_CHECK -->|"No"| CARDS
 
     CARDS["🃏 Fire-and-forget: Card Generation"]
-    CARDS --> CARD_SPAWN["tokio::spawn(card_gen.generate_cards(<br/>content, sender, chat_id, channel,<br/>tracked_msg_id, thread_messages,<br/>reply_metadata, email_thread))"]
+    CARDS --> CARD_SPAWN["tokio::spawn(<br/>card_gen.generate_cards(content,<br/>sender, chat_id, channel,<br/>tracked_msg_id, thread_messages,<br/>reply_metadata, email_thread))"]
 
     CARD_SPAWN --> COMPACT_CHECK
 
@@ -216,15 +223,15 @@ flowchart TD
 
 ---
 
-## 5. The Agentic Tool Loop (`run_agentic_loop`) — Core Engine
+## 5. The Agentic Tool Loop (`run_agentic_loop`)
 
-This is the LLM→Tool→Repeat cycle. Currently has no registered tools, but the infrastructure is production-ready:
+The LLM→Tool→Repeat cycle:
 
 ```mermaid
 flowchart TD
     ENTRY["run_agentic_loop(<br/>msg, session, thread_id,<br/>initial_messages, resume_after_tool)"]
 
-    ENTRY --> LOAD_SYS["Load workspace system prompt<br/>(AGENTS.md, SOUL.md, etc.)"]
+    ENTRY --> LOAD_SYS["Load workspace system prompt<br/>(AGENTS.md, SOUL.md, USER.md, IDENTITY.md)"]
     LOAD_SYS --> INIT_REASONING["Reasoning::new(llm, safety)<br/>.with_system_prompt(prompt)"]
     INIT_REASONING --> INIT_CTX["context_messages = initial_messages<br/>job_ctx = JobContext::with_user(...)"]
     INIT_CTX --> INIT_VARS["iteration = 0<br/>tools_executed = resume_after_tool<br/>MAX_TOOL_ITERATIONS = 10"]
@@ -245,13 +252,11 @@ flowchart TD
 
     LLM_CALL --> LLM_RESULT{"RespondResult?"}
 
-    %% TEXT RESPONSE PATH
     LLM_RESULT -->|"Text(text)"| NUDGE_CHECK{"!tools_executed<br/>&& iteration < 3<br/>&& has_tools?"}
     NUDGE_CHECK -->|"Yes"| NUDGE["Tool Nudge:<br/>Append assistant text<br/>+ 'Please use the available tools...'"]
     NUDGE --> LOOP_START
     NUDGE_CHECK -->|"No"| RETURN_TEXT["✅ Return AgenticLoopResult::Response(text)"]
 
-    %% TOOL CALL PATH
     LLM_RESULT -->|"ToolCalls{calls, content}"| TOOLS_START["tools_executed = true<br/>Append assistant msg with tool_calls"]
     TOOLS_START --> STATUS_EXEC["send_status('Executing N tool(s)...')"]
     STATUS_EXEC --> RECORD_CALLS["Record tool_calls in thread turn"]
@@ -292,7 +297,7 @@ flowchart TD
 
 ---
 
-## 6. Tool Approval Flow (`process_approval` + `finalize_loop_result`)
+## 6. Tool Approval Flow
 
 What happens when a tool needs user permission:
 
@@ -383,56 +388,377 @@ flowchart TD
 
 ---
 
-## 8. Card Generation Flow (Unique to AI-Assist)
+## 8. Approval Card System
 
-The fire-and-forget card system that powers the iOS swipe UI:
+The typed card system that powers the iOS swipe UI:
 
 ```mermaid
-flowchart LR
-    subgraph "Incoming Message"
-        MSG["User sends message<br/>(Telegram / Email / CLI)"]
+flowchart TD
+    subgraph "Inbound Sources"
+        TG["Telegram Message"]
+        EMAIL["Email Message"]
+        PIPE["Message Pipeline<br/>(Rules + LLM Triage)"]
     end
 
-    subgraph "Agent Turn (parallel)"
-        AGENTIC["Agentic Loop<br/>(LLM response)"]
-    end
-
-    subgraph "Card Generation (fire-and-forget)"
+    subgraph "Card Generation"
         GEN["CardGenerator.generate_cards()"]
         GEN --> SHOULD{"should_generate?<br/>(not empty, not /cmd,<br/>not emoji-only)"}
-        SHOULD -->|"Yes"| LLM_CARDS["LLM call (temp=0.3):<br/>'Generate 3 reply suggestions<br/>for this message'"]
+        SHOULD -->|"Yes"| LLM_CARDS["LLM call (temp=0.3):<br/>'Generate best reply suggestion'"]
         SHOULD -->|"No"| SKIP["Skip"]
-        LLM_CARDS --> PARSE["Parse ReplyCard[]<br/>(suggestion, confidence, tone)"]
-        PARSE --> QUEUE["CardQueue.push(cards)"]
+        LLM_CARDS --> PARSE["Parse ApprovalCard<br/>with CardPayload"]
     end
 
-    subgraph "Card Delivery"
-        QUEUE --> WS["WebSocket /ws<br/>→ iOS App"]
-        QUEUE --> REST["REST /api/cards<br/>→ iOS App polling"]
-        QUEUE --> STORE["CardStore<br/>(SQLite persistence)"]
+    subgraph "Card Types"
+        REPLY["Reply<br/>channel, sender, message,<br/>suggested_reply, confidence,<br/>thread context, email_thread"]
+        COMPOSE["Compose<br/>channel, recipient,<br/>subject, draft_body"]
+        ACTION["Action<br/>description,<br/>action_detail"]
+        DECISION["Decision<br/>question, context,<br/>options[]"]
     end
 
-    subgraph "iOS App"
-        SWIPE["User swipes card"]
-        SWIPE -->|"Approve"| SEND["Send reply via channel"]
-        SWIPE -->|"Edit"| EDIT["Edit → Send"]
-        SWIPE -->|"Dismiss"| ARCHIVE["Archive card"]
+    subgraph "Storage & Delivery"
+        QUEUE["CardQueue<br/>(broadcast fan-out)"]
+        DB_STORE["SQLite<br/>(cards table, V6 schema)"]
+        WS["WebSocket /ws"]
+        REST["REST /api/cards"]
+        SILO["SiloCounts<br/>broadcast"]
     end
 
-    MSG --> AGENTIC
-    MSG --> GEN
+    subgraph "iOS App (SwiftUI)"
+        TABS["Tab Bar<br/>Messages · Todos · Calendar · Brain"]
+        BADGES["Live Badge Counts<br/>(from SiloCounts)"]
+        SWIPE["Swipe Actions"]
+        SWIPE -->|"Right swipe"| APPROVE["Approve → Send reply"]
+        SWIPE -->|"Left swipe"| DISMISS["Dismiss → Archive"]
+        SWIPE -->|"Tap edit"| EDIT["Edit → Modify → Send"]
+    end
 
-    STORE --> EXPIRY["Expiry sweep<br/>(every 60s,<br/>default 15 min TTL)"]
+    TG --> GEN
+    EMAIL --> GEN
+    PIPE --> GEN
 
-    style GEN fill:#99ddff,stroke:#0066cc
-    style WS fill:#ccffcc,stroke:#009900
+    PARSE --> REPLY
+    PARSE --> COMPOSE
+    PARSE --> ACTION
+    PARSE --> DECISION
+
+    REPLY --> QUEUE
+    COMPOSE --> QUEUE
+    ACTION --> QUEUE
+    DECISION --> QUEUE
+
+    QUEUE --> DB_STORE
+    QUEUE --> WS
+    QUEUE --> REST
+    QUEUE --> SILO
+
+    WS --> TABS
+    SILO --> BADGES
+
+    style REPLY fill:#99ddff,stroke:#0066cc
+    style COMPOSE fill:#ccffcc,stroke:#009900
+    style ACTION fill:#ffcc99,stroke:#cc6600
+    style DECISION fill:#ddbbff,stroke:#7700cc
+    style QUEUE fill:#ffffaa,stroke:#aa8800
 ```
 
 ---
 
-## 9. Session & Thread Model
+## 9. Message Pipeline
 
-The data structures that maintain conversation state:
+Inbound message triage — rules engine then LLM:
+
+```mermaid
+flowchart LR
+    MSG["InboundMessage<br/>(channel, sender, content,<br/>thread_context, priority_hints)"]
+
+    MSG --> RULES["Rules Engine<br/>(fast, no LLM)"]
+
+    RULES --> RULES_CHECK{"Match?"}
+    RULES_CHECK -->|"Yes"| ACTION
+    RULES_CHECK -->|"No"| TRIAGE
+
+    TRIAGE["LLM Triage<br/>(temp=0.1, max 512 tokens)<br/>Structured JSON response"]
+
+    TRIAGE --> ACTION{"TriageAction"}
+
+    ACTION -->|"Ignore"| IGNORE["Drop message<br/>(spam, noise, OOO)"]
+    ACTION -->|"Notify"| NOTIFY["Create notification card"]
+    ACTION -->|"DraftReply"| DRAFT["Create Reply card<br/>with suggested text"]
+    ACTION -->|"Digest"| DIGEST["Batch into digest<br/>(future)"]
+
+    DRAFT --> CARD["ApprovalCard::new_reply()<br/>→ CardQueue"]
+    NOTIFY --> CARD_N["ApprovalCard::new_action()<br/>→ CardQueue"]
+
+    style RULES fill:#ccffcc,stroke:#009900
+    style TRIAGE fill:#ddbbff,stroke:#7700cc
+    style DRAFT fill:#99ddff,stroke:#0066cc
+```
+
+**Core invariant: No outbound message without human approval.** All outbound goes through cards. There is NO auto-reply path.
+
+---
+
+## 10. Routine Engine
+
+Background task execution with triggers and guardrails:
+
+```mermaid
+flowchart TD
+    subgraph "Triggers"
+        CRON["⏰ Cron<br/>(schedule expression)"]
+        EVENT["📨 Event<br/>(channel + pattern match)"]
+        WEBHOOK["🔗 Webhook<br/>(HTTP POST + optional secret)"]
+        MANUAL["🖐️ Manual<br/>(tool call / CLI)"]
+    end
+
+    subgraph "Routine Engine"
+        TICKER["Cron Ticker<br/>(configurable interval)"]
+        CACHE["Event Cache<br/>(in-memory, refreshed on change)"]
+        EXEC["execute_routine()"]
+    end
+
+    subgraph "Guardrails"
+        MAX_TOK["max_tokens: 2048"]
+        MAX_COST["max_cost_per_run: $0.10"]
+        COOLDOWN["cooldown: Duration"]
+        FAILURES["consecutive_failures<br/>(auto-disable threshold)"]
+    end
+
+    subgraph "Execution"
+        LLM_CALL["LLM Call<br/>(routine prompt + context)"]
+        RECORD["Record run in DB<br/>(routine_runs table)"]
+        NOTIFY["Send notification<br/>via channel"]
+        COST["Record LLM costs<br/>(llm_calls table)"]
+    end
+
+    CRON --> TICKER
+    TICKER --> EXEC
+    EVENT --> CACHE
+    CACHE --> EXEC
+    WEBHOOK --> EXEC
+    MANUAL --> EXEC
+
+    EXEC --> MAX_TOK
+    EXEC --> MAX_COST
+    EXEC --> COOLDOWN
+    EXEC --> FAILURES
+
+    EXEC --> LLM_CALL
+    LLM_CALL --> RECORD
+    LLM_CALL --> NOTIFY
+    LLM_CALL --> COST
+
+    style CRON fill:#99ddff,stroke:#0066cc
+    style EVENT fill:#ccffcc,stroke:#009900
+    style WEBHOOK fill:#ffcc99,stroke:#cc6600
+    style MANUAL fill:#ddbbff,stroke:#7700cc
+```
+
+### LLM-Facing Routine Tools
+
+| Tool | Purpose |
+|------|---------|
+| `routine_create` | Create a new routine with trigger, action, guardrails |
+| `routine_list` | List all routines with status and next fire time |
+| `routine_update` | Modify name, description, trigger, action, or toggle enabled |
+| `routine_delete` | Remove a routine permanently |
+| `routine_history` | View past runs (success/failure, duration, output) |
+
+---
+
+## 11. Todo System
+
+```mermaid
+flowchart TD
+    subgraph "Creation"
+        VOICE["Voice command<br/>(Brain tab)"]
+        CARD["From approval card<br/>(source_card_id link)"]
+        AGENT["Agent creates<br/>(routine or tool)"]
+        API["REST API<br/>/api/todos/test"]
+    end
+
+    subgraph "TodoItem Model"
+        FIELDS["id, title, description<br/>todo_type, bucket, status<br/>priority, due_date<br/>context (JSON), source_card_id<br/>snoozed_until"]
+    end
+
+    subgraph "Types (7)"
+        T1["Deliverable"]
+        T2["Research"]
+        T3["Errand"]
+        T4["Learning"]
+        T5["Administrative"]
+        T6["Creative"]
+        T7["Review"]
+    end
+
+    subgraph "Buckets (2)"
+        B1["AgentStartable<br/>(AI works in background)"]
+        B2["HumanOnly<br/>(AI reminds/organizes)"]
+    end
+
+    subgraph "Status Flow"
+        S1["Created"] --> S2["AgentWorking"]
+        S2 --> S3["ReadyForReview"]
+        S3 --> S4["WaitingOnYou"]
+        S4 --> S5["Completed"]
+        S1 --> S6["Snoozed"]
+        S6 --> S1
+    end
+
+    subgraph "Delivery"
+        DB_TODO["SQLite<br/>(todos table)"]
+        WS_TODO["WebSocket /ws/todos<br/>(todo_new, todo_update, todo_delete)"]
+        IOS_TODO["iOS Todos Tab<br/>(swipe complete/delete,<br/>expand for details)"]
+    end
+
+    VOICE --> FIELDS
+    CARD --> FIELDS
+    AGENT --> FIELDS
+    API --> FIELDS
+
+    FIELDS --> DB_TODO
+    DB_TODO --> WS_TODO
+    WS_TODO --> IOS_TODO
+
+    style B1 fill:#99ddff,stroke:#0066cc
+    style B2 fill:#ffcc99,stroke:#cc6600
+```
+
+---
+
+## 12. Database Schema (V6)
+
+```mermaid
+erDiagram
+    cards {
+        TEXT id PK
+        TEXT conversation_id
+        TEXT source_message
+        TEXT source_sender
+        TEXT suggested_reply
+        REAL confidence
+        TEXT status
+        TEXT channel
+        TEXT card_type
+        TEXT silo
+        TEXT payload
+        TEXT message_id
+        TEXT reply_metadata
+        TEXT email_thread
+        TEXT created_at
+        TEXT expires_at
+        TEXT updated_at
+    }
+
+    messages {
+        TEXT id PK
+        TEXT external_id UK
+        TEXT channel
+        TEXT sender
+        TEXT subject
+        TEXT content
+        TEXT received_at
+        TEXT status
+        TEXT replied_at
+        TEXT metadata
+        TEXT created_at
+        TEXT updated_at
+    }
+
+    conversations {
+        TEXT id PK
+        TEXT channel
+        TEXT user_id
+        TEXT thread_id
+        TEXT started_at
+        TEXT last_activity
+        TEXT metadata
+    }
+
+    conversation_messages {
+        TEXT id PK
+        TEXT conversation_id FK
+        TEXT role
+        TEXT content
+        TEXT created_at
+    }
+
+    llm_calls {
+        TEXT id PK
+        TEXT conversation_id FK
+        TEXT routine_run_id FK
+        TEXT provider
+        TEXT model
+        INT input_tokens
+        INT output_tokens
+        TEXT cost
+        TEXT purpose
+        TEXT created_at
+    }
+
+    routines {
+        TEXT id PK
+        TEXT name UK
+        TEXT description
+        TEXT user_id
+        INT enabled
+        TEXT trigger_type
+        TEXT trigger_config
+        TEXT action_type
+        TEXT action_config
+        TEXT guardrails
+        TEXT notify_config
+        TEXT last_run_at
+        TEXT next_fire_at
+        INT run_count
+        INT consecutive_failures
+        TEXT state
+        TEXT created_at
+        TEXT updated_at
+    }
+
+    routine_runs {
+        TEXT id PK
+        TEXT routine_id FK
+        TEXT status
+        TEXT output
+        TEXT error
+        INT duration_ms
+        INT input_tokens
+        INT output_tokens
+        TEXT cost
+        TEXT started_at
+        TEXT completed_at
+    }
+
+    todos {
+        TEXT id PK
+        TEXT user_id
+        TEXT title
+        TEXT description
+        TEXT todo_type
+        TEXT bucket
+        TEXT status
+        INT priority
+        TEXT due_date
+        TEXT context
+        TEXT source_card_id FK
+        TEXT snoozed_until
+        TEXT created_at
+        TEXT updated_at
+    }
+
+    conversations ||--o{ conversation_messages : contains
+    conversations ||--o{ llm_calls : tracks
+    routines ||--o{ routine_runs : executes
+    routines ||--o{ llm_calls : tracks
+    cards ||--o| messages : linked_via_message_id
+    todos ||--o| cards : source_card_id
+```
+
+---
+
+## 13. Session & Thread Model
 
 ```mermaid
 classDiagram
@@ -442,6 +768,7 @@ classDiagram
         +register_thread()
         +prune_stale_sessions(timeout)
         +get_undo_manager(thread_id)
+        +maybe_hydrate_thread(session, thread_id, db)
     }
 
     class Session {
@@ -491,9 +818,6 @@ classDiagram
         +tool_calls: Vec~ToolCallRecord~
         +started_at: DateTime
         +completed_at: Option~DateTime~
-        +record_tool_call(name, args)
-        +record_tool_result(result)
-        +record_tool_error(error)
     }
 
     class PendingApproval {
@@ -523,65 +847,108 @@ classDiagram
 
 ---
 
-## 10. What's Missing (Current State)
+## 14. Built-in Tools
 
 ```mermaid
 graph LR
-    subgraph "✅ Built & Working"
-        A1["Agent main loop"]
-        A2["Agentic tool loop<br/>(LLM→Tool→Repeat)"]
-        A3["Tool approval flow"]
-        A4["Context compaction"]
-        A5["Undo/Redo"]
-        A6["Session management"]
-        A7["Card generation"]
-        A8["4 Channels<br/>(CLI, iOS, Telegram, Email)"]
-        A9["Safety layer"]
-        A10["DB persistence"]
+    subgraph "Shell (1 tool)"
+        SHELL["shell_exec<br/>Command execution with<br/>blocked patterns, timeout,<br/>output truncation (64KB)"]
     end
 
-    subgraph "❌ Not Registered / Stub"
-        B1["ToolRegistry is EMPTY<br/>(no tools registered in main.rs)"]
-        B2["Workspace is None<br/>(no file system access)"]
-        B3["ExtensionManager is None"]
-        B4["Database store is None<br/>(agent deps, not card DB)"]
+    subgraph "File (4 tools)"
+        READ["read_file<br/>Line-numbered, offset/limit<br/>Max 1MB"]
+        WRITE["write_file<br/>Auto-create parents<br/>Max 5MB"]
+        LIST["list_dir<br/>Recursive, max 500 entries<br/>Skips node_modules/.git/target"]
+        PATCH["apply_patch<br/>Search/replace, exact match<br/>Optional replace_all"]
     end
 
-    subgraph "🔮 Available in IronClaw<br/>(not ported)"
-        C1["Job Scheduler"]
-        C2["Self-Repair"]
-        C3["Routine Engine"]
-        C4["Heartbeat Runner"]
-        C5["Auth Mode"]
-        C6["WASM Runtime"]
-        C7["MCP Client"]
-        C8["Sandbox/Container"]
+    subgraph "Memory (3 tools)"
+        MSEARCH["memory_search<br/>Search workspace memory<br/>(keyword matching)"]
+        MREAD["memory_read<br/>Read workspace file<br/>with offset/lines"]
+        MWRITE["memory_write<br/>Write to workspace<br/>(protected identity files)"]
     end
 
-    style B1 fill:#ff9999,stroke:#cc0000,stroke-width:3px
-    style B2 fill:#ff9999,stroke:#cc0000
-    style B3 fill:#ffcccc,stroke:#cc6666
-    style B4 fill:#ffcccc,stroke:#cc6666
+    subgraph "Routine (5 tools)"
+        RCREATE["routine_create<br/>New routine with trigger"]
+        RLIST["routine_list<br/>All routines + status"]
+        RUPDATE["routine_update<br/>Modify or toggle"]
+        RDELETE["routine_delete<br/>Remove permanently"]
+        RHISTORY["routine_history<br/>Past runs + output"]
+    end
+
+    style SHELL fill:#ffcccc,stroke:#cc0000
+    style READ fill:#ccffcc,stroke:#009900
+    style WRITE fill:#ccffcc,stroke:#009900
+    style LIST fill:#ccffcc,stroke:#009900
+    style PATCH fill:#ccffcc,stroke:#009900
+    style MSEARCH fill:#99ddff,stroke:#0066cc
+    style MREAD fill:#99ddff,stroke:#0066cc
+    style MWRITE fill:#99ddff,stroke:#0066cc
+    style RCREATE fill:#ffcc99,stroke:#cc6600
+    style RLIST fill:#ffcc99,stroke:#cc6600
+    style RUPDATE fill:#ffcc99,stroke:#cc6600
+    style RDELETE fill:#ffcc99,stroke:#cc6600
+    style RHISTORY fill:#ffcc99,stroke:#cc6600
 ```
+
+All tools implement the `Tool` trait:
+- `name()`, `description()`, `parameters_schema()` — LLM-facing metadata
+- `execute(params, job_ctx)` — async execution
+- `requires_approval()` — all built-in tools return `true`
+- `execution_timeout()` — default 120s (shell), varies by tool
 
 ---
 
-## File Map
+## 15. File Map
 
-| File | Purpose | Lines |
-|------|---------|-------|
-| `agent/agent_loop.rs` | Agent struct, main loop, message dispatch, thread hydration, user input processing | ~450 |
-| `agent/tool_executor.rs` | Agentic loop (LLM→tool→repeat), tool execution | ~280 |
-| `agent/approval.rs` | Tool approval/rejection flow, finalize_loop_result | ~210 |
-| `agent/commands.rs` | Slash commands, system commands | ~100 |
-| `agent/session.rs` | Session, Thread, Turn, PendingApproval models | ~1000 |
-| `agent/session_manager.rs` | Session lifecycle, thread resolution | ~200 |
-| `agent/context_monitor.rs` | Context size monitoring, compaction triggers | ~240 |
-| `agent/compaction.rs` | LLM summarization, truncation, workspace archival | ~250 |
-| `agent/submission.rs` | Input parsing (commands, approvals, user text) | ~670 |
-| `agent/undo.rs` | Checkpoint-based undo/redo | ~150 |
-| `cards/generator.rs` | LLM-based reply card generation | ~410 |
-| `cards/queue.rs` | Card queue with persistence | ~300 |
-| `cards/ws.rs` | WebSocket + REST card server | ~200 |
-| `channels/*.rs` | CLI, Telegram, iOS, Email channels | ~1500 |
-| `main.rs` | Wiring, startup, config | ~220 |
+| Module | File | Purpose | Lines |
+|--------|------|---------|-------|
+| **agent** | `agent_loop.rs` | Agent struct, main loop, message dispatch, thread hydration | 905 |
+| | `tool_executor.rs` | Agentic loop (LLM→tool→repeat), tool execution | 439 |
+| | `approval.rs` | Tool approval/rejection flow, finalize_loop_result | 283 |
+| | `commands.rs` | Slash commands, system commands | 464 |
+| | `session.rs` | Session, Thread, Turn, PendingApproval models | 1,000 |
+| | `session_manager.rs` | Session lifecycle, thread resolution, DB hydration | 674 |
+| | `context_monitor.rs` | Context size monitoring, compaction triggers | 236 |
+| | `compaction.rs` | LLM summarization, truncation, workspace archival | 324 |
+| | `submission.rs` | Input parsing (commands, approvals, user text) | 689 |
+| | `router.rs` | Command routing | 200 |
+| | `undo.rs` | Checkpoint-based undo/redo | 252 |
+| | `routine.rs` | Routine types (Trigger, Action, Guardrails, Notify) | 496 |
+| | `routine_engine.rs` | Routine execution engine, cron ticker, event cache | 609 |
+| **cards** | `model.rs` | ApprovalCard, CardPayload, CardSilo, SiloCounts | 763 |
+| | `queue.rs` | CardQueue with DB persistence + broadcast | 651 |
+| | `generator.rs` | LLM-powered card generation | 424 |
+| | `ws.rs` | Axum WebSocket + REST card endpoints | 413 |
+| **channels** | `email.rs` | IMAP/SMTP email channel | 1,187 |
+| | `telegram.rs` | Telegram Bot API (long-polling, rich media) | 1,082 |
+| | `ios.rs` | iOS WebSocket chat channel | 426 |
+| | `cli.rs` | stdin/stdout REPL | 115 |
+| | `manager.rs` | Multi-channel routing + stream merging | 164 |
+| | `channel.rs` | Channel trait, IncomingMessage, OutgoingResponse | 186 |
+| **llm** | `reasoning.rs` | Reasoning engine (respond_with_tools, plan, evaluate) | 1,032 |
+| | `failover.rs` | Multi-provider failover chain | 482 |
+| | `rig_adapter.rs` | rig-core → LlmProvider bridge | 451 |
+| | `provider.rs` | LlmProvider trait, ChatMessage, ToolCall types | 307 |
+| | `costs.rs` | Token cost lookup tables | 124 |
+| | `retry.rs` | Exponential backoff with jitter | 96 |
+| **pipeline** | `processor.rs` | MessageProcessor (rules → triage → card routing) | 985 |
+| | `rules.rs` | Rules engine (fast, no LLM) | 434 |
+| | `types.rs` | InboundMessage, TriageAction, ProcessedMessage | 322 |
+| **store** | `libsql_backend.rs` | libSQL/SQLite implementation | 3,476 |
+| | `migrations.rs` | Version-tracked migrations (V1–V6) | 563 |
+| | `traits.rs` | Unified Database trait | (in traits.rs) |
+| **todos** | `model.rs` | TodoItem, TodoType, TodoBucket, TodoStatus | 341 |
+| | `ws.rs` | WebSocket + REST endpoints for todos | 333 |
+| **tools** | `builtin/shell.rs` | ShellTool | 514 |
+| | `builtin/file.rs` | ReadFile, WriteFile, ListDir, ApplyPatch | 935 |
+| | `builtin/memory.rs` | MemorySearch, MemoryRead, MemoryWrite | 536 |
+| | `builtin/routine.rs` | 5 routine management tools | 534 |
+| | `tool.rs` | Tool trait, ToolOutput, ToolDomain | — |
+| | `registry.rs` | ToolRegistry | — |
+| **core** | `main.rs` | Wiring, startup, config | 248 |
+| | `workspace.rs` | File-backed workspace + identity loader | 379 |
+| | `config.rs` | AgentConfig, RoutineConfig, defaults | — |
+| | `safety.rs` | SafetyLayer | — |
+
+**Total: ~26,500 lines of Rust across 62 files, ~5,400 lines of Swift across 29 files.**
