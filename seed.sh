@@ -82,34 +82,29 @@ fi
 
 # Helper: send a single todo create message via WebSocket
 send_todo() {
-  local json="$1"
+  local todo_json="$1"
   if [ "$WS_CMD" = "websocat" ]; then
-    echo "$json" | websocat -n1 "${WS_URL}"
+    echo "$todo_json" | websocat -n1 "${WS_URL}"
   else
-    python3 -c "
-import asyncio, json
+    TODO_JSON="$todo_json" WS_ENDPOINT="${WS_URL}" python3 -c '
+import asyncio, os, sys
 try:
     import websockets
 except ImportError:
-    # Fall back to raw socket if websockets not installed
-    import subprocess, sys
-    print('  ⚠️  python3 websockets not installed. pip install websockets')
+    print("  ⚠️  python3 websockets not installed. pip install websockets")
     sys.exit(1)
 
 async def send():
-    async with websockets.connect('${WS_URL}') as ws:
-        # Read initial sync
+    async with websockets.connect(os.environ["WS_ENDPOINT"]) as ws:
         await asyncio.wait_for(ws.recv(), timeout=2)
-        # Send create
-        await ws.send('''$json''')
-        # Wait for response
+        await ws.send(os.environ["TODO_JSON"])
         try:
             await asyncio.wait_for(ws.recv(), timeout=2)
         except asyncio.TimeoutError:
             pass
 
 asyncio.run(send())
-" 2>/dev/null
+' 2>/dev/null
   fi
 }
 
