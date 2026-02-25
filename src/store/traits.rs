@@ -86,8 +86,8 @@ pub struct StoredMessage {
 /// Backend-agnostic database trait covering cards, messages, and conversations.
 #[async_trait]
 pub trait Database: Send + Sync {
-    /// Run all pending schema migrations.
-    async fn run_migrations(&self) -> Result<(), DatabaseError>;
+    /// Initialize database schema (create all tables idempotently).
+    async fn init_schema(&self) -> Result<(), DatabaseError>;
 
     // ── Cards ───────────────────────────────────────────────────────
 
