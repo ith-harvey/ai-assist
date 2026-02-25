@@ -9,6 +9,7 @@ public struct TodoListView: View {
     @State private var todoSocket = TodoWebSocket()
     @State private var inputText = ""
     @State private var showCompleted = false
+    @State private var expandedTodoId: UUID?
 
     public init() {}
 
@@ -46,22 +47,7 @@ public struct TodoListView: View {
             if !todoSocket.activeTodos.isEmpty {
                 Section {
                     ForEach(todoSocket.activeTodos) { todo in
-                        TodoRowView(todo: todo)
-                            .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                                Button(role: .destructive) {
-                                    todoSocket.delete(todoId: todo.id)
-                                } label: {
-                                    Label("Delete", systemImage: "trash")
-                                }
-                            }
-                            .swipeActions(edge: .leading, allowsFullSwipe: true) {
-                                Button {
-                                    todoSocket.complete(todoId: todo.id)
-                                } label: {
-                                    Label("Complete", systemImage: "checkmark")
-                                }
-                                .tint(.green)
-                            }
+                        todoRow(todo)
                     }
                 } header: {
                     Text("Active")
@@ -75,22 +61,7 @@ public struct TodoListView: View {
             if !todoSocket.snoozedTodos.isEmpty {
                 Section {
                     ForEach(todoSocket.snoozedTodos) { todo in
-                        TodoRowView(todo: todo)
-                            .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                                Button(role: .destructive) {
-                                    todoSocket.delete(todoId: todo.id)
-                                } label: {
-                                    Label("Delete", systemImage: "trash")
-                                }
-                            }
-                            .swipeActions(edge: .leading, allowsFullSwipe: true) {
-                                Button {
-                                    todoSocket.complete(todoId: todo.id)
-                                } label: {
-                                    Label("Complete", systemImage: "checkmark")
-                                }
-                                .tint(.green)
-                            }
+                        todoRow(todo)
                     }
                 } header: {
                     Text("Snoozed")
@@ -104,14 +75,7 @@ public struct TodoListView: View {
             if !todoSocket.completedTodos.isEmpty {
                 Section(isExpanded: $showCompleted) {
                     ForEach(todoSocket.completedTodos) { todo in
-                        TodoRowView(todo: todo)
-                            .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                                Button(role: .destructive) {
-                                    todoSocket.delete(todoId: todo.id)
-                                } label: {
-                                    Label("Delete", systemImage: "trash")
-                                }
-                            }
+                        todoRow(todo)
                     }
                 } header: {
                     HStack {
@@ -137,6 +101,34 @@ public struct TodoListView: View {
         .listStyle(.insetGrouped)
         .scrollDismissesKeyboard(.interactively)
         #endif
+        .animation(.spring(response: 0.35, dampingFraction: 0.8), value: expandedTodoId)
+    }
+
+    // MARK: - Row Builder
+
+    private func todoRow(_ todo: TodoItem) -> some View {
+        TodoRowView(todo: todo, isExpanded: expandedTodoId == todo.id)
+            .contentShape(Rectangle())
+            .onTapGesture {
+                withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+                    expandedTodoId = expandedTodoId == todo.id ? nil : todo.id
+                }
+            }
+            .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                Button(role: .destructive) {
+                    todoSocket.delete(todoId: todo.id)
+                } label: {
+                    Label("Delete", systemImage: "trash")
+                }
+            }
+            .swipeActions(edge: .leading, allowsFullSwipe: true) {
+                Button {
+                    todoSocket.complete(todoId: todo.id)
+                } label: {
+                    Label("Complete", systemImage: "checkmark")
+                }
+                .tint(.green)
+            }
     }
 
     // MARK: - Input Bar
@@ -254,10 +246,25 @@ public struct TodoListView: View {
 // MARK: - Todo Row
 
 /// A single row in the todo list showing status, title, due date, and type badge.
+/// When `isExpanded` is true, shows additional detail section below the compact row.
 struct TodoRowView: View {
     let todo: TodoItem
+    var isExpanded: Bool = false
 
     var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            compactRow
+
+            if isExpanded {
+                expandedDetail
+            }
+        }
+        .background(isExpanded ? Color.blue.opacity(0.03) : Color.clear)
+    }
+
+    // MARK: - Compact Row
+
+    private var compactRow: some View {
         HStack(spacing: 12) {
             // Status icon
             Image(systemName: todo.status.iconName)
@@ -317,7 +324,101 @@ struct TodoRowView: View {
             }
         }
         .padding(.vertical, 4)
-        .contentShape(Rectangle())
+    }
+
+    // MARK: - Expanded Detail
+
+    private var expandedDetail: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Divider()
+
+            // Description
+            if let description = todo.description, !description.isEmpty {
+                Text(description)
+                    .font(.subheadline)
+                    .foregroundStyle(.primary)
+                    .padding(.top, 4)
+            }
+
+            // Status
+            detailRow(label: "Status", icon: todo.status.iconName) {
+                Text(todo.status.label)
+                    .foregroundStyle(.primary)
+            }
+
+            // Bucket
+            detailRow(
+                label: "Bucket",
+                icon: todo.bucket == .agentStartable ? "cpu" : "person.fill"
+            ) {
+                Text(todo.bucket == .agentStartable ? "🤖 AI can start this" : "👤 Waiting on you")
+                    .foregroundStyle(.primary)
+            }
+
+            // Due date (full format)
+            if let due = todo.dueDate {
+                detailRow(label: "Due", icon: "calendar") {
+                    HStack(spacing: 4) {
+                        Text(formatFullDate(due))
+                            .foregroundStyle(.primary)
+                        if todo.isOverdue {
+                            Text("Overdue")
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundStyle(.red)
+                        }
+                    }
+                }
+            }
+
+            // Created
+            detailRow(label: "Created", icon: "clock.arrow.circlepath") {
+                Text(formatCreatedDate(todo.createdAt))
+                    .foregroundStyle(.primary)
+            }
+
+            // Source card
+            if todo.sourceCardId != nil {
+                detailRow(label: "Source", icon: "doc.on.doc") {
+                    Text("From approval card")
+                        .foregroundStyle(.primary)
+                }
+            }
+
+            // Context
+            if let context = todo.context, !context.isEmpty {
+                VStack(alignment: .leading, spacing: 2) {
+                    Label("Context", systemImage: "info.circle")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(.secondary)
+                    Text(context)
+                        .font(.subheadline)
+                        .foregroundStyle(.primary)
+                }
+                .padding(.top, 2)
+            }
+        }
+        .font(.subheadline)
+        .padding(.top, 4)
+        .padding(.bottom, 8)
+        .transition(.opacity.combined(with: .move(edge: .top)))
+    }
+
+    // MARK: - Detail Row Helper
+
+    private func detailRow<Content: View>(
+        label: String,
+        icon: String,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        HStack(spacing: 8) {
+            Label(label, systemImage: icon)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(.secondary)
+                .frame(width: 90, alignment: .leading)
+
+            content()
+                .font(.subheadline)
+        }
     }
 
     // MARK: - Colors
@@ -364,5 +465,18 @@ struct TodoRowView: View {
             formatter.dateFormat = "MMM d"
             return formatter.string(from: date)
         }
+    }
+
+    private func formatFullDate(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .short
+        return formatter.string(from: date)
+    }
+
+    private func formatCreatedDate(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "MMM d, yyyy"
+        return formatter.string(from: date)
     }
 }
