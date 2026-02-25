@@ -110,8 +110,12 @@ public struct TodoListView: View {
         TodoRowView(todo: todo, isExpanded: expandedTodoId == todo.id)
             .contentShape(Rectangle())
             .onTapGesture {
-                withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
-                    expandedTodoId = expandedTodoId == todo.id ? nil : todo.id
+                let isCollapsing = expandedTodoId == todo.id
+                withAnimation(isCollapsing
+                    ? .easeIn(duration: 0.2)
+                    : .spring(response: 0.35, dampingFraction: 0.85)
+                ) {
+                    expandedTodoId = isCollapsing ? nil : todo.id
                 }
             }
             .swipeActions(edge: .trailing, allowsFullSwipe: true) {
@@ -332,14 +336,6 @@ struct TodoRowView: View {
         VStack(alignment: .leading, spacing: 8) {
             Divider()
 
-            // Description
-            if let description = todo.description, !description.isEmpty {
-                Text(description)
-                    .font(.subheadline)
-                    .foregroundStyle(.primary)
-                    .padding(.top, 4)
-            }
-
             // Status
             detailRow(label: "Status", icon: todo.status.iconName) {
                 Text(todo.status.label)
@@ -396,11 +392,22 @@ struct TodoRowView: View {
                 }
                 .padding(.top, 2)
             }
+
+            // Description (below metadata)
+            if let description = todo.description, !description.isEmpty {
+                Divider()
+                Text(description)
+                    .font(.subheadline)
+                    .foregroundStyle(.primary)
+            }
         }
         .font(.subheadline)
         .padding(.top, 4)
         .padding(.bottom, 8)
-        .transition(.opacity.combined(with: .move(edge: .top)))
+        .transition(.asymmetric(
+            insertion: .opacity.animation(.easeOut(duration: 0.2)),
+            removal: .opacity.animation(.easeIn(duration: 0.15))
+        ))
     }
 
     // MARK: - Detail Row Helper
