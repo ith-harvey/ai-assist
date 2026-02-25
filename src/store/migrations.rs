@@ -171,6 +171,16 @@ const SCHEMA: &str = r#"
     CREATE INDEX IF NOT EXISTS idx_todos_user_id ON todos(user_id);
     CREATE INDEX IF NOT EXISTS idx_todos_parent_id ON todos(parent_id);
     CREATE INDEX IF NOT EXISTS idx_todos_agent_internal ON todos(is_agent_internal);
+
+    CREATE TABLE IF NOT EXISTS job_actions (
+        id TEXT PRIMARY KEY,
+        job_id TEXT NOT NULL,
+        action_type TEXT NOT NULL,
+        action_data TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_job_actions_job_id ON job_actions(job_id);
+    CREATE INDEX IF NOT EXISTS idx_job_actions_created ON job_actions(created_at);
 "#;
 
 /// Create all tables and indexes idempotently.
@@ -213,6 +223,7 @@ mod tests {
             "settings",
             "llm_calls",
             "todos",
+            "job_actions",
         ];
 
         for table in &expected_tables {
@@ -257,7 +268,7 @@ mod tests {
             .unwrap();
         let row = rows.next().await.unwrap().unwrap();
         let count: i64 = row.get(0).unwrap();
-        assert!(count >= 9, "Expected at least 9 tables, got {count}");
+        assert!(count >= 10, "Expected at least 10 tables, got {count}");
     }
 
     #[tokio::test]

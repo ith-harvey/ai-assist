@@ -406,4 +406,32 @@ pub trait Database: Send + Sync {
 
     /// Delete a todo. Returns true if a row was deleted.
     async fn delete_todo(&self, id: Uuid) -> Result<bool, DatabaseError>;
+
+    // ── Job Actions ─────────────────────────────────────────────────
+
+    /// Save a job action record (activity event serialized as JSON).
+    async fn save_job_action(
+        &self,
+        job_id: Uuid,
+        action_type: &str,
+        action_data: &str,
+    ) -> Result<(), DatabaseError>;
+
+    /// Get all job actions for a job, ordered by creation time.
+    async fn get_job_actions(&self, job_id: Uuid) -> Result<Vec<String>, DatabaseError>;
+
+    /// Update job status (maps to todo status update internally).
+    async fn update_job_status(
+        &self,
+        job_id: Uuid,
+        status: &str,
+        reason: Option<&str>,
+    ) -> Result<(), DatabaseError>;
+
+    /// Record a tool failure for self-repair tracking.
+    async fn record_tool_failure(
+        &self,
+        tool_name: &str,
+        error: &str,
+    ) -> Result<(), DatabaseError>;
 }
