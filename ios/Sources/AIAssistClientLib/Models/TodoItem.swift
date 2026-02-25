@@ -190,61 +190,101 @@ extension TodoItem {
     /// Sample data for previews and development (backend not yet ready).
     public static let samples: [TodoItem] = [
         TodoItem(
-            title: "Review Q1 budget proposal",
-            description: "Sarah sent the updated numbers. Check the marketing line items.",
-            todoType: .review,
+            title: "Fix Stellar fee rounding bug",
+            description: "Luca flagged failing integration tests on the fee calculation path. Check the rounding logic in the stablecoin transfer module.",
+            todoType: .deliverable,
             bucket: .humanOnly,
             status: .waitingOnYou,
             priority: 1,
-            dueDate: Calendar.current.date(byAdding: .hour, value: 4, to: Date())
+            dueDate: Calendar.current.date(byAdding: .day, value: 1, to: Date()),
+            context: "M0 release blocker — needs fix before Thursday cut"
         ),
         TodoItem(
-            title: "Research vector DB options for embeddings",
-            description: "Compare pgvector, Qdrant, and Pinecone for our use case. Focus on cost at 10M vectors.",
+            title: "Research Nashville flights for Joey's bachelor party",
+            description: "Check Southwest and Frontier from LAS to BNA, March 15-17. Budget ~$400 for airfare. Send options to Joey.",
             todoType: .research,
             bucket: .agentStartable,
             status: .agentWorking,
-            priority: 2
+            priority: 2,
+            dueDate: Calendar.current.date(byAdding: .day, value: 1, to: Date()),
+            context: "Joey asked via email — wants response by tomorrow"
         ),
         TodoItem(
-            title: "Pick up dry cleaning",
+            title: "Pick up groceries from Whole Foods",
+            description: "Milk, eggs, sourdough bread. Christina asked.",
             todoType: .errand,
             bucket: .humanOnly,
             status: .created,
-            priority: 4,
+            priority: 3,
             dueDate: Calendar.current.date(byAdding: .day, value: 1, to: Date())
         ),
         TodoItem(
-            title: "Write blog post on tool-use patterns",
-            description: "Draft based on the ironclaw vs ai-assist comparison. Focus on the enforcement stack.",
+            title: "Review Atlanta location scout photos",
+            description: "Mike sent two house options for the slasher scenes. Review photos, pick top choice, and send notes on lighting angles.",
             todoType: .creative,
-            bucket: .agentStartable,
-            status: .readyForReview,
-            priority: 3
+            bucket: .humanOnly,
+            status: .created,
+            priority: 3,
+            dueDate: Calendar.current.date(byAdding: .day, value: 3, to: Date()),
+            context: "Slasher film production — Atlanta shoot"
         ),
         TodoItem(
-            title: "Learn Swift concurrency model",
-            description: "Structured concurrency, actors, sendable. Work through the WWDC sessions.",
+            title: "Upgrade OpenClaw to v2026.2.24",
+            description: "Per-agent model overrides, session cleanup improvements. Will fix Clark's contextTokens mismatch.",
+            todoType: .administrative,
+            bucket: .agentStartable,
+            status: .created,
+            priority: 4,
+            dueDate: Calendar.current.date(byAdding: .day, value: 5, to: Date()),
+            context: "Changelog has migration notes — read before upgrading"
+        ),
+        TodoItem(
+            title: "Watch Karpathy on Lex Fridman — tool use and agents",
+            description: "Episode #428. Directly relevant to AI Assist architecture. Take notes for Second Brain.",
             todoType: .learning,
             bucket: .humanOnly,
             status: .created,
-            priority: 5
+            priority: 5,
+            dueDate: Calendar.current.date(byAdding: .day, value: 7, to: Date())
         ),
         TodoItem(
-            title: "Renew AWS certificates",
+            title: "Address Rex's PR review comments",
+            description: "Two comments on migration backfill query. Handle NULL payload rows edge case.",
+            todoType: .review,
+            bucket: .humanOnly,
+            status: .readyForReview,
+            priority: 2,
+            dueDate: Calendar.current.date(byAdding: .day, value: 1, to: Date()),
+            context: "GitHub notification — Rex requesting changes"
+        ),
+        TodoItem(
+            title: "Confirm Friday electrician appointment",
+            description: "Christina asked — Thursday or Friday. Picked Friday. Need to confirm morning or afternoon.",
             todoType: .administrative,
-            bucket: .agentStartable,
-            status: .snoozed,
+            bucket: .humanOnly,
+            status: .created,
             priority: 3,
-            snoozedUntil: Calendar.current.date(byAdding: .day, value: 3, to: Date())
+            dueDate: Calendar.current.date(byAdding: .day, value: 3, to: Date()),
+            context: "Christina asked via WhatsApp"
         ),
         TodoItem(
-            title: "File expense report",
-            todoType: .administrative,
+            title: "Merge PR #64 — todo row styling",
+            description: "Card width matching, inline input on expand, removed bottom bar.",
+            todoType: .review,
             bucket: .humanOnly,
             status: .completed,
             priority: 2,
             dueDate: Calendar.current.date(byAdding: .day, value: -1, to: Date())
+        ),
+        TodoItem(
+            title: "Draft AI Assist onboarding flow copy",
+            description: "Write the 5-screen onboarding sequence: account creation, connect services, personality setup, preferences, UI tutorial. Goal: value in under 2 minutes.",
+            todoType: .deliverable,
+            bucket: .agentStartable,
+            status: .agentWorking,
+            priority: 3,
+            dueDate: Calendar.current.date(byAdding: .day, value: 5, to: Date()),
+            context: "From UX brainstorm doc — four silos, two patterns"
         ),
     ]
 }
