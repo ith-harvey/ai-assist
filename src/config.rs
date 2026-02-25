@@ -23,6 +23,10 @@ pub struct AgentConfig {
     pub session_idle_timeout: Duration,
     /// Maximum number of parallel jobs.
     pub max_parallel_jobs: usize,
+    /// Per-job execution timeout.
+    pub job_timeout: Duration,
+    /// Whether to use LLM planning before tool execution.
+    pub use_planning: bool,
     /// Stuck job threshold (jobs stuck for this duration are flagged for repair).
     pub stuck_threshold: Duration,
     /// Maximum repair attempts per stuck job.
@@ -40,6 +44,8 @@ impl Default for AgentConfig {
             allow_local_tools: true,
             session_idle_timeout: Duration::from_secs(3600), // 1 hour
             max_parallel_jobs: 10,
+            job_timeout: Duration::from_secs(600), // 10 minutes
+            use_planning: false,
             stuck_threshold: Duration::from_secs(300), // 5 minutes
             max_repair_attempts: 3,
             repair_check_interval: Duration::from_secs(60), // 1 minute

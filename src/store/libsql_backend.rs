@@ -1810,6 +1810,82 @@ impl Database for LibSqlBackend {
             .map_err(|e| DatabaseError::Query(format!("delete_todo: {e}")))?;
         Ok(count > 0)
     }
+
+    // ── Job Actions ─────────────────────────────────────────────────
+
+    async fn save_job_action(
+        &self,
+        job_id: Uuid,
+        action_type: &str,
+        action_data: &str,
+    ) -> Result<(), DatabaseError> {
+        let conn = self.conn();
+        let id = Uuid::new_v4().to_string();
+        let now = Utc::now().to_rfc3339();
+        conn.execute(
+            "INSERT INTO job_actions (id, job_id, action_type, action_data, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![id, job_id.to_string(), action_type, action_data, now],
+        )
+        .await
+        .map_err(|e| DatabaseError::Query(format!("save_job_action: {e}")))?;
+        Ok(())
+    }
+
+    async fn get_job_actions(&self, job_id: Uuid) -> Result<Vec<String>, DatabaseError> {
+        let conn = self.conn();
+        let mut rows = conn
+            .query(
+                "SELECT action_data FROM job_actions WHERE job_id = ?1 ORDER BY created_at ASC",
+                params![job_id.to_string()],
+            )
+            .await
+            .map_err(|e| DatabaseError::Query(format!("get_job_actions: {e}")))?;
+
+        let mut actions = Vec::new();
+        while let Ok(Some(row)) = rows.next().await {
+            let data: String = row.get(0).unwrap_or_default();
+            actions.push(data);
+        }
+        Ok(actions)
+    }
+
+    async fn update_job_status(
+        &self,
+        job_id: Uuid,
+        status: &str,
+        reason: Option<&str>,
+    ) -> Result<(), DatabaseError> {
+        // Store as a job action for history
+        let action_data = serde_json::json!({
+            "status": status,
+            "reason": reason,
+        })
+        .to_string();
+        self.save_job_action(job_id, "status_change", &action_data)
+            .await
+    }
+
+    async fn record_tool_failure(
+        &self,
+        tool_name: &str,
+        error: &str,
+    ) -> Result<(), DatabaseError> {
+        let conn = self.conn();
+        let id = Uuid::new_v4().to_string();
+        let now = Utc::now().to_rfc3339();
+        let action_data = serde_json::json!({
+            "tool_name": tool_name,
+            "error": error,
+        })
+        .to_string();
+        conn.execute(
+            "INSERT INTO job_actions (id, job_id, action_type, action_data, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![id, "global", "tool_failure", action_data, now],
+        )
+        .await
+        .map_err(|e| DatabaseError::Query(format!("record_tool_failure: {e}")))?;
+        Ok(())
+    }
 }
 
 // ── Row mapping helpers for todos ───────────────────────────────────

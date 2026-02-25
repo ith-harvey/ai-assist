@@ -13,4 +13,6 @@ pub mod safety;
 pub mod store;
 pub mod todos;
 pub mod tools;
+pub mod util;
+pub mod worker;
 pub mod workspace;

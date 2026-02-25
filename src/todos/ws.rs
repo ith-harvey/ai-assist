@@ -24,12 +24,20 @@ pub struct TodoState {
     pub db: Arc<dyn Database>,
     /// Broadcast channel for pushing updates to all connected clients.
     pub tx: broadcast::Sender<TodoWsMessage>,
+    /// Optional scheduler for spawning agent workers on AgentStartable todos.
+    pub scheduler: Option<Arc<crate::worker::Scheduler>>,
 }
 
 impl TodoState {
     pub fn new(db: Arc<dyn Database>) -> Self {
         let (tx, _) = broadcast::channel(256);
-        Self { db, tx }
+        Self { db, tx, scheduler: None }
+    }
+
+    /// Create with a scheduler attached for agent worker spawning.
+    pub fn with_scheduler(db: Arc<dyn Database>, scheduler: Arc<crate::worker::Scheduler>) -> Self {
+        let (tx, _) = broadcast::channel(256);
+        Self { db, tx, scheduler: Some(scheduler) }
     }
 }
 
@@ -236,6 +244,20 @@ async fn handle_client_action(text: &str, state: &TodoState) {
                         match state.db.update_todo(&todo).await {
                             Ok(()) => {
                                 info!(id = %id, "Todo updated via WS");
+
+                                // Bridge: spawn worker when AgentStartable todo goes to AgentWorking
+                                if todo.status == TodoStatus::AgentWorking
+                                    && todo.bucket == TodoBucket::AgentStartable
+                                {
+                                    if let Some(ref scheduler) = state.scheduler {
+                                        spawn_worker_for_todo(
+                                            scheduler.clone(),
+                                            &todo,
+                                        )
+                                        .await;
+                                    }
+                                }
+
                                 let _ = state.tx.send(TodoWsMessage::TodoUpdated { todo });
                             }
                             Err(e) => warn!(id = %id, error = %e, "Failed to update todo"),
@@ -381,6 +403,59 @@ async fn create_test_todo(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({"error": e.to_string()})),
             )
+        }
+    }
+}
+
+// ── Todo → Worker Bridge ────────────────────────────────────────────
+
+/// Spawn an agent worker for an AgentStartable todo.
+///
+/// Creates a job in the ContextManager and schedules it via the Scheduler.
+/// The worker will stream TodoActivityMessage events as it works.
+async fn spawn_worker_for_todo(
+    scheduler: Arc<crate::worker::Scheduler>,
+    todo: &TodoItem,
+) {
+    let description = todo
+        .description
+        .as_deref()
+        .unwrap_or(&todo.title)
+        .to_string();
+
+    // Create job context in the context manager
+    let job_result = scheduler
+        .context_manager()
+        .create_job_for_user(&todo.user_id, &todo.title, description)
+        .await;
+
+    match job_result {
+        Ok(job_id) => {
+            // Schedule the job, linking it to this todo
+            match scheduler.schedule(job_id, Some(todo.id)).await {
+                Ok(()) => {
+                    info!(
+                        todo_id = %todo.id,
+                        job_id = %job_id,
+                        title = %todo.title,
+                        "Spawned agent worker for todo"
+                    );
+                }
+                Err(e) => {
+                    warn!(
+                        todo_id = %todo.id,
+                        error = %e,
+                        "Failed to schedule agent worker"
+                    );
+                }
+            }
+        }
+        Err(e) => {
+            warn!(
+                todo_id = %todo.id,
+                error = %e,
+                "Failed to create job context for todo"
+            );
         }
     }
 }
