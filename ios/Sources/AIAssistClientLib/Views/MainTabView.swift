@@ -29,8 +29,7 @@ public struct MainTabView: View {
 
             // To-Dos
             NavigationStack {
-                TodosPlaceholderView()
-                    .navigationTitle("To-Dos")
+                TodoListView()
             }
             .tabItem {
                 Image(systemName: "checklist")
