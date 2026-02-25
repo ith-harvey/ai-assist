@@ -10,7 +10,7 @@ use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 use super::generator::CardGenerator;
-use super::model::{CardStatus, ReplyCard, WsMessage};
+use super::model::{ApprovalCard, CardPayload, CardStatus, SiloCounts, WsMessage};
 use crate::store::{Database, MessageStatus};
 
 /// Default broadcast channel capacity.
@@ -22,7 +22,7 @@ const DEFAULT_BROADCAST_CAPACITY: usize = 256;
 /// If a DB write fails, we log the error and continue with the in-memory operation
 /// (graceful degradation).
 pub struct CardQueue {
-    cards: RwLock<VecDeque<ReplyCard>>,
+    cards: RwLock<VecDeque<ApprovalCard>>,
     tx: broadcast::Sender<WsMessage>,
     db: Option<Arc<dyn Database>>,
 }
@@ -69,12 +69,10 @@ impl CardQueue {
     }
 
     /// Push a new card into the queue and broadcast to all subscribers.
-    pub async fn push(&self, card: ReplyCard) {
+    pub async fn push(&self, card: ApprovalCard) {
         info!(
             card_id = %card.id,
-            sender = %card.source_sender,
-            channel = %card.channel,
-            confidence = card.confidence,
+            card_type = card.payload.card_type_str(),
             "New card pushed to queue"
         );
 
@@ -89,6 +87,7 @@ impl CardQueue {
         {
             let mut cards = self.cards.write().await;
             cards.push_back(card);
+            self.broadcast_silo_counts_from(&cards);
         }
 
         // Broadcast — ok if no receivers are listening yet
@@ -96,7 +95,7 @@ impl CardQueue {
     }
 
     /// Approve a card. Returns the card if found and was pending.
-    pub async fn approve(&self, card_id: Uuid) -> Option<ReplyCard> {
+    pub async fn approve(&self, card_id: Uuid) -> Option<ApprovalCard> {
         let mut cards = self.cards.write().await;
 
         let card = cards.iter_mut().find(|c| c.id == card_id)?;
@@ -118,7 +117,7 @@ impl CardQueue {
         let approved = card.clone();
 
         // Update linked message status → replied
-        if let Some(ref msg_id) = approved.message_id {
+        if let Some(msg_id) = approved.payload.message_id() {
             self.update_message_status(msg_id, MessageStatus::Replied)
                 .await;
         }
@@ -129,6 +128,7 @@ impl CardQueue {
             id: card_id,
             status: CardStatus::Approved,
         });
+        self.broadcast_silo_counts_from(&cards);
 
         Some(approved)
     }
@@ -154,7 +154,7 @@ impl CardQueue {
             card.updated_at = chrono::Utc::now();
 
             // Update linked message status → dismissed
-            if let Some(ref msg_id) = card.message_id {
+            if let Some(msg_id) = card.payload.message_id() {
                 self.update_message_status(msg_id, MessageStatus::Dismissed)
                     .await;
             }
@@ -165,6 +165,7 @@ impl CardQueue {
                 id: card_id,
                 status: CardStatus::Dismissed,
             });
+            self.broadcast_silo_counts_from(&cards);
 
             true
         } else {
@@ -173,7 +174,7 @@ impl CardQueue {
     }
 
     /// Edit a card's reply text. Returns the updated card if successful.
-    pub async fn edit(&self, card_id: Uuid, new_text: String) -> Option<ReplyCard> {
+    pub async fn edit(&self, card_id: Uuid, new_text: String) -> Option<ApprovalCard> {
         let mut cards = self.cards.write().await;
 
         let card = cards.iter_mut().find(|c| c.id == card_id)?;
@@ -193,7 +194,10 @@ impl CardQueue {
             }
         }
 
-        card.suggested_reply = new_text;
+        // Update the suggested_reply inside the payload
+        if let CardPayload::Reply { ref mut suggested_reply, .. } = card.payload {
+            *suggested_reply = new_text;
+        }
         card.status = CardStatus::Approved;
         card.updated_at = chrono::Utc::now();
         let edited = card.clone();
@@ -204,6 +208,7 @@ impl CardQueue {
             id: card_id,
             status: CardStatus::Approved,
         });
+        self.broadcast_silo_counts_from(&cards);
 
         Some(edited)
     }
@@ -214,7 +219,7 @@ impl CardQueue {
         card_id: Uuid,
         instruction: String,
         generator: &CardGenerator,
-    ) -> Result<ReplyCard, String> {
+    ) -> Result<ApprovalCard, String> {
         // Find the card and verify it's pending
         let card_snapshot = {
             let cards = self.cards.read().await;
@@ -249,16 +254,19 @@ impl CardQueue {
                 return Err(format!("Card {} is no longer pending", card_id));
             }
 
-            card.suggested_reply = new_text;
-            card.confidence = new_confidence;
+            if let CardPayload::Reply { ref mut suggested_reply, ref mut confidence, .. } = card.payload {
+                *suggested_reply = new_text;
+                *confidence = new_confidence;
+            }
             card.updated_at = chrono::Utc::now();
             card.clone()
         };
 
         // Persist to DB (keep status as Pending)
         if let Some(ref db) = self.db {
+            let reply_text = updated.payload.suggested_reply().unwrap_or_default();
             if let Err(e) = db
-                .update_card_reply(card_id, &updated.suggested_reply, CardStatus::Pending)
+                .update_card_reply(card_id, reply_text, CardStatus::Pending)
                 .await
             {
                 error!(card_id = %card_id, error = %e, "Failed to persist refine to DB");
@@ -276,7 +284,7 @@ impl CardQueue {
     }
 
     /// Get all pending (non-expired) cards.
-    pub async fn pending(&self) -> Vec<ReplyCard> {
+    pub async fn pending(&self) -> Vec<ApprovalCard> {
         let cards = self.cards.read().await;
         cards
             .iter()
@@ -336,6 +344,7 @@ impl CardQueue {
 
         if expired_count > 0 {
             info!(count = expired_count, "Expired cards");
+            self.broadcast_silo_counts_from(&cards);
         }
 
         expired_count
@@ -367,7 +376,7 @@ impl CardQueue {
             card.updated_at = chrono::Utc::now();
 
             // Update linked message status → replied
-            if let Some(ref msg_id) = card.message_id {
+            if let Some(msg_id) = card.payload.message_id() {
                 self.update_message_status(msg_id, MessageStatus::Replied)
                     .await;
             }
@@ -376,11 +385,18 @@ impl CardQueue {
                 id: card_id,
                 status: CardStatus::Sent,
             });
+            self.broadcast_silo_counts_from(&cards);
 
             true
         } else {
             false
         }
+    }
+
+    /// Compute silo counts from a cards slice and broadcast to all WS clients.
+    fn broadcast_silo_counts_from(&self, cards: &VecDeque<ApprovalCard>) {
+        let counts = SiloCounts::from_cards(cards);
+        let _ = self.tx.send(WsMessage::SiloCounts { counts });
     }
 
     /// Helper: update the linked message status (if DB is available).
@@ -410,19 +426,25 @@ pub fn spawn_expiry_task(queue: Arc<CardQueue>) -> tokio::task::JoinHandle<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cards::model::ReplyCard;
+    use crate::cards::model::ApprovalCard;
     use crate::store::LibSqlBackend;
+    use tokio::sync::broadcast;
 
-    fn make_card(expire_minutes: u32) -> ReplyCard {
-        ReplyCard::new(
-            "chat_1",
-            "hello",
-            "Alice",
-            "hi!",
-            0.9,
-            "telegram",
-            expire_minutes,
-        )
+    fn make_card(expire_minutes: u32) -> ApprovalCard {
+        ApprovalCard::new_reply("telegram", "Alice", "hello", "hi!", 0.9, "chat_1", expire_minutes)
+    }
+
+    /// Drain messages from the broadcast receiver until we find one matching the predicate.
+    async fn recv_until<F>(rx: &mut broadcast::Receiver<WsMessage>, pred: F) -> WsMessage
+    where
+        F: Fn(&WsMessage) -> bool,
+    {
+        loop {
+            let msg = rx.recv().await.unwrap();
+            if pred(&msg) {
+                return msg;
+            }
+        }
     }
 
     async fn make_db() -> Arc<dyn Database> {
@@ -439,7 +461,8 @@ mod tests {
 
         let pending = queue.pending().await;
         assert_eq!(pending.len(), 1);
-        assert_eq!(pending[0].source_sender, "Alice");
+        // Verify it's the right card via payload
+        assert_eq!(pending[0].payload.card_type_str(), "reply");
     }
 
     #[tokio::test]
@@ -489,7 +512,7 @@ mod tests {
         let edited = queue.edit(card_id, "edited reply".into()).await;
         assert!(edited.is_some());
         let edited = edited.unwrap();
-        assert_eq!(edited.suggested_reply, "edited reply");
+        assert_eq!(edited.payload.suggested_reply().unwrap(), "edited reply");
         assert_eq!(edited.status, CardStatus::Approved);
     }
 
@@ -502,8 +525,8 @@ mod tests {
         let card_id = card.id;
         queue.push(card).await;
 
-        // Should receive NewCard
-        let msg = rx.recv().await.unwrap();
+        // Should receive NewCard (skip SiloCounts)
+        let msg = recv_until(&mut rx, |m| matches!(m, WsMessage::NewCard { .. })).await;
         match msg {
             WsMessage::NewCard { card } => assert_eq!(card.id, card_id),
             _ => panic!("Expected NewCard"),
@@ -511,8 +534,8 @@ mod tests {
 
         queue.approve(card_id).await;
 
-        // Should receive CardUpdate
-        let msg = rx.recv().await.unwrap();
+        // Should receive CardUpdate (skip SiloCounts)
+        let msg = recv_until(&mut rx, |m| matches!(m, WsMessage::CardUpdate { .. })).await;
         match msg {
             WsMessage::CardUpdate { id, status } => {
                 assert_eq!(id, card_id);
@@ -607,7 +630,7 @@ mod tests {
         queue.edit(card_id, "new reply text".into()).await;
 
         let db_card = db.get_card(card_id).await.unwrap().unwrap();
-        assert_eq!(db_card.suggested_reply, "new reply text");
+        assert_eq!(db_card.payload.suggested_reply().unwrap(), "new reply text");
         assert_eq!(db_card.status, CardStatus::Approved);
     }
 

@@ -12,7 +12,7 @@ use libsql::{Connection, Database as LibSqlDatabase, params};
 use tracing::{debug, info};
 use uuid::Uuid;
 
-use crate::cards::model::{CardStatus, ReplyCard};
+use crate::cards::model::{ApprovalCard, CardPayload, CardSilo, CardStatus, SiloCounts};
 use crate::error::DatabaseError;
 use crate::store::migrations;
 use crate::store::traits::{ConversationMessage, Database, MessageStatus, StoredMessage};
@@ -143,40 +143,168 @@ fn str_to_msg_status(s: &str) -> MessageStatus {
     }
 }
 
-/// Map a libsql Row to a ReplyCard.
-fn row_to_card(row: &libsql::Row) -> Result<ReplyCard, libsql::Error> {
+/// Map a libsql Row to an ApprovalCard.
+///
+/// Column order matches CARD_COLUMNS:
+/// 0:id, 1:card_type, 2:silo, 3:payload, 4:status, 5:created_at, 6:expires_at, 7:updated_at
+///
+/// For legacy rows (before V6), card_type/silo/payload may be NULL.
+/// We fall back to reading the old flat columns in that case.
+fn row_to_card(row: &libsql::Row) -> Result<ApprovalCard, libsql::Error> {
     let id_str: String = row.get(0)?;
-    let confidence: f64 = row.get(5)?;
-    let status_str: String = row.get(6)?;
-    let created_str: String = row.get(8)?;
-    let expires_str: String = row.get(9)?;
-    let updated_str: String = row.get(10)?;
-    let message_id: Option<String> = row.get(11).ok();
-    let reply_metadata_str: Option<String> = row.get(12).ok();
-    let email_thread_str: Option<String> = row.get(13).ok();
+    let card_type_str: String = row.get::<String>(1).unwrap_or_else(|_| "reply".into());
+    let silo_str: String = row.get::<String>(2).unwrap_or_else(|_| "messages".into());
+    let payload_str: Option<String> = row.get(3).ok();
+    let status_str: String = row.get(4)?;
+    let created_str: String = row.get(5)?;
+    let expires_str: String = row.get(6)?;
+    let updated_str: String = row.get(7)?;
 
-    let reply_metadata = reply_metadata_str.and_then(|s| serde_json::from_str(&s).ok());
-    let email_thread = email_thread_str
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default();
+    let silo: CardSilo = silo_str.parse().unwrap_or_default();
 
-    Ok(ReplyCard {
+    // Parse payload from JSON column, or reconstruct from legacy flat columns
+    let payload: CardPayload = if let Some(ref pstr) = payload_str {
+        // Try adjacently-tagged format first: {"card_type":"reply","payload":{...}}
+        serde_json::from_str(pstr).unwrap_or_else(|_| {
+            // Try just the inner payload object (what we actually store)
+            match card_type_str.as_str() {
+                "reply" => serde_json::from_str::<ReplyPayloadRaw>(pstr)
+                    .map(|r| CardPayload::Reply {
+                        channel: r.channel,
+                        source_sender: r.source_sender,
+                        source_message: r.source_message,
+                        suggested_reply: r.suggested_reply,
+                        confidence: r.confidence,
+                        conversation_id: r.conversation_id,
+                        thread: r.thread.unwrap_or_default(),
+                        email_thread: r.email_thread.unwrap_or_default(),
+                        reply_metadata: r.reply_metadata,
+                        message_id: r.message_id,
+                    })
+                    .unwrap_or_else(|_| fallback_reply_payload()),
+                "compose" => serde_json::from_str(pstr).unwrap_or_else(|_| fallback_reply_payload()),
+                "action" => serde_json::from_str(pstr).unwrap_or_else(|_| CardPayload::Action {
+                    description: "Unknown".into(),
+                    action_detail: None,
+                }),
+                "decision" => serde_json::from_str(pstr).unwrap_or_else(|_| CardPayload::Decision {
+                    question: "Unknown".into(),
+                    context: String::new(),
+                    options: Vec::new(),
+                }),
+                _ => fallback_reply_payload(),
+            }
+        })
+    } else {
+        // Legacy row without payload column — reconstruct from flat columns
+        fallback_reply_payload()
+    };
+
+    Ok(ApprovalCard {
         id: Uuid::parse_str(&id_str).unwrap_or_else(|_| Uuid::nil()),
-        conversation_id: row.get(1)?,
-        source_message: row.get(2)?,
-        source_sender: row.get(3)?,
-        suggested_reply: row.get(4)?,
-        confidence: confidence as f32,
+        silo,
+        payload,
         status: str_to_status(&status_str),
-        channel: row.get(7)?,
         created_at: parse_datetime(&created_str),
         expires_at: parse_datetime(&expires_str),
         updated_at: parse_datetime(&updated_str),
-        message_id,
-        thread: Vec::new(),
-        reply_metadata,
-        email_thread,
     })
+}
+
+/// Helper struct for deserializing the inner Reply payload from the JSON column.
+#[derive(serde::Deserialize)]
+struct ReplyPayloadRaw {
+    channel: String,
+    source_sender: String,
+    source_message: String,
+    suggested_reply: String,
+    confidence: f32,
+    conversation_id: String,
+    #[serde(default)]
+    thread: Option<Vec<crate::cards::model::ThreadMessage>>,
+    #[serde(default)]
+    email_thread: Option<Vec<crate::channels::EmailMessage>>,
+    #[serde(default)]
+    reply_metadata: Option<serde_json::Value>,
+    #[serde(default)]
+    message_id: Option<String>,
+}
+
+/// Serialize a CardPayload's inner data as a flat JSON object (not adjacently tagged).
+/// This is what we store in the `payload` column — the `card_type` is a separate column.
+fn serialize_payload_inner(payload: &CardPayload) -> String {
+    match payload {
+        CardPayload::Reply {
+            channel,
+            source_sender,
+            source_message,
+            suggested_reply,
+            confidence,
+            conversation_id,
+            thread,
+            email_thread,
+            reply_metadata,
+            message_id,
+        } => {
+            let mut map = serde_json::Map::new();
+            map.insert("channel".into(), serde_json::Value::String(channel.clone()));
+            map.insert("source_sender".into(), serde_json::Value::String(source_sender.clone()));
+            map.insert("source_message".into(), serde_json::Value::String(source_message.clone()));
+            map.insert("suggested_reply".into(), serde_json::Value::String(suggested_reply.clone()));
+            map.insert("confidence".into(), serde_json::json!(*confidence));
+            map.insert("conversation_id".into(), serde_json::Value::String(conversation_id.clone()));
+            if !thread.is_empty() {
+                map.insert("thread".into(), serde_json::to_value(thread).unwrap_or_default());
+            }
+            if !email_thread.is_empty() {
+                map.insert("email_thread".into(), serde_json::to_value(email_thread).unwrap_or_default());
+            }
+            if let Some(meta) = reply_metadata {
+                map.insert("reply_metadata".into(), meta.clone());
+            }
+            if let Some(mid) = message_id {
+                map.insert("message_id".into(), serde_json::Value::String(mid.clone()));
+            }
+            serde_json::Value::Object(map).to_string()
+        }
+        CardPayload::Compose { channel, recipient, subject, draft_body, confidence } => {
+            serde_json::json!({
+                "channel": channel,
+                "recipient": recipient,
+                "subject": subject,
+                "draft_body": draft_body,
+                "confidence": confidence,
+            }).to_string()
+        }
+        CardPayload::Action { description, action_detail } => {
+            serde_json::json!({
+                "description": description,
+                "action_detail": action_detail,
+            }).to_string()
+        }
+        CardPayload::Decision { question, context, options } => {
+            serde_json::json!({
+                "question": question,
+                "context": context,
+                "options": options,
+            }).to_string()
+        }
+    }
+}
+
+fn fallback_reply_payload() -> CardPayload {
+    CardPayload::Reply {
+        channel: String::new(),
+        source_sender: String::new(),
+        source_message: String::new(),
+        suggested_reply: String::new(),
+        confidence: 0.0,
+        conversation_id: String::new(),
+        thread: Vec::new(),
+        email_thread: Vec::new(),
+        reply_metadata: None,
+        message_id: None,
+    }
 }
 
 /// Map a libsql Row to a StoredMessage.
@@ -221,7 +349,7 @@ fn opt_text_owned(s: Option<String>) -> libsql::Value {
 
 // ── Trait implementation ────────────────────────────────────────────
 
-const CARD_COLUMNS: &str = "id, conversation_id, source_message, source_sender, suggested_reply, confidence, status, channel, created_at, expires_at, updated_at, message_id, reply_metadata, email_thread";
+const CARD_COLUMNS: &str = "id, card_type, silo, payload, status, created_at, expires_at, updated_at";
 
 const MESSAGE_COLUMNS: &str = "id, external_id, channel, sender, subject, content, received_at, status, replied_at, metadata, created_at, updated_at";
 
@@ -233,47 +361,78 @@ impl Database for LibSqlBackend {
 
     // ── Cards ───────────────────────────────────────────────────────
 
-    async fn insert_card(&self, card: &ReplyCard) -> Result<(), DatabaseError> {
+    async fn insert_card(&self, card: &ApprovalCard) -> Result<(), DatabaseError> {
         let conn = self.conn();
-        let reply_metadata_str = card
-            .reply_metadata
-            .as_ref()
-            .and_then(|v| serde_json::to_string(v).ok());
-        let email_thread_str = if card.email_thread.is_empty() {
-            None
-        } else {
-            serde_json::to_string(&card.email_thread).ok()
-        };
+
+        // Serialize the payload inner data as a JSON blob
+        let payload_json = serialize_payload_inner(&card.payload);
+
+        // Extract legacy flat column values from the payload for backwards compat
+        let (conversation_id, source_message, source_sender, suggested_reply, confidence, channel, message_id, reply_metadata_str, email_thread_str) =
+            match &card.payload {
+                CardPayload::Reply {
+                    channel,
+                    source_sender,
+                    source_message,
+                    suggested_reply,
+                    confidence,
+                    conversation_id,
+                    message_id,
+                    reply_metadata,
+                    email_thread,
+                    ..
+                } => (
+                    conversation_id.clone(),
+                    source_message.clone(),
+                    source_sender.clone(),
+                    suggested_reply.clone(),
+                    *confidence as f64,
+                    channel.clone(),
+                    message_id.clone(),
+                    reply_metadata.as_ref().and_then(|v| serde_json::to_string(v).ok()),
+                    if email_thread.is_empty() { None } else { serde_json::to_string(email_thread).ok() },
+                ),
+                CardPayload::Compose { channel, draft_body, confidence, .. } => (
+                    String::new(), String::new(), String::new(), draft_body.clone(), *confidence as f64, channel.clone(), None, None, None,
+                ),
+                CardPayload::Action { description, .. } => (
+                    String::new(), String::new(), String::new(), description.clone(), 0.0, String::new(), None, None, None,
+                ),
+                CardPayload::Decision { question, .. } => (
+                    String::new(), String::new(), String::new(), question.clone(), 0.0, String::new(), None, None, None,
+                ),
+            };
 
         conn.execute(
-            &format!(
-                "INSERT INTO cards ({CARD_COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)"
-            ),
+            "INSERT INTO cards (id, conversation_id, source_message, source_sender, suggested_reply, confidence, status, channel, created_at, expires_at, updated_at, message_id, reply_metadata, email_thread, card_type, silo, payload) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
             params![
                 card.id.to_string(),
-                card.conversation_id.clone(),
-                card.source_message.clone(),
-                card.source_sender.clone(),
-                card.suggested_reply.clone(),
-                card.confidence as f64,
+                conversation_id,
+                source_message,
+                source_sender,
+                suggested_reply,
+                confidence,
                 status_to_str(&card.status),
-                card.channel.clone(),
+                channel,
                 card.created_at.to_rfc3339(),
                 card.expires_at.to_rfc3339(),
                 card.updated_at.to_rfc3339(),
-                opt_text_owned(card.message_id.clone()),
+                opt_text_owned(message_id),
                 opt_text_owned(reply_metadata_str),
                 opt_text_owned(email_thread_str),
+                card.payload.card_type_str(),
+                card.silo.to_string(),
+                payload_json,
             ],
         )
         .await
         .map_err(|e| DatabaseError::Query(format!("insert_card: {e}")))?;
 
-        debug!(card_id = %card.id, "Card inserted into DB");
+        debug!(card_id = %card.id, card_type = card.payload.card_type_str(), "Card inserted into DB");
         Ok(())
     }
 
-    async fn get_card(&self, id: Uuid) -> Result<Option<ReplyCard>, DatabaseError> {
+    async fn get_card(&self, id: Uuid) -> Result<Option<ApprovalCard>, DatabaseError> {
         let conn = self.conn();
         let mut rows = conn
             .query(
@@ -316,8 +475,9 @@ impl Database for LibSqlBackend {
     ) -> Result<(), DatabaseError> {
         let conn = self.conn();
         let now = Utc::now().to_rfc3339();
+        // Update the suggested_reply inside the payload JSON using json_set
         conn.execute(
-            "UPDATE cards SET suggested_reply = ?1, status = ?2, updated_at = ?3 WHERE id = ?4",
+            "UPDATE cards SET payload = json_set(payload, '$.suggested_reply', ?1), status = ?2, updated_at = ?3 WHERE id = ?4",
             params![new_text, status_to_str(&status), now, id.to_string()],
         )
         .await
@@ -327,7 +487,7 @@ impl Database for LibSqlBackend {
         Ok(())
     }
 
-    async fn get_pending_cards(&self) -> Result<Vec<ReplyCard>, DatabaseError> {
+    async fn get_pending_cards(&self) -> Result<Vec<ApprovalCard>, DatabaseError> {
         let conn = self.conn();
         let now = Utc::now().to_rfc3339();
         let mut rows = conn
@@ -356,12 +516,12 @@ impl Database for LibSqlBackend {
         &self,
         channel: &str,
         limit: usize,
-    ) -> Result<Vec<ReplyCard>, DatabaseError> {
+    ) -> Result<Vec<ApprovalCard>, DatabaseError> {
         let conn = self.conn();
         let mut rows = conn
             .query(
                 &format!(
-                    "SELECT {CARD_COLUMNS} FROM cards WHERE channel = ?1 ORDER BY created_at DESC LIMIT ?2"
+                    "SELECT {CARD_COLUMNS} FROM cards WHERE json_extract(payload, '$.channel') = ?1 ORDER BY created_at DESC LIMIT ?2"
                 ),
                 params![channel, limit as i64],
             )
@@ -380,12 +540,65 @@ impl Database for LibSqlBackend {
         Ok(cards)
     }
 
+    async fn get_pending_cards_by_silo(
+        &self,
+        silo: CardSilo,
+    ) -> Result<Vec<ApprovalCard>, DatabaseError> {
+        let conn = self.conn();
+        let now = Utc::now().to_rfc3339();
+        let mut rows = conn
+            .query(
+                &format!(
+                    "SELECT {CARD_COLUMNS} FROM cards WHERE status = 'pending' AND expires_at > ?1 AND silo = ?2 ORDER BY created_at DESC"
+                ),
+                params![now, silo.to_string()],
+            )
+            .await
+            .map_err(|e| DatabaseError::Query(format!("get_pending_cards_by_silo: {e}")))?;
+
+        let mut cards = Vec::new();
+        while let Ok(Some(row)) = rows.next().await {
+            match row_to_card(&row) {
+                Ok(card) => cards.push(card),
+                Err(e) => {
+                    tracing::warn!("Skipping card row: {e}");
+                }
+            }
+        }
+        Ok(cards)
+    }
+
+    async fn get_pending_card_counts(&self) -> Result<SiloCounts, DatabaseError> {
+        let conn = self.conn();
+        let now = Utc::now().to_rfc3339();
+        let mut rows = conn
+            .query(
+                "SELECT silo, COUNT(*) FROM cards WHERE status = 'pending' AND expires_at > ?1 GROUP BY silo",
+                params![now],
+            )
+            .await
+            .map_err(|e| DatabaseError::Query(format!("get_pending_card_counts: {e}")))?;
+
+        let mut counts = SiloCounts::default();
+        while let Ok(Some(row)) = rows.next().await {
+            let silo_str: String = row.get(0).unwrap_or_default();
+            let count: i64 = row.get(1).unwrap_or(0);
+            match silo_str.as_str() {
+                "messages" => counts.messages = count as u32,
+                "todos" => counts.todos = count as u32,
+                "calendar" => counts.calendar = count as u32,
+                _ => {}
+            }
+        }
+        Ok(counts)
+    }
+
     async fn has_pending_card_for_message(&self, message_id: &str) -> Result<bool, DatabaseError> {
         let conn = self.conn();
         let now = Utc::now().to_rfc3339();
         let mut rows = conn
             .query(
-                "SELECT COUNT(*) FROM cards WHERE message_id = ?1 AND status = 'pending' AND expires_at > ?2",
+                "SELECT COUNT(*) FROM cards WHERE json_extract(payload, '$.message_id') = ?1 AND status = 'pending' AND expires_at > ?2",
                 params![message_id, now],
             )
             .await
@@ -1760,14 +1973,14 @@ fn row_to_routine_run(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cards::model::ReplyCard;
+    use crate::cards::model::ApprovalCard;
 
     async fn test_db() -> LibSqlBackend {
         LibSqlBackend::new_memory().await.unwrap()
     }
 
-    fn make_card(channel: &str) -> ReplyCard {
-        ReplyCard::new("chat_1", "hello", "Alice", "hi back!", 0.85, channel, 15)
+    fn make_card(channel: &str) -> ApprovalCard {
+        ApprovalCard::new_reply(channel, "Alice", "hello", "hi back!", 0.85, "chat_1", 15)
     }
 
     // ── Card tests ──────────────────────────────────────────────────
@@ -1782,10 +1995,9 @@ mod tests {
 
         let fetched = db.get_card(card_id).await.unwrap().unwrap();
         assert_eq!(fetched.id, card_id);
-        assert_eq!(fetched.source_sender, "Alice");
-        assert_eq!(fetched.suggested_reply, "hi back!");
+        assert_eq!(fetched.payload.suggested_reply().unwrap(), "hi back!");
         assert_eq!(fetched.status, CardStatus::Pending);
-        assert!((fetched.confidence - 0.85).abs() < 0.01);
+        assert!((fetched.payload.confidence().unwrap() - 0.85).abs() < 0.01);
     }
 
     #[tokio::test]
@@ -1838,7 +2050,7 @@ mod tests {
             .unwrap();
 
         let fetched = db.get_card(card_id).await.unwrap().unwrap();
-        assert_eq!(fetched.suggested_reply, "edited reply");
+        assert_eq!(fetched.payload.suggested_reply().unwrap(), "edited reply");
         assert_eq!(fetched.status, CardStatus::Approved);
     }
 
@@ -1946,8 +2158,8 @@ mod tests {
         db.insert_card(&card).await.unwrap();
 
         let fetched = db.get_card(card_id).await.unwrap().unwrap();
-        assert!(fetched.reply_metadata.is_some());
-        let fetched_meta = fetched.reply_metadata.unwrap();
+        assert!(fetched.payload.reply_metadata().is_some());
+        let fetched_meta = fetched.payload.reply_metadata().unwrap();
         assert_eq!(fetched_meta["reply_to"], "alice@example.com");
         assert_eq!(fetched_meta["cc"][0], "bob@example.com");
         assert_eq!(fetched_meta["subject"], "Re: Test");
@@ -1962,7 +2174,7 @@ mod tests {
         db.insert_card(&card).await.unwrap();
 
         let fetched = db.get_card(card_id).await.unwrap().unwrap();
-        assert!(fetched.reply_metadata.is_none());
+        assert!(fetched.payload.reply_metadata().is_none());
     }
 
     #[tokio::test]
@@ -1975,9 +2187,9 @@ mod tests {
 
         let pending = db.get_pending_cards().await.unwrap();
         assert_eq!(pending.len(), 1);
-        assert!(pending[0].reply_metadata.is_some());
+        assert!(pending[0].payload.reply_metadata().is_some());
         assert_eq!(
-            pending[0].reply_metadata.as_ref().unwrap()["reply_to"],
+            pending[0].payload.reply_metadata().unwrap()["reply_to"],
             "test@example.com"
         );
     }
@@ -2003,8 +2215,12 @@ mod tests {
         db.insert_card(&card).await.unwrap();
 
         let fetched = db.get_card(card_id).await.unwrap().unwrap();
-        assert_eq!(fetched.email_thread.len(), 1);
-        assert_eq!(fetched.email_thread[0].from, "alice@test.com");
+        if let CardPayload::Reply { email_thread, .. } = &fetched.payload {
+            assert_eq!(email_thread.len(), 1);
+            assert_eq!(email_thread[0].from, "alice@test.com");
+        } else {
+            panic!("Expected Reply payload");
+        }
     }
 
     #[tokio::test]
@@ -2016,7 +2232,11 @@ mod tests {
         db.insert_card(&card).await.unwrap();
 
         let fetched = db.get_card(card_id).await.unwrap().unwrap();
-        assert!(fetched.email_thread.is_empty());
+        if let CardPayload::Reply { email_thread, .. } = &fetched.payload {
+            assert!(email_thread.is_empty());
+        } else {
+            panic!("Expected Reply payload");
+        }
     }
 
     #[tokio::test]

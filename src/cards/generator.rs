@@ -7,7 +7,7 @@ use tracing::{debug, error, info, warn};
 use crate::error::LlmError;
 use crate::llm::provider::{ChatMessage, CompletionRequest, LlmProvider};
 
-use super::model::ReplyCard;
+use super::model::{ApprovalCard, CardPayload};
 use super::queue::CardQueue;
 
 /// Configuration for card generation.
@@ -93,7 +93,7 @@ impl CardGenerator {
         thread: Vec<super::model::ThreadMessage>,
         reply_metadata: Option<serde_json::Value>,
         email_thread: Vec<crate::channels::EmailMessage>,
-    ) -> Result<Vec<ReplyCard>, LlmError> {
+    ) -> Result<Vec<ApprovalCard>, LlmError> {
         if !self.should_generate(source_message, sender, chat_id) {
             return Ok(vec![]);
         }
@@ -145,37 +145,34 @@ impl CardGenerator {
 
         // Sort by confidence descending, take only the best one
         cards.sort_by(|a, b| {
-            b.confidence
-                .partial_cmp(&a.confidence)
-                .unwrap_or(std::cmp::Ordering::Equal)
+            let ac = a.payload.confidence().unwrap_or(0.0);
+            let bc = b.payload.confidence().unwrap_or(0.0);
+            bc.partial_cmp(&ac).unwrap_or(std::cmp::Ordering::Equal)
         });
         cards.truncate(1);
 
-        // Link to tracked message if provided
-        if let Some(mid) = message_id {
-            for card in &mut cards {
-                card.message_id = Some(mid.to_string());
-            }
-        }
-
-        // Attach email thread context
-        if !thread.is_empty() {
-            for card in &mut cards {
-                card.thread = thread.clone();
-            }
-        }
-
-        // Attach reply metadata for sending replies
-        if let Some(ref meta) = reply_metadata {
-            for card in &mut cards {
-                card.reply_metadata = Some(meta.clone());
-            }
-        }
-
-        // Attach email thread with full headers
-        if !email_thread.is_empty() {
-            for card in &mut cards {
-                card.email_thread = email_thread.clone();
+        // Enrich reply payload with additional context
+        for card in &mut cards {
+            if let CardPayload::Reply {
+                message_id: ref mut mid,
+                thread: ref mut t,
+                reply_metadata: ref mut rm,
+                email_thread: ref mut et,
+                ..
+            } = card.payload
+            {
+                if let Some(m) = message_id {
+                    *mid = Some(m.to_string());
+                }
+                if !thread.is_empty() {
+                    *t = thread.clone();
+                }
+                if let Some(ref meta) = reply_metadata {
+                    *rm = Some(meta.clone());
+                }
+                if !email_thread.is_empty() {
+                    *et = email_thread.clone();
+                }
             }
         }
 
@@ -198,7 +195,7 @@ impl CardGenerator {
     /// Returns (new_suggested_reply, confidence).
     pub async fn refine_card(
         &self,
-        card: &ReplyCard,
+        card: &ApprovalCard,
         instruction: &str,
     ) -> Result<(String, f32), LlmError> {
         info!(
@@ -213,16 +210,35 @@ impl CardGenerator {
              append to or minimally edit the existing draft. \
              Output ONLY the new reply text — no explanation, no JSON, no quotes.";
 
-        // Build context including thread if available
+        // Build context from the Reply payload
+        let (source_sender, source_message, draft, email_thread) = match &card.payload {
+            CardPayload::Reply {
+                source_sender,
+                source_message,
+                suggested_reply,
+                email_thread,
+                ..
+            } => (
+                source_sender.as_str(),
+                source_message.as_str(),
+                suggested_reply.as_str(),
+                email_thread.as_slice(),
+            ),
+            _ => return Err(LlmError::InvalidResponse {
+                provider: "refine".into(),
+                reason: "Can only refine Reply cards".into(),
+            }),
+        };
+
         let mut context = format!(
             "Original message from {sender}: \"{message}\"",
-            sender = card.source_sender,
-            message = card.source_message,
+            sender = source_sender,
+            message = source_message,
         );
 
-        if !card.email_thread.is_empty() {
+        if !email_thread.is_empty() {
             context.push_str("\n\nEmail thread context:");
-            for msg in &card.email_thread {
+            for msg in email_thread {
                 context.push_str(&format!(
                     "\n  From {}: \"{}\"",
                     msg.from,
@@ -234,7 +250,7 @@ impl CardGenerator {
         let user_prompt = format!(
             "{context}\n\nCurrent draft reply: \"{draft}\"\n\nUser instruction: {instruction}",
             context = context,
-            draft = card.suggested_reply,
+            draft = draft,
             instruction = instruction,
         );
 
@@ -257,7 +273,7 @@ impl CardGenerator {
         Ok((refined_text, confidence))
     }
 
-    /// Parse LLM response JSON into ReplyCard objects.
+    /// Parse LLM response JSON into ApprovalCard objects.
     fn parse_suggestions(
         &self,
         llm_response: &str,
@@ -265,7 +281,7 @@ impl CardGenerator {
         sender: &str,
         chat_id: &str,
         channel: &str,
-    ) -> Vec<ReplyCard> {
+    ) -> Vec<ApprovalCard> {
         // Try to extract JSON array from response (LLM might wrap in markdown)
         let json_str = extract_json_array(llm_response);
 
@@ -286,13 +302,13 @@ impl CardGenerator {
             .take(self.config.max_suggestions)
             .filter(|s| !s.text.trim().is_empty())
             .map(|s| {
-                ReplyCard::new(
-                    chat_id,
-                    source_message,
+                ApprovalCard::new_reply(
+                    channel,
                     sender,
+                    source_message,
                     s.text,
                     s.confidence,
-                    channel,
+                    chat_id,
                     self.config.expire_minutes,
                 )
             })

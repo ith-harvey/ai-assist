@@ -17,7 +17,7 @@ use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use super::generator::CardGenerator;
-use super::model::{CardAction, ReplyCard, WsMessage};
+use super::model::{ApprovalCard, CardAction, CardPayload, WsMessage};
 use super::queue::CardQueue;
 use crate::channels::email::{EmailConfig, send_reply_email};
 
@@ -161,7 +161,7 @@ async fn handle_client_message(
         Ok(action) => match action {
             CardAction::Approve { card_id } => {
                 if let Some(card) = queue.approve(card_id).await {
-                    info!(card_id = %card_id, reply = %card.suggested_reply, "Card approved via WS");
+                    info!(card_id = %card_id, reply = ?card.payload.suggested_reply(), "Card approved via WS");
                     send_card_reply(&card, email_config, queue).await;
                 } else {
                     warn!(card_id = %card_id, "Approve failed — card not found or not pending");
@@ -176,7 +176,7 @@ async fn handle_client_message(
             }
             CardAction::Edit { card_id, new_text } => {
                 if let Some(card) = queue.edit(card_id, new_text).await {
-                    info!(card_id = %card_id, reply = %card.suggested_reply, "Card edited and approved via WS");
+                    info!(card_id = %card_id, reply = ?card.payload.suggested_reply(), "Card edited and approved via WS");
                     send_card_reply(&card, email_config, queue).await;
                 } else {
                     warn!(card_id = %card_id, "Edit failed — card not found or not pending");
@@ -200,31 +200,36 @@ async fn handle_client_message(
 ///
 /// For email cards with reply_metadata, sends a reply-all email with threading headers.
 /// Marks the card as sent on success.
-async fn send_card_reply(card: &ReplyCard, email_config: Option<&EmailConfig>, queue: &CardQueue) {
-    if card.channel == "email" {
-        if let (Some(config), Some(meta)) = (email_config, &card.reply_metadata) {
-            match send_reply_email(config, meta, &card.suggested_reply) {
-                Ok(()) => {
-                    queue.mark_sent(card.id).await;
-                    info!(card_id = %card.id, "Reply email sent successfully");
+async fn send_card_reply(card: &ApprovalCard, email_config: Option<&EmailConfig>, queue: &CardQueue) {
+    if let CardPayload::Reply { ref channel, ref reply_metadata, ref suggested_reply, .. } = card.payload {
+        if channel == "email" {
+            if let (Some(config), Some(meta)) = (email_config, reply_metadata) {
+                match send_reply_email(config, meta, suggested_reply) {
+                    Ok(()) => {
+                        queue.mark_sent(card.id).await;
+                        info!(card_id = %card.id, "Reply email sent successfully");
+                    }
+                    Err(e) => {
+                        tracing::error!(card_id = %card.id, error = %e, "Failed to send reply email");
+                    }
                 }
-                Err(e) => {
-                    tracing::error!(card_id = %card.id, error = %e, "Failed to send reply email");
-                }
+            } else {
+                warn!(
+                    card_id = %card.id,
+                    "Cannot send email reply — missing email config or reply_metadata"
+                );
             }
         } else {
-            warn!(
+            // Non-email channels: log for now
+            info!(
                 card_id = %card.id,
-                "Cannot send email reply — missing email config or reply_metadata"
+                channel = %channel,
+                "Card approved on non-email channel — reply not sent (not yet wired)"
             );
         }
     } else {
-        // Non-email channels: log for now (Telegram/other channels use the agent's respond path)
-        info!(
-            card_id = %card.id,
-            channel = %card.channel,
-            "Card approved on non-email channel — reply not sent (not yet wired)"
-        );
+        // Non-reply card types — approval doesn't trigger sending
+        info!(card_id = %card.id, card_type = card.card_type_str(), "Non-reply card approved");
     }
 }
 
@@ -389,13 +394,13 @@ async fn create_test_card(
     State(state): State<AppState>,
     Json(body): Json<TestCardRequest>,
 ) -> impl IntoResponse {
-    let card = ReplyCard::new(
-        "chat_test",
-        body.message,
+    let card = ApprovalCard::new_reply(
+        body.channel,
         body.sender,
+        body.message,
         body.reply,
         body.confidence,
-        body.channel,
+        "chat_test",
         15,
     );
     let card_id = card.id;
