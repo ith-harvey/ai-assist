@@ -42,39 +42,52 @@ public struct TodoListView: View {
     // MARK: - Todo List
 
     private var todoList: some View {
-        ScrollView {
-            LazyVStack(spacing: 10) {
-                // Active section
-                if !todoSocket.activeTodos.isEmpty {
-                    sectionHeader("Active")
+        List {
+            // Active section
+            if !todoSocket.activeTodos.isEmpty {
+                Section {
                     ForEach(todoSocket.activeTodos) { todo in
                         todoCard(todo)
+                            .listRowSeparator(.hidden)
+                            .listRowBackground(Color.clear)
+                            .listRowInsets(EdgeInsets(top: 5, leading: 14, bottom: 5, trailing: 14))
                     }
+                } header: {
+                    sectionHeader("Active")
                 }
+            }
 
-                // Snoozed section
-                if !todoSocket.snoozedTodos.isEmpty {
-                    sectionHeader("Snoozed")
-                        .padding(.top, 8)
+            // Snoozed section
+            if !todoSocket.snoozedTodos.isEmpty {
+                Section {
                     ForEach(todoSocket.snoozedTodos) { todo in
                         todoCard(todo)
+                            .listRowSeparator(.hidden)
+                            .listRowBackground(Color.clear)
+                            .listRowInsets(EdgeInsets(top: 5, leading: 14, bottom: 5, trailing: 14))
                     }
+                } header: {
+                    sectionHeader("Snoozed")
                 }
+            }
 
-                // Completed section (collapsible)
-                if !todoSocket.completedTodos.isEmpty {
-                    completedSectionHeader
-                        .padding(.top, 8)
+            // Completed section (collapsible)
+            if !todoSocket.completedTodos.isEmpty {
+                Section {
                     if showCompleted {
                         ForEach(todoSocket.completedTodos) { todo in
                             todoCard(todo)
+                                .listRowSeparator(.hidden)
+                                .listRowBackground(Color.clear)
+                                .listRowInsets(EdgeInsets(top: 5, leading: 14, bottom: 5, trailing: 14))
                         }
                     }
+                } header: {
+                    completedSectionHeader
                 }
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
         }
+        .listStyle(.plain)
         #if os(iOS)
         .scrollDismissesKeyboard(.interactively)
         #endif
@@ -164,9 +177,23 @@ public struct TodoListView: View {
                 expandedTodoId = isCollapsing ? nil : todo.id
             }
         }
-        // Swipe actions only on collapsed rows via context menu actions
-        // (ScrollView doesn't support .swipeActions — use overlay buttons or
-        //  leave swipe for a future List-based implementation)
+        // Right swipe — complete
+        .swipeActions(edge: .leading) {
+            Button {
+                // TODO: Mark todo complete via WebSocket
+            } label: {
+                Label("Complete", systemImage: "checkmark.circle.fill")
+            }
+            .tint(.green)
+        }
+        // Left swipe — delete
+        .swipeActions(edge: .trailing) {
+            Button(role: .destructive) {
+                // TODO: Delete todo via WebSocket
+            } label: {
+                Label("Delete", systemImage: "trash.fill")
+            }
+        }
     }
 
     // MARK: - Approval Badge
@@ -288,13 +315,7 @@ struct TodoExpandedDetail: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            // Description first if present
-            if let description = todo.description, !description.isEmpty {
-                Text(description)
-                    .font(.subheadline)
-                    .foregroundStyle(.primary)
-                    .padding(.bottom, 4)
-            }
+            // Metadata first — immediately under title
 
             // Status
             detailRow(label: "Status", icon: todo.status.iconName) {
@@ -308,6 +329,12 @@ struct TodoExpandedDetail: View {
                 icon: todo.bucket == .agentStartable ? "cpu" : "person.fill"
             ) {
                 Text(todo.bucket == .agentStartable ? "🤖 AI can start this" : "👤 Waiting on you")
+                    .foregroundStyle(.primary)
+            }
+
+            // Created
+            detailRow(label: "Created", icon: "clock.arrow.circlepath") {
+                Text(formatCreatedDate(todo.createdAt))
                     .foregroundStyle(.primary)
             }
 
@@ -326,10 +353,15 @@ struct TodoExpandedDetail: View {
                 }
             }
 
-            // Created
-            detailRow(label: "Created", icon: "clock.arrow.circlepath") {
-                Text(formatCreatedDate(todo.createdAt))
+            // Divider between metadata and description
+            Divider()
+
+            // Description
+            if let description = todo.description, !description.isEmpty {
+                Text(description)
+                    .font(.subheadline)
                     .foregroundStyle(.primary)
+                    .padding(.bottom, 2)
             }
 
             // Source card
