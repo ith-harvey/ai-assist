@@ -120,7 +120,7 @@ todos=(
   "{\"Create\":{\"title\":\"Fix Stellar fee rounding bug\",\"description\":\"Luca flagged failing integration tests on the fee calculation path. Check the rounding logic in the stablecoin transfer module.\",\"todo_type\":\"deliverable\",\"bucket\":\"human_only\",\"due_date\":\"${tomorrow}\",\"context\":\"M0 release blocker — needs fix before Thursday cut\"}}"
 
   # Research — agent can start
-  "{\"Create\":{\"title\":\"Research Nashville flights for Joey's bachelor party\",\"description\":\"Check Southwest and Frontier from LAS to BNA, March 15-17. Budget ~$400 for airfare. Send options to Joey.\",\"todo_type\":\"research\",\"bucket\":\"agent_startable\",\"due_date\":\"${tomorrow}\",\"context\":\"Joey asked via email — wants response by tomorrow\"}}"
+  "{\"Create\":{\"title\":\"Research Nashville flights for Joey's bachelor party\",\"description\":\"Check Southwest and Frontier from LAS to BNA, March 15-17. Budget ~\$400 for airfare. Send options to Joey.\",\"todo_type\":\"research\",\"bucket\":\"agent_startable\",\"due_date\":\"${tomorrow}\",\"context\":\"Joey asked via email — wants response by tomorrow\"}}"
 
   # Errand — personal
   "{\"Create\":{\"title\":\"Pick up groceries from Whole Foods\",\"description\":\"Milk, eggs, sourdough bread. Christina asked.\",\"todo_type\":\"errand\",\"bucket\":\"human_only\",\"due_date\":\"${tomorrow}\"}}"
