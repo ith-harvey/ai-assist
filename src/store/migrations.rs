@@ -187,6 +187,33 @@ static MIGRATIONS: &[Migration] = &[
             CREATE INDEX IF NOT EXISTS idx_llm_calls_created ON llm_calls(created_at);
         "#,
     },
+    Migration {
+        version: 5,
+        name: "todos",
+        sql: r#"
+            CREATE TABLE IF NOT EXISTS todos (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                title TEXT NOT NULL,
+                description TEXT,
+                todo_type TEXT NOT NULL,
+                bucket TEXT NOT NULL DEFAULT 'human_only',
+                status TEXT NOT NULL DEFAULT 'created',
+                priority INTEGER NOT NULL DEFAULT 0,
+                due_date TEXT,
+                context TEXT,
+                source_card_id TEXT,
+                snoozed_until TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_todos_status ON todos(status);
+            CREATE INDEX IF NOT EXISTS idx_todos_priority ON todos(priority);
+            CREATE INDEX IF NOT EXISTS idx_todos_due_date ON todos(due_date);
+            CREATE INDEX IF NOT EXISTS idx_todos_todo_type ON todos(todo_type);
+            CREATE INDEX IF NOT EXISTS idx_todos_user_id ON todos(user_id);
+        "#,
+    },
 ];
 
 /// Run all pending migrations against the given connection.
@@ -361,7 +388,7 @@ mod tests {
         let conn = test_conn().await;
         run_migrations(&conn).await.unwrap();
 
-        // Check all tables exist (V1 + V2 + V3)
+        // Check all tables exist (V1 + V2 + V3 + V5)
         for table in &[
             "cards",
             "messages",
@@ -372,6 +399,7 @@ mod tests {
             "routine_runs",
             "settings",
             "llm_calls",
+            "todos",
         ] {
             let mut rows = conn
                 .query(
@@ -395,7 +423,7 @@ mod tests {
 
         // Version should be at the latest migration
         let version = get_current_version(&conn).await.unwrap();
-        assert_eq!(version, 4);
+        assert_eq!(version, 5);
     }
 
     #[tokio::test]
@@ -439,9 +467,9 @@ mod tests {
         // Now run migrations — should detect legacy, seed V1, then apply V2+V3
         run_migrations(&conn).await.unwrap();
 
-        // Verify all migrations applied (legacy seed V1 + V2 routines + V3 llm_calls)
+        // Verify all migrations applied (legacy seed V1 + V2 routines + V3 llm_calls + V5 todos)
         let version = get_current_version(&conn).await.unwrap();
-        assert_eq!(version, 4);
+        assert_eq!(version, 5);
 
         // Verify conversation tables were created
         let mut rows = conn
@@ -490,5 +518,17 @@ mod tests {
         let n3: String = row3.get(1).unwrap();
         assert_eq!(v3, 3);
         assert_eq!(n3, "llm_call_tracking");
+
+        let row4 = rows.next().await.unwrap().unwrap();
+        let v4: i64 = row4.get(0).unwrap();
+        let n4: String = row4.get(1).unwrap();
+        assert_eq!(v4, 4);
+        assert_eq!(n4, "relax_llm_calls_fk");
+
+        let row5 = rows.next().await.unwrap().unwrap();
+        let v5: i64 = row5.get(0).unwrap();
+        let n5: String = row5.get(1).unwrap();
+        assert_eq!(v5, 5);
+        assert_eq!(n5, "todos");
     }
 }

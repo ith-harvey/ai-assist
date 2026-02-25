@@ -10,6 +10,7 @@ use uuid::Uuid;
 
 use crate::cards::model::{CardStatus, ReplyCard};
 use crate::error::DatabaseError;
+use crate::todos::model::{TodoItem, TodoStatus};
 
 /// A conversation message from the database.
 #[derive(Debug, Clone)]
@@ -353,4 +354,34 @@ pub trait Database: Send + Sync {
 
     /// Delete a setting.
     async fn delete_setting(&self, user_id: &str, key: &str) -> Result<bool, DatabaseError>;
+
+    // ── Todos ───────────────────────────────────────────────────────
+
+    /// Create a new todo item.
+    async fn create_todo(&self, todo: &TodoItem) -> Result<(), DatabaseError>;
+
+    /// Get a todo by ID.
+    async fn get_todo(&self, id: Uuid) -> Result<Option<TodoItem>, DatabaseError>;
+
+    /// List all todos for a user, sorted by priority ascending.
+    async fn list_todos(&self, user_id: &str) -> Result<Vec<TodoItem>, DatabaseError>;
+
+    /// List todos filtered by status, sorted by priority ascending.
+    async fn list_todos_by_status(
+        &self,
+        user_id: &str,
+        status: TodoStatus,
+    ) -> Result<Vec<TodoItem>, DatabaseError>;
+
+    /// Update a todo (full replace of mutable fields).
+    async fn update_todo(&self, todo: &TodoItem) -> Result<(), DatabaseError>;
+
+    /// Update only the status of a todo.
+    async fn update_todo_status(&self, id: Uuid, status: TodoStatus) -> Result<(), DatabaseError>;
+
+    /// Mark a todo as completed (sets status + updated_at).
+    async fn complete_todo(&self, id: Uuid) -> Result<(), DatabaseError>;
+
+    /// Delete a todo. Returns true if a row was deleted.
+    async fn delete_todo(&self, id: Uuid) -> Result<bool, DatabaseError>;
 }
