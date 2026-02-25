@@ -12,6 +12,7 @@ public struct TodoListView: View {
     @State private var todoSocket = TodoWebSocket()
     @State private var showCompleted = false
     @State private var expandedTodoId: UUID?
+    @State private var activityTodo: TodoItem?
 
     public init() {}
 
@@ -39,6 +40,9 @@ public struct TodoListView: View {
             }
         }
         #endif
+        .navigationDestination(item: $activityTodo) { todo in
+            TodoActivityView(todo: todo)
+        }
         .onAppear {
             todoSocket.connect()
         }
@@ -154,6 +158,32 @@ public struct TodoListView: View {
                     .padding(.horizontal, 14)
                     .padding(.top, 4)
                     .padding(.bottom, 4)
+
+                // Activity view link for agent-startable todos
+                if todo.bucket == .agentStartable {
+                    Button {
+                        activityTodo = todo
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "waveform.path.ecg")
+                                .font(.system(size: 13))
+                            Text("View Activity")
+                                .font(.system(size: 13, weight: .medium))
+                        }
+                        .foregroundStyle(.blue)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 8)
+                        #if os(iOS)
+                        .background(Color(uiColor: .systemGray6))
+                        #else
+                        .background(Color.gray.opacity(0.1))
+                        #endif
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.horizontal, 14)
+                    .padding(.top, 2)
+                }
 
                 TodoInlineInputBar()
                     .padding(.horizontal, 10)
