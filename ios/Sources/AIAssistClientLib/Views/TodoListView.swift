@@ -16,7 +16,15 @@ public struct TodoListView: View {
     public init() {}
 
     public var body: some View {
-        VStack(spacing: 0) {
+        ZStack {
+            #if os(iOS)
+            Color(uiColor: .secondarySystemBackground)
+                .ignoresSafeArea()
+            #else
+            Color.gray.opacity(0.08)
+                .ignoresSafeArea()
+            #endif
+
             if todoSocket.activeTodos.isEmpty && todoSocket.completedTodos.isEmpty {
                 emptyState
             } else {
@@ -27,7 +35,7 @@ public struct TodoListView: View {
         #if os(iOS)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                approvalBadge
+                ApprovalBellBadge(count: todoSocket.approvalCount)
             }
         }
         #endif
@@ -88,6 +96,7 @@ public struct TodoListView: View {
             }
         }
         .listStyle(.plain)
+        .scrollContentBackground(.hidden)
         #if os(iOS)
         .scrollDismissesKeyboard(.interactively)
         #endif
@@ -192,30 +201,6 @@ public struct TodoListView: View {
                 // TODO: Delete todo via WebSocket
             } label: {
                 Label("Delete", systemImage: "trash.fill")
-            }
-        }
-    }
-
-    // MARK: - Approval Badge
-
-    private var approvalBadge: some View {
-        Button {
-            // Placeholder — will open approval overlay
-        } label: {
-            ZStack(alignment: .topTrailing) {
-                Image(systemName: "bell.fill")
-                    .font(.system(size: 18))
-                    .foregroundStyle(.primary)
-
-                if todoSocket.approvalCount > 0 {
-                    Text("\(todoSocket.approvalCount)")
-                        .font(.system(size: 11, weight: .bold))
-                        .foregroundStyle(.white)
-                        .frame(minWidth: 18, minHeight: 18)
-                        .background(Color.red)
-                        .clipShape(Circle())
-                        .offset(x: 8, y: -8)
-                }
             }
         }
     }

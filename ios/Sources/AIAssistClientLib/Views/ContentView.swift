@@ -67,12 +67,16 @@ public struct ContentView: View {
                 }
                 #endif
                 ToolbarItem(placement: .primaryAction) {
-                    Button {
-                        hostInput = socket.host
-                        portInput = String(socket.port)
-                        showSettings = true
-                    } label: {
-                        Image(systemName: "gearshape")
+                    HStack(spacing: 12) {
+                        ApprovalBellBadge(count: socket.cards.count)
+
+                        Button {
+                            hostInput = socket.host
+                            portInput = String(socket.port)
+                            showSettings = true
+                        } label: {
+                            Image(systemName: "gearshape")
+                        }
                     }
                 }
             }
