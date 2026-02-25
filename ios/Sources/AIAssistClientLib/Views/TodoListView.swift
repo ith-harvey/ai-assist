@@ -150,16 +150,10 @@ public struct TodoListView: View {
                 .padding(.vertical, 10)
 
             if isExpanded {
-                Divider()
-                    .padding(.horizontal, 14)
-
                 TodoExpandedDetail(todo: todo)
                     .padding(.horizontal, 14)
-                    .padding(.top, 8)
+                    .padding(.top, 4)
                     .padding(.bottom, 4)
-
-                Divider()
-                    .padding(.horizontal, 14)
 
                 TodoInlineInputBar()
                     .padding(.horizontal, 10)
@@ -337,9 +331,6 @@ struct TodoExpandedDetail: View {
                     }
                 }
             }
-
-            // Divider between metadata and description
-            Divider()
 
             // Description
             if let description = todo.description, !description.isEmpty {
