@@ -7,10 +7,12 @@ import Observation
 public final class CardWebSocket: @unchecked Sendable {
     // MARK: - Published state
 
-    public var cards: [ReplyCard] = []
+    public var cards: [ApprovalCard] = []
     public var isConnected: Bool = false
     /// True while waiting for a `card_refreshed` response after a refine action.
     public var isRefining: Bool = false
+    /// Live silo counts from the server (for tab badges).
+    public var siloCounts = SiloCounts()
 
     // MARK: - Configuration
 
@@ -29,6 +31,13 @@ public final class CardWebSocket: @unchecked Sendable {
         self.host = host
         self.port = port
         self.session = URLSession(configuration: .default)
+    }
+
+    // MARK: - Filtered Accessors
+
+    /// Cards belonging to a specific silo.
+    public func cards(for silo: CardSilo) -> [ApprovalCard] {
+        cards.filter { $0.silo == silo }
     }
 
     // MARK: - Connection
@@ -125,6 +134,8 @@ public final class CardWebSocket: @unchecked Sendable {
                     cards.insert(card, at: 0)
                 }
             }
+        case .siloCounts(let counts):
+            siloCounts = counts
         case .ping:
             break
         }

@@ -4,10 +4,10 @@ import SwiftUI
 
 /// Displays a single reply suggestion card.
 public struct CardView: View {
-    let card: ReplyCard
+    let card: ApprovalCard
     let dragOffset: CGFloat
 
-    public init(card: ReplyCard, dragOffset: CGFloat) {
+    public init(card: ApprovalCard, dragOffset: CGFloat) {
         self.card = card
         self.dragOffset = dragOffset
     }

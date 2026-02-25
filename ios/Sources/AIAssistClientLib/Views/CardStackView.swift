@@ -114,7 +114,7 @@ public struct CardStackView: View {
 
     // MARK: - Gestures
 
-    private func dragGesture(for card: ReplyCard) -> some Gesture {
+    private func dragGesture(for card: ApprovalCard) -> some Gesture {
         DragGesture()
             .onChanged { value in
                 dragOffset = value.translation
