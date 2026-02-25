@@ -122,7 +122,7 @@ create_todo "{\"title\":\"Confirm Friday electrician appointment\",\"description
   "Confirm electrician"
 
 echo ""
-echo "🌱 Seed complete! ${#cards[@]} cards + ${#todos[@]} todos created."
+echo "🌱 Seed complete! ${#cards[@]} cards + 10 todos created."
 echo ""
 echo "View at:"
 echo "  Cards:  ${BASE}/ws/cards (WebSocket)"
