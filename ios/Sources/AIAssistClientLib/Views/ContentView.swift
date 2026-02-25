@@ -2,13 +2,11 @@ import SwiftUI
 
 /// Root view with full-screen swipe to approve/reject cards.
 ///
-/// `MessageThreadView` fills 100% of vertical space and scrolls vertically.
-/// Horizontal drag (after 20pt direction lock) moves the whole card for
-/// approve/reject.
+/// Slack Catch-Up style: the entire card is a self-contained rounded rectangle
+/// containing the header banner, message thread, and refine input bar.
+/// Swiping right turns the card green ("Approved"), left turns it red ("Rejected").
 ///
 /// Voice/text refine via Telegram-style input bar with mic/send button swap.
-/// Empty field → compact mic button (long-press to voice-refine).
-/// Text entered → send button (refine with typed instruction).
 public struct ContentView: View {
     @State private var socket = CardWebSocket()
     @State private var showSettings = false
@@ -35,6 +33,14 @@ public struct ContentView: View {
     public var body: some View {
         NavigationStack {
             ZStack {
+                #if os(iOS)
+                Color(uiColor: .secondarySystemBackground)
+                    .ignoresSafeArea()
+                #else
+                Color.gray.opacity(0.08)
+                    .ignoresSafeArea()
+                #endif
+
                 if let card = socket.cards.first {
                     cardContent(for: card)
                 } else {
@@ -44,8 +50,22 @@ public struct ContentView: View {
                     }
                 }
             }
-            .navigationTitle("AI Assist")
             .toolbar {
+                ToolbarItem(placement: .navigation) {
+                    connectionDot
+                }
+                #if os(iOS)
+                ToolbarItem(placement: .principal) {
+                    if !socket.cards.isEmpty {
+                        Text("\(socket.cards.count) Left")
+                            .font(.headline)
+                            .monospacedDigit()
+                    } else {
+                        Text("AI Assist")
+                            .font(.headline)
+                    }
+                }
+                #endif
                 ToolbarItem(placement: .primaryAction) {
                     Button {
                         hostInput = socket.host
@@ -55,18 +75,10 @@ public struct ContentView: View {
                         Image(systemName: "gearshape")
                     }
                 }
-                ToolbarItem(placement: .navigation) {
-                    connectionDot
-                }
-                if !socket.cards.isEmpty {
-                    ToolbarItem(placement: .status) {
-                        Text("\(socket.cards.count) remaining")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .monospacedDigit()
-                    }
-                }
             }
+            #if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
+            #endif
             .sheet(isPresented: $showSettings) {
                 settingsSheet
             }
@@ -94,28 +106,43 @@ public struct ContentView: View {
         VStack(spacing: 0) {
             connectionBanner
 
-            // Card container — rounded, shadowed, padded so it looks swipeable
-            MessageThreadView(card: card)
-                .background(
-                    RoundedRectangle(cornerRadius: 16)
-                        .fill(Color(uiColor: .systemBackground))
-                        .shadow(color: .black.opacity(0.08), radius: 8, y: 2)
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 16)
-                        .stroke(Color(uiColor: .separator).opacity(0.3), lineWidth: 1)
-                )
-                .clipShape(RoundedRectangle(cornerRadius: 16))
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
+            // Self-contained card: header + thread + input bar all inside one rounded rect
+            VStack(spacing: 0) {
+                cardHeader(for: card)
 
-            refineInputBar(for: card)
-            voiceOverlay
+                MessageThreadView(card: card)
+
+                Divider()
+
+                refineInputBar(for: card)
+
+                // Refining indicator
+                if socket.isRefining {
+                    refiningBar
+                }
+            }
+            .background(
+                RoundedRectangle(cornerRadius: 20)
+                    #if os(iOS)
+                    .fill(Color(uiColor: .systemBackground))
+                    #else
+                    .fill(Color.white)
+                    #endif
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 20))
+            .shadow(color: .black.opacity(0.1), radius: 12, y: 4)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            // Full-card color overlay for swipe feedback
+            .overlay(
+                swipeColorOverlay
+                    .clipShape(RoundedRectangle(cornerRadius: 20))
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+            )
         }
-        .background(Color(uiColor: .secondarySystemBackground))
         .offset(x: dragOffset)
         .rotationEffect(.degrees(isDraggingHorizontally ? Double(dragOffset) / 25 : 0))
-        .overlay(swipeOverlay)
         // Horizontal swipe gesture for approve/reject only.
         .simultaneousGesture(
             DragGesture(minimumDistance: directionLockDistance)
@@ -171,6 +198,89 @@ public struct ContentView: View {
                     }
                 }
         )
+    }
+
+    // MARK: - Card Header Banner
+
+    @ViewBuilder
+    private func cardHeader(for card: ReplyCard) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: channelIcon(for: card.channel))
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(.white)
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text(card.sourceSender)
+                    .font(.subheadline.bold())
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+
+                Text(channelLabel(for: card))
+                    .font(.caption)
+                    .foregroundStyle(.white.opacity(0.8))
+                    .lineLimit(1)
+            }
+
+            Spacer()
+
+            // Confidence badge
+            HStack(spacing: 4) {
+                Circle()
+                    .fill(confidenceColor(for: card.confidence))
+                    .frame(width: 6, height: 6)
+                Text("\(Int(card.confidence * 100))%")
+                    .font(.caption2.bold())
+                    .foregroundStyle(.white.opacity(0.9))
+                    .monospacedDigit()
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .background(channelColor(for: card.channel))
+        // Only top corners rounded to match card shape
+        .clipShape(
+            UnevenRoundedRectangle(
+                topLeadingRadius: 20,
+                bottomLeadingRadius: 0,
+                bottomTrailingRadius: 0,
+                topTrailingRadius: 20
+            )
+        )
+    }
+
+    // MARK: - Full-Card Swipe Color Overlay
+
+    @ViewBuilder
+    private var swipeColorOverlay: some View {
+        let width = dragOffset
+        ZStack {
+            if width > 10 {
+                // Swiping right → green "Approved"
+                let intensity = min(0.85, Double(width - 10) / 200)
+                Color.green.opacity(intensity)
+                VStack(spacing: 8) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 48, weight: .bold))
+                    Text("Approved")
+                        .font(.title2.bold())
+                }
+                .foregroundStyle(.white)
+                .opacity(min(1.0, Double(width - 30) / 80))
+            } else if width < -10 {
+                // Swiping left → red "Rejected"
+                let intensity = min(0.85, Double(abs(width) - 10) / 200)
+                Color.red.opacity(intensity)
+                VStack(spacing: 8) {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 48, weight: .bold))
+                    Text("Rejected")
+                        .font(.title2.bold())
+                }
+                .foregroundStyle(.white)
+                .opacity(min(1.0, Double(abs(width) - 30) / 80))
+            }
+        }
+        .allowsHitTesting(false)
     }
 
     // MARK: - Refine Input Bar (Telegram-style mic/send swap)
@@ -230,8 +340,7 @@ public struct ContentView: View {
             .animation(.spring(response: 0.3, dampingFraction: 0.7), value: canRefine)
         }
         .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background(.bar)
+        .padding(.vertical, 10)
     }
 
     private func sendRefine(for card: ReplyCard) {
@@ -240,71 +349,21 @@ public struct ContentView: View {
         refineText = ""
     }
 
-    // MARK: - Voice Overlay
-
-    @ViewBuilder
-    private var voiceOverlay: some View {
-        if socket.isRefining {
-            refiningBar
-        }
-    }
+    // MARK: - Refining Bar
 
     private var refiningBar: some View {
         HStack(spacing: 8) {
             ProgressView()
                 .controlSize(.small)
-                .tint(.white)
+                .tint(.orange)
             Text("Refining...")
                 .font(.caption)
                 .fontWeight(.semibold)
+                .foregroundStyle(.orange)
         }
-        .foregroundStyle(.white)
         .frame(maxWidth: .infinity)
         .padding(.vertical, 8)
-        .background(Color.orange.opacity(0.8))
-        .transition(.move(edge: .bottom).combined(with: .opacity))
-    }
-
-    // MARK: - Swipe Overlay
-
-    /// Edge-pinned indicator bars: green bar with checkmark on the right edge
-    /// for approve, red bar with xmark on the left edge for reject.
-    @ViewBuilder
-    private var swipeOverlay: some View {
-        let width = dragOffset
-        ZStack {
-            // Right edge — green bar with checkmark (approve)
-            if width > 20 {
-                HStack {
-                    Spacer()
-                    ZStack {
-                        Color.green
-                        Image(systemName: "checkmark")
-                            .font(.system(size: 36, weight: .bold))
-                            .foregroundStyle(.white)
-                    }
-                    .frame(width: 60)
-                    .ignoresSafeArea()
-                }
-                .opacity(Double(min(0.4, (width - 20) / 200)))
-            }
-            // Left edge — red bar with xmark (reject)
-            if width < -20 {
-                HStack {
-                    ZStack {
-                        Color.red
-                        Image(systemName: "xmark")
-                            .font(.system(size: 36, weight: .bold))
-                            .foregroundStyle(.white)
-                    }
-                    .frame(width: 60)
-                    .ignoresSafeArea()
-                    Spacer()
-                }
-                .opacity(Double(min(0.4, (abs(width) - 20) / 200)))
-            }
-        }
-        .allowsHitTesting(false)
+        .background(Color.orange.opacity(0.08))
     }
 
     // MARK: - Empty State
@@ -346,6 +405,45 @@ public struct ContentView: View {
         Circle()
             .fill(socket.isConnected ? Color.green : Color.red)
             .frame(width: 8, height: 8)
+    }
+
+    // MARK: - Helpers
+
+    private func channelIcon(for channel: String) -> String {
+        switch channel.lowercased() {
+        case "telegram": return "paperplane.fill"
+        case "whatsapp": return "phone.fill"
+        case "slack": return "number"
+        case "email": return "envelope.fill"
+        default: return "bubble.left.fill"
+        }
+    }
+
+    private func channelColor(for channel: String) -> Color {
+        switch channel.lowercased() {
+        case "telegram": return Color(red: 0.35, green: 0.53, blue: 0.87)
+        case "whatsapp": return Color(red: 0.15, green: 0.68, blue: 0.38)
+        case "slack": return Color(red: 0.44, green: 0.19, blue: 0.58)
+        case "email": return Color(red: 0.35, green: 0.35, blue: 0.42)
+        default: return .accentColor
+        }
+    }
+
+    private func channelLabel(for card: ReplyCard) -> String {
+        let channel = card.channel.lowercased()
+        switch channel {
+        case "email":
+            // Show subject or conversation ID
+            return card.conversationId
+        default:
+            return "via \(card.channel.capitalized)"
+        }
+    }
+
+    private func confidenceColor(for confidence: Float) -> Color {
+        if confidence >= 0.8 { return .green }
+        if confidence >= 0.5 { return .orange }
+        return .red
     }
 
     // MARK: - Settings
