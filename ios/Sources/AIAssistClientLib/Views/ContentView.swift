@@ -207,25 +207,27 @@ public struct ContentView: View {
     private func cardHeader(for card: ApprovalCard) -> some View {
         HStack(spacing: 10) {
             Image(systemName: channelIcon(for: card.channel))
-                .font(.system(size: 16, weight: .semibold))
+                .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(.white)
 
-            VStack(alignment: .leading, spacing: 1) {
-                Text(card.sourceSender)
-                    .font(.subheadline.bold())
-                    .foregroundStyle(.white)
-                    .lineLimit(1)
+            Text(card.sourceSender)
+                .font(.caption.bold())
+                .foregroundStyle(.white)
+                .lineLimit(1)
 
-                Text(channelLabel(for: card))
-                    .font(.caption)
-                    .foregroundStyle(.white.opacity(0.8))
-                    .lineLimit(1)
-            }
+            Text("·")
+                .font(.caption)
+                .foregroundStyle(.white.opacity(0.6))
+
+            Text(channelLabel(for: card))
+                .font(.caption)
+                .foregroundStyle(.white.opacity(0.8))
+                .lineLimit(1)
 
             Spacer()
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 12)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
         .background(channelColor(for: card.channel))
         // Only top corners rounded to match card shape
         .clipShape(
