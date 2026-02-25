@@ -3,15 +3,18 @@
 use std::sync::Arc;
 
 use axum::{
-    Router,
+    Json, Router,
     extract::{State, ws::{Message, WebSocket, WebSocketUpgrade}},
+    http::StatusCode,
     response::IntoResponse,
-    routing::get,
+    routing::{get, post},
 };
+use chrono::{DateTime, Utc};
+use serde::Deserialize;
 use tokio::sync::broadcast;
 use tracing::{debug, info, warn};
 
-use super::model::{TodoAction, TodoBucket, TodoItem, TodoStatus, TodoWsMessage};
+use super::model::{TodoAction, TodoBucket, TodoItem, TodoStatus, TodoType, TodoWsMessage};
 use crate::store::Database;
 
 /// Shared state for the todo WebSocket.
@@ -29,10 +32,11 @@ impl TodoState {
     }
 }
 
-/// Build the Axum router for `/ws/todos`.
+/// Build the Axum router for `/ws/todos` and `/api/todos/test`.
 pub fn todo_routes(state: TodoState) -> Router {
     Router::new()
         .route("/ws/todos", get(ws_handler))
+        .route("/api/todos/test", post(create_test_todo))
         .with_state(state)
 }
 
@@ -254,6 +258,76 @@ async fn handle_client_action(text: &str, state: &TodoState) {
         },
         Err(e) => {
             debug!(error = %e, text = text, "Unrecognized todo WS message");
+        }
+    }
+}
+
+// ── REST endpoint for seeding test todos ──────────────────────────────
+
+/// Request body for POST /api/todos/test.
+#[derive(Debug, Deserialize)]
+struct TestTodoRequest {
+    title: String,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default = "default_todo_type")]
+    todo_type: TodoType,
+    #[serde(default)]
+    bucket: Option<TodoBucket>,
+    #[serde(default)]
+    priority: Option<i32>,
+    #[serde(default)]
+    due_date: Option<DateTime<Utc>>,
+    #[serde(default)]
+    context: Option<String>,
+    #[serde(default)]
+    status: Option<TodoStatus>,
+}
+
+fn default_todo_type() -> TodoType {
+    TodoType::Deliverable
+}
+
+/// Create a test todo via REST (no WebSocket needed).
+async fn create_test_todo(
+    State(state): State<TodoState>,
+    Json(body): Json<TestTodoRequest>,
+) -> impl IntoResponse {
+    let bucket = body.bucket.unwrap_or(TodoBucket::HumanOnly);
+    let mut todo = TodoItem::new("default", body.title, body.todo_type, bucket);
+
+    if let Some(desc) = body.description {
+        todo = todo.with_description(desc);
+    }
+    if let Some(dd) = body.due_date {
+        todo = todo.with_due_date(dd);
+    }
+    if let Some(ctx) = body.context {
+        todo = todo.with_context(serde_json::Value::String(ctx));
+    }
+    if let Some(p) = body.priority {
+        todo.priority = p;
+    }
+    if let Some(s) = body.status {
+        todo.status = s;
+    }
+
+    let todo_id = todo.id;
+    match state.db.create_todo(&todo).await {
+        Ok(()) => {
+            info!(id = %todo_id, title = %todo.title, "Test todo created via REST");
+            let _ = state.tx.send(TodoWsMessage::TodoCreated { todo });
+            (
+                StatusCode::CREATED,
+                Json(serde_json::json!({"todo_id": todo_id, "status": "created"})),
+            )
+        }
+        Err(e) => {
+            warn!(error = %e, "Failed to create test todo");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": e.to_string()})),
+            )
         }
     }
 }

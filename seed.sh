@@ -8,7 +8,6 @@ set -euo pipefail
 HOST="${1:-localhost}"
 PORT="${2:-8080}"
 BASE="http://${HOST}:${PORT}"
-WS_URL="ws://${HOST}:${PORT}/ws/todos"
 
 echo "🌱 Seeding AI Assist at ${BASE}..."
 echo ""
@@ -66,91 +65,61 @@ echo ""
 # TODOS — realistic tasks for Ian
 # ─────────────────────────────────────────────────────────
 
-echo "📝 Creating todos via WebSocket..."
+echo "📝 Creating todos..."
 
-# We need websocat or similar for WS. Fall back to Python if available.
-if command -v websocat &>/dev/null; then
-  WS_CMD="websocat"
-elif command -v python3 &>/dev/null; then
-  WS_CMD="python3"
-else
-  echo "  ⚠️  No WebSocket client available (need websocat or python3). Skipping todos."
-  echo ""
-  echo "🌱 Seed complete (cards only)."
-  exit 0
-fi
+TODO_URL="${BASE}/api/todos/test"
 
-# Helper: send a single todo create message via WebSocket
-send_todo() {
-  local todo_json="$1"
-  if [ "$WS_CMD" = "websocat" ]; then
-    echo "$todo_json" | websocat -n1 "${WS_URL}"
+# ISO date helpers
+tomorrow=$(date -u -v+1d '+%Y-%m-%dT16:00:00Z' 2>/dev/null || date -u -d '+1 day' '+%Y-%m-%dT16:00:00Z')
+in_3_days=$(date -u -v+3d '+%Y-%m-%dT18:00:00Z' 2>/dev/null || date -u -d '+3 days' '+%Y-%m-%dT18:00:00Z')
+in_5_days=$(date -u -v+5d '+%Y-%m-%dT12:00:00Z' 2>/dev/null || date -u -d '+5 days' '+%Y-%m-%dT12:00:00Z')
+in_1_week=$(date -u -v+7d '+%Y-%m-%dT10:00:00Z' 2>/dev/null || date -u -d '+7 days' '+%Y-%m-%dT10:00:00Z')
+
+create_todo() {
+  local json="$1"
+  local title="$2"
+  local response
+  response=$(curl -s -w "\n%{http_code}" -X POST "$TODO_URL" \
+    -H 'Content-Type: application/json' \
+    -d "$json")
+  local code
+  code=$(echo "$response" | tail -1)
+  if [ "$code" = "201" ]; then
+    echo "  ✅ Todo: ${title}"
   else
-    TODO_JSON="$todo_json" WS_ENDPOINT="${WS_URL}" python3 -c '
-import asyncio, os, sys
-try:
-    import websockets
-except ImportError:
-    print("  ⚠️  python3 websockets not installed. pip install websockets")
-    sys.exit(1)
-
-async def send():
-    async with websockets.connect(os.environ["WS_ENDPOINT"]) as ws:
-        await asyncio.wait_for(ws.recv(), timeout=2)
-        await ws.send(os.environ["TODO_JSON"])
-        try:
-            await asyncio.wait_for(ws.recv(), timeout=2)
-        except asyncio.TimeoutError:
-            pass
-
-asyncio.run(send())
-' 2>/dev/null
+    echo "  ❌ Failed (${code}): ${title}"
   fi
 }
 
-# ISO date helpers
-tomorrow=$(python3 -c "from datetime import datetime, timedelta, timezone; print((datetime.now(timezone.utc) + timedelta(days=1)).strftime('%Y-%m-%dT16:00:00Z'))")
-in_3_days=$(python3 -c "from datetime import datetime, timedelta, timezone; print((datetime.now(timezone.utc) + timedelta(days=3)).strftime('%Y-%m-%dT18:00:00Z'))")
-in_5_days=$(python3 -c "from datetime import datetime, timedelta, timezone; print((datetime.now(timezone.utc) + timedelta(days=5)).strftime('%Y-%m-%dT12:00:00Z'))")
-in_1_week=$(python3 -c "from datetime import datetime, timedelta, timezone; print((datetime.now(timezone.utc) + timedelta(days=7)).strftime('%Y-%m-%dT10:00:00Z'))")
-yesterday=$(python3 -c "from datetime import datetime, timedelta, timezone; print((datetime.now(timezone.utc) - timedelta(days=1)).strftime('%Y-%m-%dT17:00:00Z'))")
+create_todo "{\"title\":\"Fix Stellar fee rounding bug\",\"description\":\"Luca flagged failing integration tests on the fee calculation path. Check the rounding logic in the stablecoin transfer module.\",\"todo_type\":\"deliverable\",\"bucket\":\"human_only\",\"priority\":1,\"due_date\":\"${tomorrow}\",\"context\":\"M0 release blocker — needs fix before Thursday cut\"}" \
+  "Fix Stellar fee rounding bug"
 
-todos=(
-  # High priority — work
-  "{\"Create\":{\"title\":\"Fix Stellar fee rounding bug\",\"description\":\"Luca flagged failing integration tests on the fee calculation path. Check the rounding logic in the stablecoin transfer module.\",\"todo_type\":\"deliverable\",\"bucket\":\"human_only\",\"due_date\":\"${tomorrow}\",\"context\":\"M0 release blocker — needs fix before Thursday cut\"}}"
+create_todo "{\"title\":\"Research Nashville flights for Joey's bachelor party\",\"description\":\"Check Southwest and Frontier from LAS to BNA, March 15-17. Budget ~400 for airfare. Send options to Joey.\",\"todo_type\":\"research\",\"bucket\":\"agent_startable\",\"priority\":2,\"due_date\":\"${tomorrow}\",\"context\":\"Joey asked via email — wants response by tomorrow\"}" \
+  "Research Nashville flights"
 
-  # Research — agent can start
-  "{\"Create\":{\"title\":\"Research Nashville flights for Joey's bachelor party\",\"description\":\"Check Southwest and Frontier from LAS to BNA, March 15-17. Budget ~\$400 for airfare. Send options to Joey.\",\"todo_type\":\"research\",\"bucket\":\"agent_startable\",\"due_date\":\"${tomorrow}\",\"context\":\"Joey asked via email — wants response by tomorrow\"}}"
+create_todo "{\"title\":\"Pick up groceries from Whole Foods\",\"description\":\"Milk, eggs, sourdough bread. Christina asked.\",\"todo_type\":\"errand\",\"bucket\":\"human_only\",\"priority\":3,\"due_date\":\"${tomorrow}\"}" \
+  "Pick up groceries"
 
-  # Errand — personal
-  "{\"Create\":{\"title\":\"Pick up groceries from Whole Foods\",\"description\":\"Milk, eggs, sourdough bread. Christina asked.\",\"todo_type\":\"errand\",\"bucket\":\"human_only\",\"due_date\":\"${tomorrow}\"}}"
+create_todo "{\"title\":\"Review Atlanta location scout photos\",\"description\":\"Mike sent two house options for the slasher scenes. Review photos, pick top choice, and send notes on lighting angles.\",\"todo_type\":\"creative\",\"bucket\":\"human_only\",\"priority\":3,\"due_date\":\"${in_3_days}\",\"context\":\"Slasher film production — Atlanta shoot\"}" \
+  "Review Atlanta location photos"
 
-  # Creative — film
-  "{\"Create\":{\"title\":\"Review Atlanta location scout photos\",\"description\":\"Mike sent two house options for the slasher scenes. Review photos, pick top choice, and send notes on lighting angles.\",\"todo_type\":\"creative\",\"bucket\":\"human_only\",\"due_date\":\"${in_3_days}\",\"context\":\"Slasher film production — Atlanta shoot Feb 10\"}}"
+create_todo "{\"title\":\"Upgrade OpenClaw to v2026.2.24\",\"description\":\"Per-agent model overrides, session cleanup improvements. Will fix Clark contextTokens mismatch.\",\"todo_type\":\"administrative\",\"bucket\":\"agent_startable\",\"priority\":4,\"due_date\":\"${in_5_days}\",\"context\":\"Changelog has migration notes — read before upgrading\"}" \
+  "Upgrade OpenClaw"
 
-  # Administrative
-  "{\"Create\":{\"title\":\"Upgrade OpenClaw to v2026.2.24\",\"description\":\"Per-agent model overrides, session cleanup improvements. Will fix Clark's contextTokens mismatch.\",\"todo_type\":\"administrative\",\"bucket\":\"agent_startable\",\"due_date\":\"${in_5_days}\",\"context\":\"Changelog has migration notes — read before upgrading\"}}"
+create_todo "{\"title\":\"Watch Karpathy on Lex Fridman — tool use and agents\",\"description\":\"Episode 428. Directly relevant to AI Assist architecture. Take notes for Second Brain.\",\"todo_type\":\"learning\",\"bucket\":\"human_only\",\"priority\":5,\"due_date\":\"${in_1_week}\"}" \
+  "Watch Karpathy podcast"
 
-  # Learning
-  "{\"Create\":{\"title\":\"Watch Karpathy on Lex Fridman — tool use and agents\",\"description\":\"Episode #428. Directly relevant to AI Assist architecture. Take notes for Second Brain.\",\"todo_type\":\"learning\",\"bucket\":\"human_only\",\"due_date\":\"${in_1_week}\"}}"
+create_todo "{\"title\":\"Address Rex PR 67 review comments\",\"description\":\"Two comments on migration backfill query. Handle NULL payload rows edge case.\",\"todo_type\":\"review\",\"bucket\":\"human_only\",\"priority\":2,\"due_date\":\"${tomorrow}\",\"context\":\"GitHub notification — Rex requesting changes\"}" \
+  "Address Rex review comments"
 
-  # Review — code
-  "{\"Create\":{\"title\":\"Address Rex's PR #67 review comments\",\"description\":\"Two comments on migration backfill query. Handle NULL payload rows edge case.\",\"todo_type\":\"review\",\"bucket\":\"human_only\",\"due_date\":\"${tomorrow}\",\"context\":\"GitHub notification — Rex requesting changes\"}}"
+create_todo "{\"title\":\"Draft AI Assist onboarding flow copy\",\"description\":\"Write the 5-screen onboarding sequence: account creation, connect services, personality setup, preferences, UI tutorial. Goal: value in under 2 minutes.\",\"todo_type\":\"deliverable\",\"bucket\":\"agent_startable\",\"priority\":3,\"due_date\":\"${in_5_days}\",\"context\":\"From UX brainstorm doc — four silos, two patterns\"}" \
+  "Draft onboarding copy"
 
-  # Deliverable — agent can research
-  "{\"Create\":{\"title\":\"Draft AI Assist onboarding flow copy\",\"description\":\"Write the 5-screen onboarding sequence: account creation, connect services, personality setup, preferences, UI tutorial. Goal: value in under 2 minutes.\",\"todo_type\":\"deliverable\",\"bucket\":\"agent_startable\",\"due_date\":\"${in_5_days}\",\"context\":\"From UX brainstorm doc — four silos, two patterns\"}}"
+create_todo "{\"title\":\"Merge PR 64 — todo row styling\",\"description\":\"Card width matching, inline input on expand, removed bottom bar.\",\"todo_type\":\"review\",\"bucket\":\"human_only\",\"status\":\"completed\"}" \
+  "Merge PR 64 (completed)"
 
-  # Completed — gives visual variety
-  "{\"Create\":{\"title\":\"Merge PR #64 — todo row styling\",\"description\":\"Card width matching, inline input on expand, removed bottom bar.\",\"todo_type\":\"review\",\"bucket\":\"human_only\"}}"
-
-  # Administrative — electrician
-  "{\"Create\":{\"title\":\"Confirm Friday electrician appointment\",\"description\":\"Christina asked — Thursday or Friday. Picked Friday (meetings Thursday). Need to confirm morning or afternoon.\",\"todo_type\":\"administrative\",\"bucket\":\"human_only\",\"due_date\":\"${in_3_days}\",\"context\":\"Christina asked via WhatsApp\"}}"
-)
-
-for todo_json in "${todos[@]}"; do
-  title=$(echo "$todo_json" | python3 -c "import sys,json; print(json.load(sys.stdin)['Create']['title'])" 2>/dev/null || echo "?")
-  send_todo "$todo_json" && echo "  ✅ Todo: ${title}" || echo "  ❌ Failed: ${title}"
-done
+create_todo "{\"title\":\"Confirm Friday electrician appointment\",\"description\":\"Christina asked — Thursday or Friday. Picked Friday (meetings Thursday). Need to confirm morning or afternoon.\",\"todo_type\":\"administrative\",\"bucket\":\"human_only\",\"priority\":3,\"due_date\":\"${in_3_days}\",\"context\":\"Christina asked via WhatsApp\"}" \
+  "Confirm electrician"
 
 echo ""
 echo "🌱 Seed complete! ${#cards[@]} cards + ${#todos[@]} todos created."
