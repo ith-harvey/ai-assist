@@ -16,6 +16,7 @@ use crate::cards::model::{CardStatus, ReplyCard};
 use crate::error::DatabaseError;
 use crate::store::migrations;
 use crate::store::traits::{ConversationMessage, Database, MessageStatus, StoredMessage};
+use crate::todos::model::{TodoBucket, TodoItem, TodoStatus, TodoType};
 
 /// libSQL database backend.
 ///
@@ -1369,6 +1370,255 @@ impl Database for LibSqlBackend {
             .map_err(|e| DatabaseError::Query(format!("delete_setting: {e}")))?;
         Ok(count > 0)
     }
+
+    // ── Todos ───────────────────────────────────────────────────────
+
+    async fn create_todo(&self, todo: &TodoItem) -> Result<(), DatabaseError> {
+        let conn = self.conn();
+        let todo_type = serde_json::to_value(&todo.todo_type)
+            .map_err(|e| DatabaseError::Serialization(e.to_string()))?;
+        let todo_type_str = todo_type.as_str().unwrap_or("errand");
+        let bucket = serde_json::to_value(&todo.bucket)
+            .map_err(|e| DatabaseError::Serialization(e.to_string()))?;
+        let bucket_str = bucket.as_str().unwrap_or("human_only");
+        let status = serde_json::to_value(&todo.status)
+            .map_err(|e| DatabaseError::Serialization(e.to_string()))?;
+        let status_str = status.as_str().unwrap_or("created");
+        let context_json = todo
+            .context
+            .as_ref()
+            .map(|c| serde_json::to_string(c).unwrap_or_default());
+
+        conn.execute(
+            "INSERT INTO todos (id, user_id, title, description, todo_type, bucket, status, priority, due_date, context, source_card_id, snoozed_until, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+            params![
+                todo.id.to_string(),
+                todo.user_id.as_str(),
+                todo.title.as_str(),
+                todo.description.as_deref().unwrap_or(""),
+                todo_type_str,
+                bucket_str,
+                status_str,
+                todo.priority as i64,
+                todo.due_date.map(|d| d.to_rfc3339()),
+                context_json,
+                todo.source_card_id.map(|id| id.to_string()),
+                todo.snoozed_until.map(|d| d.to_rfc3339()),
+                todo.created_at.to_rfc3339(),
+                todo.updated_at.to_rfc3339(),
+            ],
+        )
+        .await
+        .map_err(|e| DatabaseError::Query(format!("create_todo: {e}")))?;
+        debug!(id = %todo.id, "Todo created");
+        Ok(())
+    }
+
+    async fn get_todo(&self, id: Uuid) -> Result<Option<TodoItem>, DatabaseError> {
+        let conn = self.conn();
+        let mut rows = conn
+            .query(
+                "SELECT id, user_id, title, description, todo_type, bucket, status, priority, due_date, context, source_card_id, snoozed_until, created_at, updated_at FROM todos WHERE id = ?1",
+                params![id.to_string()],
+            )
+            .await
+            .map_err(|e| DatabaseError::Query(format!("get_todo: {e}")))?;
+
+        match rows.next().await {
+            Ok(Some(row)) => Ok(Some(row_to_todo(&row)?)),
+            Ok(None) => Ok(None),
+            Err(e) => Err(DatabaseError::Query(format!("get_todo row: {e}"))),
+        }
+    }
+
+    async fn list_todos(&self, user_id: &str) -> Result<Vec<TodoItem>, DatabaseError> {
+        let conn = self.conn();
+        let mut rows = conn
+            .query(
+                "SELECT id, user_id, title, description, todo_type, bucket, status, priority, due_date, context, source_card_id, snoozed_until, created_at, updated_at FROM todos WHERE user_id = ?1 ORDER BY priority ASC, created_at ASC",
+                params![user_id],
+            )
+            .await
+            .map_err(|e| DatabaseError::Query(format!("list_todos: {e}")))?;
+
+        let mut todos = Vec::new();
+        while let Ok(Some(row)) = rows.next().await {
+            todos.push(row_to_todo(&row)?);
+        }
+        Ok(todos)
+    }
+
+    async fn list_todos_by_status(
+        &self,
+        user_id: &str,
+        status: TodoStatus,
+    ) -> Result<Vec<TodoItem>, DatabaseError> {
+        let conn = self.conn();
+        let status_val = serde_json::to_value(&status)
+            .map_err(|e| DatabaseError::Serialization(e.to_string()))?;
+        let status_str = status_val.as_str().unwrap_or("created");
+
+        let mut rows = conn
+            .query(
+                "SELECT id, user_id, title, description, todo_type, bucket, status, priority, due_date, context, source_card_id, snoozed_until, created_at, updated_at FROM todos WHERE user_id = ?1 AND status = ?2 ORDER BY priority ASC, created_at ASC",
+                params![user_id, status_str],
+            )
+            .await
+            .map_err(|e| DatabaseError::Query(format!("list_todos_by_status: {e}")))?;
+
+        let mut todos = Vec::new();
+        while let Ok(Some(row)) = rows.next().await {
+            todos.push(row_to_todo(&row)?);
+        }
+        Ok(todos)
+    }
+
+    async fn update_todo(&self, todo: &TodoItem) -> Result<(), DatabaseError> {
+        let conn = self.conn();
+        let todo_type = serde_json::to_value(&todo.todo_type)
+            .map_err(|e| DatabaseError::Serialization(e.to_string()))?;
+        let todo_type_str = todo_type.as_str().unwrap_or("errand");
+        let bucket = serde_json::to_value(&todo.bucket)
+            .map_err(|e| DatabaseError::Serialization(e.to_string()))?;
+        let bucket_str = bucket.as_str().unwrap_or("human_only");
+        let status = serde_json::to_value(&todo.status)
+            .map_err(|e| DatabaseError::Serialization(e.to_string()))?;
+        let status_str = status.as_str().unwrap_or("created");
+        let context_json = todo
+            .context
+            .as_ref()
+            .map(|c| serde_json::to_string(c).unwrap_or_default());
+
+        conn.execute(
+            "UPDATE todos SET title = ?1, description = ?2, todo_type = ?3, bucket = ?4, status = ?5, priority = ?6, due_date = ?7, context = ?8, source_card_id = ?9, snoozed_until = ?10, updated_at = ?11 WHERE id = ?12",
+            params![
+                todo.title.as_str(),
+                todo.description.as_deref().unwrap_or(""),
+                todo_type_str,
+                bucket_str,
+                status_str,
+                todo.priority as i64,
+                todo.due_date.map(|d| d.to_rfc3339()),
+                context_json,
+                todo.source_card_id.map(|id| id.to_string()),
+                todo.snoozed_until.map(|d| d.to_rfc3339()),
+                todo.updated_at.to_rfc3339(),
+                todo.id.to_string(),
+            ],
+        )
+        .await
+        .map_err(|e| DatabaseError::Query(format!("update_todo: {e}")))?;
+        Ok(())
+    }
+
+    async fn update_todo_status(&self, id: Uuid, status: TodoStatus) -> Result<(), DatabaseError> {
+        let conn = self.conn();
+        let status_val = serde_json::to_value(&status)
+            .map_err(|e| DatabaseError::Serialization(e.to_string()))?;
+        let status_str = status_val.as_str().unwrap_or("created");
+        let now = Utc::now().to_rfc3339();
+
+        conn.execute(
+            "UPDATE todos SET status = ?1, updated_at = ?2 WHERE id = ?3",
+            params![status_str, now, id.to_string()],
+        )
+        .await
+        .map_err(|e| DatabaseError::Query(format!("update_todo_status: {e}")))?;
+        Ok(())
+    }
+
+    async fn complete_todo(&self, id: Uuid) -> Result<(), DatabaseError> {
+        self.update_todo_status(id, TodoStatus::Completed).await
+    }
+
+    async fn delete_todo(&self, id: Uuid) -> Result<bool, DatabaseError> {
+        let conn = self.conn();
+        let count = conn
+            .execute(
+                "DELETE FROM todos WHERE id = ?1",
+                params![id.to_string()],
+            )
+            .await
+            .map_err(|e| DatabaseError::Query(format!("delete_todo: {e}")))?;
+        Ok(count > 0)
+    }
+}
+
+// ── Row mapping helpers for todos ───────────────────────────────────
+
+fn row_to_todo(row: &libsql::Row) -> Result<TodoItem, DatabaseError> {
+    let id_str: String = row.get(0).map_err(|e| DatabaseError::Query(format!("todo.id: {e}")))?;
+    let id = Uuid::parse_str(&id_str).map_err(|e| DatabaseError::Query(format!("todo.id parse: {e}")))?;
+
+    let user_id: String = row.get(1).map_err(|e| DatabaseError::Query(format!("todo.user_id: {e}")))?;
+    let title: String = row.get(2).map_err(|e| DatabaseError::Query(format!("todo.title: {e}")))?;
+
+    let desc_raw: String = row.get(3).unwrap_or_default();
+    let description = if desc_raw.is_empty() { None } else { Some(desc_raw) };
+
+    let todo_type_str: String = row.get(4).unwrap_or_else(|_| "errand".to_string());
+    let todo_type: TodoType = serde_json::from_value(serde_json::Value::String(todo_type_str))
+        .unwrap_or(TodoType::Errand);
+
+    let bucket_str: String = row.get(5).unwrap_or_else(|_| "human_only".to_string());
+    let bucket: TodoBucket = serde_json::from_value(serde_json::Value::String(bucket_str))
+        .unwrap_or(TodoBucket::HumanOnly);
+
+    let status_str: String = row.get(6).unwrap_or_else(|_| "created".to_string());
+    let status: TodoStatus = serde_json::from_value(serde_json::Value::String(status_str))
+        .unwrap_or(TodoStatus::Created);
+
+    let priority: i64 = row.get(7).unwrap_or(0);
+
+    let due_date_str: Option<String> = row.get(8).ok();
+    let due_date = due_date_str
+        .filter(|s| !s.is_empty())
+        .and_then(|s| DateTime::parse_from_rfc3339(&s).ok())
+        .map(|d| d.with_timezone(&Utc));
+
+    let context_str: Option<String> = row.get(9).ok();
+    let context = context_str
+        .filter(|s| !s.is_empty())
+        .and_then(|s| serde_json::from_str(&s).ok());
+
+    let source_card_str: Option<String> = row.get(10).ok();
+    let source_card_id = source_card_str
+        .filter(|s| !s.is_empty())
+        .and_then(|s| Uuid::parse_str(&s).ok());
+
+    let snoozed_str: Option<String> = row.get(11).ok();
+    let snoozed_until = snoozed_str
+        .filter(|s| !s.is_empty())
+        .and_then(|s| DateTime::parse_from_rfc3339(&s).ok())
+        .map(|d| d.with_timezone(&Utc));
+
+    let created_at_str: String = row.get(12).unwrap_or_default();
+    let created_at = DateTime::parse_from_rfc3339(&created_at_str)
+        .map(|d| d.with_timezone(&Utc))
+        .unwrap_or_else(|_| Utc::now());
+
+    let updated_at_str: String = row.get(13).unwrap_or_default();
+    let updated_at = DateTime::parse_from_rfc3339(&updated_at_str)
+        .map(|d| d.with_timezone(&Utc))
+        .unwrap_or_else(|_| Utc::now());
+
+    Ok(TodoItem {
+        id,
+        user_id,
+        title,
+        description,
+        todo_type,
+        bucket,
+        status,
+        priority: priority as i32,
+        due_date,
+        context,
+        source_card_id,
+        snoozed_until,
+        created_at,
+        updated_at,
+    })
 }
 
 // ── Row mapping helpers for routines ────────────────────────────────
@@ -2818,5 +3068,189 @@ mod tests {
         // created_at should be recent (within last minute)
         let age = Utc::now().signed_duration_since(msgs[0].created_at);
         assert!(age.num_seconds() < 60);
+    }
+
+    // ── Todo CRUD tests ─────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn todo_create_and_get() {
+        use crate::todos::model::*;
+
+        let db = test_db().await;
+        let todo = TodoItem::new("user1", "Buy milk", TodoType::Errand, TodoBucket::HumanOnly)
+            .with_description("From the store")
+            .with_priority(3);
+        let id = todo.id;
+        db.create_todo(&todo).await.unwrap();
+
+        let fetched = db.get_todo(id).await.unwrap().expect("todo should exist");
+        assert_eq!(fetched.title, "Buy milk");
+        assert_eq!(fetched.description.as_deref(), Some("From the store"));
+        assert_eq!(fetched.priority, 3);
+        assert_eq!(fetched.todo_type, TodoType::Errand);
+        assert_eq!(fetched.bucket, TodoBucket::HumanOnly);
+        assert_eq!(fetched.status, TodoStatus::Created);
+        assert_eq!(fetched.user_id, "user1");
+    }
+
+    #[tokio::test]
+    async fn todo_get_not_found() {
+        let db = test_db().await;
+        let result = db.get_todo(Uuid::new_v4()).await.unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn todo_list_sorted_by_priority() {
+        use crate::todos::model::*;
+
+        let db = test_db().await;
+        let t1 = TodoItem::new("u1", "Low", TodoType::Errand, TodoBucket::HumanOnly)
+            .with_priority(10);
+        let t2 = TodoItem::new("u1", "High", TodoType::Deliverable, TodoBucket::AgentStartable)
+            .with_priority(1);
+        let t3 = TodoItem::new("u1", "Mid", TodoType::Research, TodoBucket::HumanOnly)
+            .with_priority(5);
+
+        db.create_todo(&t1).await.unwrap();
+        db.create_todo(&t2).await.unwrap();
+        db.create_todo(&t3).await.unwrap();
+
+        let todos = db.list_todos("u1").await.unwrap();
+        assert_eq!(todos.len(), 3);
+        assert_eq!(todos[0].title, "High");
+        assert_eq!(todos[1].title, "Mid");
+        assert_eq!(todos[2].title, "Low");
+    }
+
+    #[tokio::test]
+    async fn todo_list_by_status() {
+        use crate::todos::model::*;
+
+        let db = test_db().await;
+        let t1 = TodoItem::new("u1", "Created", TodoType::Errand, TodoBucket::HumanOnly);
+        let mut t2 = TodoItem::new("u1", "Done", TodoType::Errand, TodoBucket::HumanOnly);
+        t2.status = TodoStatus::Completed;
+
+        db.create_todo(&t1).await.unwrap();
+        db.create_todo(&t2).await.unwrap();
+
+        let created = db.list_todos_by_status("u1", TodoStatus::Created).await.unwrap();
+        assert_eq!(created.len(), 1);
+        assert_eq!(created[0].title, "Created");
+
+        let completed = db.list_todos_by_status("u1", TodoStatus::Completed).await.unwrap();
+        assert_eq!(completed.len(), 1);
+        assert_eq!(completed[0].title, "Done");
+    }
+
+    #[tokio::test]
+    async fn todo_update() {
+        use crate::todos::model::*;
+
+        let db = test_db().await;
+        let mut todo = TodoItem::new("u1", "Original", TodoType::Errand, TodoBucket::HumanOnly);
+        db.create_todo(&todo).await.unwrap();
+
+        todo.title = "Updated".to_string();
+        todo.status = TodoStatus::AgentWorking;
+        todo.priority = 99;
+        todo.updated_at = Utc::now();
+        db.update_todo(&todo).await.unwrap();
+
+        let fetched = db.get_todo(todo.id).await.unwrap().unwrap();
+        assert_eq!(fetched.title, "Updated");
+        assert_eq!(fetched.status, TodoStatus::AgentWorking);
+        assert_eq!(fetched.priority, 99);
+    }
+
+    #[tokio::test]
+    async fn todo_update_status() {
+        use crate::todos::model::*;
+
+        let db = test_db().await;
+        let todo = TodoItem::new("u1", "Task", TodoType::Deliverable, TodoBucket::AgentStartable);
+        let id = todo.id;
+        db.create_todo(&todo).await.unwrap();
+
+        db.update_todo_status(id, TodoStatus::ReadyForReview).await.unwrap();
+
+        let fetched = db.get_todo(id).await.unwrap().unwrap();
+        assert_eq!(fetched.status, TodoStatus::ReadyForReview);
+    }
+
+    #[tokio::test]
+    async fn todo_complete() {
+        use crate::todos::model::*;
+
+        let db = test_db().await;
+        let todo = TodoItem::new("u1", "Finish", TodoType::Deliverable, TodoBucket::AgentStartable);
+        let id = todo.id;
+        db.create_todo(&todo).await.unwrap();
+
+        db.complete_todo(id).await.unwrap();
+
+        let fetched = db.get_todo(id).await.unwrap().unwrap();
+        assert_eq!(fetched.status, TodoStatus::Completed);
+    }
+
+    #[tokio::test]
+    async fn todo_delete() {
+        use crate::todos::model::*;
+
+        let db = test_db().await;
+        let todo = TodoItem::new("u1", "Delete me", TodoType::Errand, TodoBucket::HumanOnly);
+        let id = todo.id;
+        db.create_todo(&todo).await.unwrap();
+
+        let deleted = db.delete_todo(id).await.unwrap();
+        assert!(deleted);
+
+        let fetched = db.get_todo(id).await.unwrap();
+        assert!(fetched.is_none());
+
+        // Deleting again returns false
+        let deleted_again = db.delete_todo(id).await.unwrap();
+        assert!(!deleted_again);
+    }
+
+    #[tokio::test]
+    async fn todo_with_context_and_due_date() {
+        use crate::todos::model::*;
+
+        let db = test_db().await;
+        let due = Utc::now() + chrono::Duration::days(7);
+        let ctx = serde_json::json!({"ref": "PR #42", "assignee": "Codie-2"});
+        let todo = TodoItem::new("u1", "With extras", TodoType::Review, TodoBucket::AgentStartable)
+            .with_due_date(due)
+            .with_context(ctx.clone())
+            .with_source_card(Uuid::new_v4());
+
+        db.create_todo(&todo).await.unwrap();
+
+        let fetched = db.get_todo(todo.id).await.unwrap().unwrap();
+        assert!(fetched.due_date.is_some());
+        assert!(fetched.context.is_some());
+        assert_eq!(fetched.context.unwrap()["ref"], "PR #42");
+        assert!(fetched.source_card_id.is_some());
+    }
+
+    #[tokio::test]
+    async fn todo_user_isolation() {
+        use crate::todos::model::*;
+
+        let db = test_db().await;
+        let t1 = TodoItem::new("user_a", "A's task", TodoType::Errand, TodoBucket::HumanOnly);
+        let t2 = TodoItem::new("user_b", "B's task", TodoType::Errand, TodoBucket::HumanOnly);
+        db.create_todo(&t1).await.unwrap();
+        db.create_todo(&t2).await.unwrap();
+
+        let a_todos = db.list_todos("user_a").await.unwrap();
+        assert_eq!(a_todos.len(), 1);
+        assert_eq!(a_todos[0].title, "A's task");
+
+        let b_todos = db.list_todos("user_b").await.unwrap();
+        assert_eq!(b_todos.len(), 1);
+        assert_eq!(b_todos[0].title, "B's task");
     }
 }

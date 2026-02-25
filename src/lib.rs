@@ -11,5 +11,6 @@ pub mod llm;
 pub mod pipeline;
 pub mod safety;
 pub mod store;
+pub mod todos;
 pub mod tools;
 pub mod workspace;
