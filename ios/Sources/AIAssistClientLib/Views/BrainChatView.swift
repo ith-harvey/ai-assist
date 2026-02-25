@@ -45,6 +45,22 @@ public struct BrainChatView: View {
             // Status indicator + input bar (with inline mic/send swap) slide together
             bottomBar
         }
+        .background {
+            #if os(iOS)
+            Color(uiColor: .secondarySystemBackground)
+                .ignoresSafeArea()
+            #else
+            Color.gray.opacity(0.08)
+                .ignoresSafeArea()
+            #endif
+        }
+        #if os(iOS)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                ApprovalBellBadge(count: 0)
+            }
+        }
+        #endif
         .onAppear {
             chatSocket.connect()
         }
