@@ -6,7 +6,7 @@ import SwiftUI
 /// Auto-scrolls to the bottom (newest messages). The AI suggested reply appears
 /// as a faded/dashed "Draft" bubble at the end.
 struct MessageThreadView: View {
-    let card: ReplyCard?
+    let card: ApprovalCard?
 
     var body: some View {
         if let card {
@@ -78,7 +78,7 @@ struct MessageThreadView: View {
 
     // MARK: - Thread Header
 
-    private func threadHeader(card: ReplyCard) -> some View {
+    private func threadHeader(card: ApprovalCard) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             // Top row: channel icon + subject (bold title) + confidence badge
             HStack(spacing: 8) {

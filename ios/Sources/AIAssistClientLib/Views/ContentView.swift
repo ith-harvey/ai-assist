@@ -8,7 +8,7 @@ import SwiftUI
 ///
 /// Voice/text refine via Telegram-style input bar with mic/send button swap.
 public struct ContentView: View {
-    @State private var socket = CardWebSocket()
+    var socket: CardWebSocket
     @State private var showSettings = false
     @State private var hostInput = "192.168.0.5"
     @State private var portInput = "8080"
@@ -28,7 +28,9 @@ public struct ContentView: View {
     /// first crack at vertical gestures.
     private let directionLockDistance: CGFloat = 20
 
-    public init() {}
+    public init(socket: CardWebSocket) {
+        self.socket = socket
+    }
 
     public var body: some View {
         NavigationStack {
@@ -86,12 +88,7 @@ public struct ContentView: View {
             .sheet(isPresented: $showSettings) {
                 settingsSheet
             }
-            .onAppear {
-                socket.connect()
-            }
-            .onDisappear {
-                socket.disconnect()
-            }
+            // Socket lifecycle managed by MainTabView
             #if os(iOS)
             .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
                 isKeyboardVisible = true
@@ -106,7 +103,7 @@ public struct ContentView: View {
     // MARK: - Card Content + Swipe Gesture
 
     @ViewBuilder
-    private func cardContent(for card: ReplyCard) -> some View {
+    private func cardContent(for card: ApprovalCard) -> some View {
         VStack(spacing: 0) {
             connectionBanner
 
@@ -207,7 +204,7 @@ public struct ContentView: View {
     // MARK: - Card Header Banner
 
     @ViewBuilder
-    private func cardHeader(for card: ReplyCard) -> some View {
+    private func cardHeader(for card: ApprovalCard) -> some View {
         HStack(spacing: 10) {
             Image(systemName: channelIcon(for: card.channel))
                 .font(.system(size: 16, weight: .semibold))
@@ -295,7 +292,7 @@ public struct ContentView: View {
     }
 
     @ViewBuilder
-    private func refineInputBar(for card: ReplyCard) -> some View {
+    private func refineInputBar(for card: ApprovalCard) -> some View {
         HStack(spacing: 8) {
             TextField("Refine this reply...", text: $refineText, axis: .vertical)
                 .textFieldStyle(.plain)
@@ -347,7 +344,7 @@ public struct ContentView: View {
         .padding(.vertical, 10)
     }
 
-    private func sendRefine(for card: ReplyCard) {
+    private func sendRefine(for card: ApprovalCard) {
         guard canRefine else { return }
         socket.refine(cardId: card.id, instruction: refineText)
         refineText = ""
@@ -433,7 +430,7 @@ public struct ContentView: View {
         }
     }
 
-    private func channelLabel(for card: ReplyCard) -> String {
+    private func channelLabel(for card: ApprovalCard) -> String {
         let channel = card.channel.lowercased()
         switch channel {
         case "email":

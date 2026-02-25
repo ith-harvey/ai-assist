@@ -1,5 +1,20 @@
 import Foundation
 
+/// Pending card counts per silo — used for tab badge display.
+public struct SiloCounts: Sendable {
+    public var messages: Int
+    public var todos: Int
+    public var calendar: Int
+
+    public init(messages: Int = 0, todos: Int = 0, calendar: Int = 0) {
+        self.messages = messages
+        self.todos = todos
+        self.calendar = calendar
+    }
+
+    public var total: Int { messages + todos + calendar }
+}
+
 /// Messages sent over WebSocket from server to client.
 /// Matches Rust `WsMessage` with `#[serde(tag = "type", rename_all = "snake_case")]`.
 ///
@@ -8,13 +23,16 @@ import Foundation
 /// - `{"type":"card_update","id":"uuid","status":"approved"}`
 /// - `{"type":"card_expired","id":"uuid"}`
 /// - `{"type":"cards_sync","cards":[...]}`
+/// - `{"type":"card_refreshed","card":{...}}`
+/// - `{"type":"silo_counts","counts":{"messages":5,"todos":2,"calendar":0}}`
 /// - `{"type":"ping"}`
 public enum WsMessage: Sendable {
-    case newCard(card: ReplyCard)
+    case newCard(card: ApprovalCard)
     case cardUpdate(id: UUID, status: CardStatus)
     case cardExpired(id: UUID)
-    case cardsSync(cards: [ReplyCard])
-    case cardRefreshed(card: ReplyCard)
+    case cardsSync(cards: [ApprovalCard])
+    case cardRefreshed(card: ApprovalCard)
+    case siloCounts(SiloCounts)
     case ping
 }
 
@@ -29,6 +47,11 @@ extension WsMessage: Decodable {
         case id
         case status
         case cards
+        case counts
+    }
+
+    private enum CountKeys: String, CodingKey {
+        case messages, todos, calendar
     }
 
     public init(from decoder: Decoder) throws {
@@ -39,7 +62,7 @@ extension WsMessage: Decodable {
 
         switch type {
         case "new_card":
-            let card = try container.decode(ReplyCard.self, forKey: .card)
+            let card = try container.decode(ApprovalCard.self, forKey: .card)
             self = .newCard(card: card)
         case "card_update":
             let id = try container.decode(UUID.self, forKey: .id)
@@ -49,11 +72,17 @@ extension WsMessage: Decodable {
             let id = try container.decode(UUID.self, forKey: .id)
             self = .cardExpired(id: id)
         case "cards_sync":
-            let cards = try container.decode([ReplyCard].self, forKey: .cards)
+            let cards = try container.decode([ApprovalCard].self, forKey: .cards)
             self = .cardsSync(cards: cards)
         case "card_refreshed":
-            let card = try container.decode(ReplyCard.self, forKey: .card)
+            let card = try container.decode(ApprovalCard.self, forKey: .card)
             self = .cardRefreshed(card: card)
+        case "silo_counts":
+            let countsContainer = try container.nestedContainer(keyedBy: CountKeys.self, forKey: .counts)
+            let messages = try countsContainer.decodeIfPresent(Int.self, forKey: .messages) ?? 0
+            let todos = try countsContainer.decodeIfPresent(Int.self, forKey: .todos) ?? 0
+            let calendar = try countsContainer.decodeIfPresent(Int.self, forKey: .calendar) ?? 0
+            self = .siloCounts(SiloCounts(messages: messages, todos: todos, calendar: calendar))
         case "ping":
             self = .ping
         default:
