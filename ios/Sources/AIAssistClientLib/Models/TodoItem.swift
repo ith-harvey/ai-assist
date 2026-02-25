@@ -102,6 +102,7 @@ public struct TodoItem: Identifiable, Hashable, Sendable {
     public var context: String?
     public var sourceCardId: UUID?
     public var snoozedUntil: Date?
+    public var parentId: UUID?
     public var createdAt: Date
     public var updatedAt: Date
 
@@ -117,6 +118,7 @@ public struct TodoItem: Identifiable, Hashable, Sendable {
         context: String? = nil,
         sourceCardId: UUID? = nil,
         snoozedUntil: Date? = nil,
+        parentId: UUID? = nil,
         createdAt: Date = Date(),
         updatedAt: Date = Date()
     ) {
@@ -131,6 +133,7 @@ public struct TodoItem: Identifiable, Hashable, Sendable {
         self.context = context
         self.sourceCardId = sourceCardId
         self.snoozedUntil = snoozedUntil
+        self.parentId = parentId
         self.createdAt = createdAt
         self.updatedAt = updatedAt
     }
@@ -147,7 +150,7 @@ public struct TodoItem: Identifiable, Hashable, Sendable {
 extension TodoItem: Codable {
     enum CodingKeys: String, CodingKey {
         case id, title, description, todoType, bucket, status, priority
-        case dueDate, context, sourceCardId, snoozedUntil, createdAt, updatedAt
+        case dueDate, context, sourceCardId, snoozedUntil, parentId, createdAt, updatedAt
     }
 
     public init(from decoder: Decoder) throws {
@@ -163,6 +166,7 @@ extension TodoItem: Codable {
         context = try container.decodeIfPresent(String.self, forKey: .context)
         sourceCardId = try container.decodeIfPresent(UUID.self, forKey: .sourceCardId)
         snoozedUntil = try container.decodeIfPresent(Date.self, forKey: .snoozedUntil)
+        parentId = try container.decodeIfPresent(UUID.self, forKey: .parentId)
         createdAt = try container.decode(Date.self, forKey: .createdAt)
         updatedAt = try container.decode(Date.self, forKey: .updatedAt)
     }

@@ -157,6 +157,10 @@ const SCHEMA: &str = r#"
         context TEXT,
         source_card_id TEXT,
         snoozed_until TEXT,
+        parent_id TEXT,
+        is_agent_internal INTEGER NOT NULL DEFAULT 0,
+        agent_progress TEXT,
+        thread_id TEXT,
         created_at TEXT NOT NULL DEFAULT (datetime('now')),
         updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
@@ -165,6 +169,8 @@ const SCHEMA: &str = r#"
     CREATE INDEX IF NOT EXISTS idx_todos_due_date ON todos(due_date);
     CREATE INDEX IF NOT EXISTS idx_todos_todo_type ON todos(todo_type);
     CREATE INDEX IF NOT EXISTS idx_todos_user_id ON todos(user_id);
+    CREATE INDEX IF NOT EXISTS idx_todos_parent_id ON todos(parent_id);
+    CREATE INDEX IF NOT EXISTS idx_todos_agent_internal ON todos(is_agent_internal);
 "#;
 
 /// Create all tables and indexes idempotently.
@@ -275,7 +281,9 @@ mod tests {
         for col in &[
             "id", "user_id", "title", "description", "todo_type",
             "bucket", "status", "priority", "due_date", "context",
-            "source_card_id", "snoozed_until", "created_at", "updated_at",
+            "source_card_id", "snoozed_until", "parent_id",
+            "is_agent_internal", "agent_progress", "thread_id",
+            "created_at", "updated_at",
         ] {
             assert!(todo_cols.contains(&col.to_string()), "todos.{col} missing");
         }

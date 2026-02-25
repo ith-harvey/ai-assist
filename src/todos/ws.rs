@@ -13,6 +13,7 @@ use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use tokio::sync::broadcast;
 use tracing::{debug, info, warn};
+use uuid::Uuid;
 
 use super::model::{TodoAction, TodoBucket, TodoItem, TodoStatus, TodoType, TodoWsMessage};
 use crate::store::Database;
@@ -48,9 +49,9 @@ async fn ws_handler(ws: WebSocketUpgrade, State(state): State<TodoState>) -> imp
 async fn handle_socket(mut socket: WebSocket, state: TodoState) {
     info!("Todo WebSocket client connected");
 
-    // Send all non-completed todos on connect
+    // Send all non-completed, user-visible todos on connect
     let default_user = "default";
-    match state.db.list_todos(default_user).await {
+    match state.db.list_user_todos(default_user).await {
         Ok(todos) => {
             let non_completed: Vec<TodoItem> = todos
                 .into_iter()
@@ -73,10 +74,19 @@ async fn handle_socket(mut socket: WebSocket, state: TodoState) {
 
     loop {
         tokio::select! {
-            // Forward broadcast events to this client
+            // Forward broadcast events to this client (skip agent-internal)
             result = rx.recv() => {
                 match result {
-                    Ok(msg) => {
+                    Ok(ref msg) => {
+                        // Filter out agent-internal todos from broadcasts
+                        let should_skip = match msg {
+                            TodoWsMessage::TodoCreated { todo } => todo.is_agent_internal,
+                            TodoWsMessage::TodoUpdated { todo } => todo.is_agent_internal,
+                            _ => false,
+                        };
+                        if should_skip {
+                            continue;
+                        }
                         if let Ok(json) = serde_json::to_string(&msg) {
                             if socket.send(Message::Text(json.into())).await.is_err() {
                                 debug!("Todo WS client disconnected during send");
@@ -86,8 +96,8 @@ async fn handle_socket(mut socket: WebSocket, state: TodoState) {
                     }
                     Err(broadcast::error::RecvError::Lagged(n)) => {
                         warn!(missed = n, "Todo WS client lagged behind broadcast");
-                        // Re-sync
-                        if let Ok(todos) = state.db.list_todos(default_user).await {
+                        // Re-sync with user-visible todos only
+                        if let Ok(todos) = state.db.list_user_todos(default_user).await {
                             let non_completed: Vec<TodoItem> = todos
                                 .into_iter()
                                 .filter(|t| t.status != TodoStatus::Completed)
@@ -236,6 +246,39 @@ async fn handle_client_action(text: &str, state: &TodoState) {
                 }
             }
 
+            TodoAction::CreateSubtask {
+                parent_id,
+                title,
+                description,
+                todo_type,
+            } => {
+                let mut subtask = TodoItem::new(
+                    default_user,
+                    title,
+                    todo_type.unwrap_or(TodoType::Deliverable),
+                    TodoBucket::AgentStartable,
+                )
+                .with_parent(parent_id)
+                .as_agent_internal();
+
+                if let Some(desc) = description {
+                    subtask = subtask.with_description(desc);
+                }
+
+                match state.db.create_todo(&subtask).await {
+                    Ok(()) => {
+                        info!(
+                            id = %subtask.id,
+                            parent = %parent_id,
+                            title = %subtask.title,
+                            "Agent subtask created (internal, not broadcast)"
+                        );
+                        // Do NOT broadcast — agent-internal subtasks are invisible to iOS
+                    }
+                    Err(e) => warn!(error = %e, "Failed to create agent subtask"),
+                }
+            }
+
             TodoAction::Snooze { id, until } => {
                 match state.db.get_todo(id).await {
                     Ok(Some(mut todo)) => {
@@ -282,6 +325,10 @@ struct TestTodoRequest {
     context: Option<String>,
     #[serde(default)]
     status: Option<TodoStatus>,
+    #[serde(default)]
+    parent_id: Option<Uuid>,
+    #[serde(default)]
+    is_agent_internal: Option<bool>,
 }
 
 fn default_todo_type() -> TodoType {
@@ -310,6 +357,12 @@ async fn create_test_todo(
     }
     if let Some(s) = body.status {
         todo.status = s;
+    }
+    if let Some(pid) = body.parent_id {
+        todo = todo.with_parent(pid);
+    }
+    if body.is_agent_internal == Some(true) {
+        todo = todo.as_agent_internal();
     }
 
     let todo_id = todo.id;
