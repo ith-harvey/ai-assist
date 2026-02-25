@@ -223,17 +223,6 @@ public struct ContentView: View {
             }
 
             Spacer()
-
-            // Confidence badge
-            HStack(spacing: 4) {
-                Circle()
-                    .fill(confidenceColor(for: card.confidence))
-                    .frame(width: 6, height: 6)
-                Text("\(Int(card.confidence * 100))%")
-                    .font(.caption2.bold())
-                    .foregroundStyle(.white.opacity(0.9))
-                    .monospacedDigit()
-            }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
@@ -439,12 +428,6 @@ public struct ContentView: View {
         default:
             return "via \(card.channel.capitalized)"
         }
-    }
-
-    private func confidenceColor(for confidence: Float) -> Color {
-        if confidence >= 0.8 { return .green }
-        if confidence >= 0.5 { return .orange }
-        return .red
     }
 
     // MARK: - Settings
