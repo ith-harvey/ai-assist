@@ -12,7 +12,7 @@ use libsql::{Connection, Database as LibSqlDatabase, params};
 use tracing::{debug, info};
 use uuid::Uuid;
 
-use crate::cards::model::{CardStatus, ReplyCard};
+use crate::cards::model::{CardSilo, CardStatus, ApprovalCard};
 use crate::error::DatabaseError;
 use crate::store::migrations;
 use crate::store::traits::{ConversationMessage, Database, MessageStatus, StoredMessage};
@@ -143,8 +143,8 @@ fn str_to_msg_status(s: &str) -> MessageStatus {
     }
 }
 
-/// Map a libsql Row to a ReplyCard.
-fn row_to_card(row: &libsql::Row) -> Result<ReplyCard, libsql::Error> {
+/// Map a libsql Row to a ApprovalCard.
+fn row_to_card(row: &libsql::Row) -> Result<ApprovalCard, libsql::Error> {
     let id_str: String = row.get(0)?;
     let confidence: f64 = row.get(5)?;
     let status_str: String = row.get(6)?;
@@ -160,14 +160,19 @@ fn row_to_card(row: &libsql::Row) -> Result<ReplyCard, libsql::Error> {
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_default();
 
-    Ok(ReplyCard {
+    let card_type_str: String = row.get::<String>(14).unwrap_or_else(|_| "reply".into());
+    let silo_str: String = row.get::<String>(15).unwrap_or_else(|_| "messages".into());
+
+    Ok(ApprovalCard {
         id: Uuid::parse_str(&id_str).unwrap_or_else(|_| Uuid::nil()),
         conversation_id: row.get(1)?,
         source_message: row.get(2)?,
         source_sender: row.get(3)?,
-        suggested_reply: row.get(4)?,
+        content: row.get(4)?,
         confidence: confidence as f32,
         status: str_to_status(&status_str),
+        card_type: card_type_str.parse().unwrap_or_default(),
+        silo: silo_str.parse().unwrap_or_default(),
         channel: row.get(7)?,
         created_at: parse_datetime(&created_str),
         expires_at: parse_datetime(&expires_str),
@@ -221,7 +226,7 @@ fn opt_text_owned(s: Option<String>) -> libsql::Value {
 
 // ── Trait implementation ────────────────────────────────────────────
 
-const CARD_COLUMNS: &str = "id, conversation_id, source_message, source_sender, suggested_reply, confidence, status, channel, created_at, expires_at, updated_at, message_id, reply_metadata, email_thread";
+const CARD_COLUMNS: &str = "id, conversation_id, source_message, source_sender, suggested_reply, confidence, status, channel, created_at, expires_at, updated_at, message_id, reply_metadata, email_thread, card_type, silo";
 
 const MESSAGE_COLUMNS: &str = "id, external_id, channel, sender, subject, content, received_at, status, replied_at, metadata, created_at, updated_at";
 
@@ -233,7 +238,7 @@ impl Database for LibSqlBackend {
 
     // ── Cards ───────────────────────────────────────────────────────
 
-    async fn insert_card(&self, card: &ReplyCard) -> Result<(), DatabaseError> {
+    async fn insert_card(&self, card: &ApprovalCard) -> Result<(), DatabaseError> {
         let conn = self.conn();
         let reply_metadata_str = card
             .reply_metadata
@@ -247,14 +252,14 @@ impl Database for LibSqlBackend {
 
         conn.execute(
             &format!(
-                "INSERT INTO cards ({CARD_COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)"
+                "INSERT INTO cards ({CARD_COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)"
             ),
             params![
                 card.id.to_string(),
                 card.conversation_id.clone(),
                 card.source_message.clone(),
                 card.source_sender.clone(),
-                card.suggested_reply.clone(),
+                card.content.clone(),
                 card.confidence as f64,
                 status_to_str(&card.status),
                 card.channel.clone(),
@@ -264,6 +269,8 @@ impl Database for LibSqlBackend {
                 opt_text_owned(card.message_id.clone()),
                 opt_text_owned(reply_metadata_str),
                 opt_text_owned(email_thread_str),
+                card.card_type.to_string(),
+                card.silo.to_string(),
             ],
         )
         .await
@@ -273,7 +280,7 @@ impl Database for LibSqlBackend {
         Ok(())
     }
 
-    async fn get_card(&self, id: Uuid) -> Result<Option<ReplyCard>, DatabaseError> {
+    async fn get_card(&self, id: Uuid) -> Result<Option<ApprovalCard>, DatabaseError> {
         let conn = self.conn();
         let mut rows = conn
             .query(
@@ -327,7 +334,7 @@ impl Database for LibSqlBackend {
         Ok(())
     }
 
-    async fn get_pending_cards(&self) -> Result<Vec<ReplyCard>, DatabaseError> {
+    async fn get_pending_cards(&self) -> Result<Vec<ApprovalCard>, DatabaseError> {
         let conn = self.conn();
         let now = Utc::now().to_rfc3339();
         let mut rows = conn
@@ -356,7 +363,7 @@ impl Database for LibSqlBackend {
         &self,
         channel: &str,
         limit: usize,
-    ) -> Result<Vec<ReplyCard>, DatabaseError> {
+    ) -> Result<Vec<ApprovalCard>, DatabaseError> {
         let conn = self.conn();
         let mut rows = conn
             .query(
@@ -398,6 +405,68 @@ impl Database for LibSqlBackend {
             }
             _ => Ok(false),
         }
+    }
+
+    async fn get_pending_cards_by_silo(
+        &self,
+        silo: CardSilo,
+    ) -> Result<Vec<ApprovalCard>, DatabaseError> {
+        let conn = self.conn();
+        let now = Utc::now().to_rfc3339();
+        let mut rows = conn
+            .query(
+                &format!(
+                    "SELECT {CARD_COLUMNS} FROM cards WHERE status = 'pending' AND expires_at > ?1 AND silo = ?2 ORDER BY created_at DESC"
+                ),
+                params![now, silo.to_string()],
+            )
+            .await
+            .map_err(|e| DatabaseError::Query(format!("get_pending_cards_by_silo: {e}")))?;
+
+        let mut cards = Vec::new();
+        while let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| DatabaseError::Query(format!("get_pending_cards_by_silo row: {e}")))?
+        {
+            cards.push(
+                row_to_card(&row)
+                    .map_err(|e| DatabaseError::Query(format!("get_pending_cards_by_silo map: {e}")))?,
+            );
+        }
+        Ok(cards)
+    }
+
+    async fn get_pending_card_counts(
+        &self,
+    ) -> Result<std::collections::HashMap<CardSilo, usize>, DatabaseError> {
+        let conn = self.conn();
+        let now = Utc::now().to_rfc3339();
+        let mut rows = conn
+            .query(
+                "SELECT silo, COUNT(*) FROM cards WHERE status = 'pending' AND expires_at > ?1 GROUP BY silo",
+                params![now],
+            )
+            .await
+            .map_err(|e| DatabaseError::Query(format!("get_pending_card_counts: {e}")))?;
+
+        let mut counts = std::collections::HashMap::new();
+        while let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| DatabaseError::Query(format!("get_pending_card_counts row: {e}")))?
+        {
+            let silo_str: String = row.get(0).map_err(|e| {
+                DatabaseError::Query(format!("get_pending_card_counts silo: {e}"))
+            })?;
+            let count: i64 = row.get(1).map_err(|e| {
+                DatabaseError::Query(format!("get_pending_card_counts count: {e}"))
+            })?;
+            if let Ok(silo) = silo_str.parse::<CardSilo>() {
+                counts.insert(silo, count as usize);
+            }
+        }
+        Ok(counts)
     }
 
     async fn expire_old_cards(&self) -> Result<usize, DatabaseError> {
@@ -1760,14 +1829,14 @@ fn row_to_routine_run(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cards::model::ReplyCard;
+    use crate::cards::model::ApprovalCard;
 
     async fn test_db() -> LibSqlBackend {
         LibSqlBackend::new_memory().await.unwrap()
     }
 
-    fn make_card(channel: &str) -> ReplyCard {
-        ReplyCard::new("chat_1", "hello", "Alice", "hi back!", 0.85, channel, 15)
+    fn make_card(channel: &str) -> ApprovalCard {
+        ApprovalCard::new("chat_1", "hello", "Alice", "hi back!", 0.85, channel, 15)
     }
 
     // ── Card tests ──────────────────────────────────────────────────
@@ -1783,7 +1852,7 @@ mod tests {
         let fetched = db.get_card(card_id).await.unwrap().unwrap();
         assert_eq!(fetched.id, card_id);
         assert_eq!(fetched.source_sender, "Alice");
-        assert_eq!(fetched.suggested_reply, "hi back!");
+        assert_eq!(fetched.content, "hi back!");
         assert_eq!(fetched.status, CardStatus::Pending);
         assert!((fetched.confidence - 0.85).abs() < 0.01);
     }
@@ -1838,7 +1907,7 @@ mod tests {
             .unwrap();
 
         let fetched = db.get_card(card_id).await.unwrap().unwrap();
-        assert_eq!(fetched.suggested_reply, "edited reply");
+        assert_eq!(fetched.content, "edited reply");
         assert_eq!(fetched.status, CardStatus::Approved);
     }
 

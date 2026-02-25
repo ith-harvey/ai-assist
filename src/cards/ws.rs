@@ -17,7 +17,7 @@ use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use super::generator::CardGenerator;
-use super::model::{CardAction, ReplyCard, WsMessage};
+use super::model::{CardAction, ApprovalCard, WsMessage};
 use super::queue::CardQueue;
 use crate::channels::email::{EmailConfig, send_reply_email};
 
@@ -161,7 +161,7 @@ async fn handle_client_message(
         Ok(action) => match action {
             CardAction::Approve { card_id } => {
                 if let Some(card) = queue.approve(card_id).await {
-                    info!(card_id = %card_id, reply = %card.suggested_reply, "Card approved via WS");
+                    info!(card_id = %card_id, reply = %card.content, "Card approved via WS");
                     send_card_reply(&card, email_config, queue).await;
                 } else {
                     warn!(card_id = %card_id, "Approve failed — card not found or not pending");
@@ -176,7 +176,7 @@ async fn handle_client_message(
             }
             CardAction::Edit { card_id, new_text } => {
                 if let Some(card) = queue.edit(card_id, new_text).await {
-                    info!(card_id = %card_id, reply = %card.suggested_reply, "Card edited and approved via WS");
+                    info!(card_id = %card_id, reply = %card.content, "Card edited and approved via WS");
                     send_card_reply(&card, email_config, queue).await;
                 } else {
                     warn!(card_id = %card_id, "Edit failed — card not found or not pending");
@@ -200,10 +200,10 @@ async fn handle_client_message(
 ///
 /// For email cards with reply_metadata, sends a reply-all email with threading headers.
 /// Marks the card as sent on success.
-async fn send_card_reply(card: &ReplyCard, email_config: Option<&EmailConfig>, queue: &CardQueue) {
+async fn send_card_reply(card: &ApprovalCard, email_config: Option<&EmailConfig>, queue: &CardQueue) {
     if card.channel == "email" {
         if let (Some(config), Some(meta)) = (email_config, &card.reply_metadata) {
-            match send_reply_email(config, meta, &card.suggested_reply) {
+            match send_reply_email(config, meta, &card.content) {
                 Ok(()) => {
                     queue.mark_sent(card.id).await;
                     info!(card_id = %card.id, "Reply email sent successfully");
@@ -389,7 +389,7 @@ async fn create_test_card(
     State(state): State<AppState>,
     Json(body): Json<TestCardRequest>,
 ) -> impl IntoResponse {
-    let card = ReplyCard::new(
+    let card = ApprovalCard::new(
         "chat_test",
         body.message,
         body.sender,

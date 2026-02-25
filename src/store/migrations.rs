@@ -214,6 +214,16 @@ static MIGRATIONS: &[Migration] = &[
             CREATE INDEX IF NOT EXISTS idx_todos_user_id ON todos(user_id);
         "#,
     },
+    Migration {
+        version: 6,
+        name: "card_type_and_silo",
+        sql: r#"
+            ALTER TABLE cards ADD COLUMN card_type TEXT NOT NULL DEFAULT 'reply';
+            ALTER TABLE cards ADD COLUMN silo TEXT NOT NULL DEFAULT 'messages';
+            CREATE INDEX IF NOT EXISTS idx_cards_silo ON cards(silo);
+            CREATE INDEX IF NOT EXISTS idx_cards_card_type ON cards(card_type);
+        "#,
+    },
 ];
 
 /// Run all pending migrations against the given connection.
@@ -423,7 +433,7 @@ mod tests {
 
         // Version should be at the latest migration
         let version = get_current_version(&conn).await.unwrap();
-        assert_eq!(version, 5);
+        assert_eq!(version, 6);
     }
 
     #[tokio::test]
@@ -469,7 +479,7 @@ mod tests {
 
         // Verify all migrations applied (legacy seed V1 + V2 routines + V3 llm_calls + V5 todos)
         let version = get_current_version(&conn).await.unwrap();
-        assert_eq!(version, 5);
+        assert_eq!(version, 6);
 
         // Verify conversation tables were created
         let mut rows = conn
@@ -530,5 +540,11 @@ mod tests {
         let n5: String = row5.get(1).unwrap();
         assert_eq!(v5, 5);
         assert_eq!(n5, "todos");
+
+        let row6 = rows.next().await.unwrap().unwrap();
+        let v6: i64 = row6.get(0).unwrap();
+        let n6: String = row6.get(1).unwrap();
+        assert_eq!(v6, 6);
+        assert_eq!(n6, "card_type_and_silo");
     }
 }

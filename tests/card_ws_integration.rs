@@ -17,7 +17,7 @@ use async_trait::async_trait;
 use rust_decimal::Decimal;
 
 use ai_assist::cards::generator::{CardGenerator, GeneratorConfig};
-use ai_assist::cards::model::{CardAction, ReplyCard};
+use ai_assist::cards::model::{CardAction, ApprovalCard};
 use ai_assist::cards::queue::CardQueue;
 use ai_assist::cards::ws::card_routes;
 use ai_assist::error::LlmError;
@@ -81,9 +81,9 @@ async fn start_server() -> (u16, Arc<CardQueue>) {
     (port, queue)
 }
 
-/// Helper: create a test ReplyCard.
-fn make_card(reply: &str) -> ReplyCard {
-    ReplyCard::new("chat_1", "hello there", "Alice", reply, 0.9, "telegram", 15)
+/// Helper: create a test ApprovalCard.
+fn make_card(reply: &str) -> ApprovalCard {
+    ApprovalCard::new("chat_1", "hello there", "Alice", reply, 0.9, "telegram", 15)
 }
 
 /// Parse a WS text frame into a serde_json::Value.
@@ -137,7 +137,7 @@ async fn ws_connect_receives_pending_cards_on_sync() {
         let cards = json["cards"].as_array().unwrap();
         assert_eq!(cards.len(), 1);
         assert_eq!(cards[0]["id"], card_id.to_string());
-        assert_eq!(cards[0]["suggested_reply"], "hey back!");
+        assert_eq!(cards[0]["content"], "hey back!");
     })
     .await
     .expect("test timed out");
@@ -165,7 +165,7 @@ async fn ws_receives_new_card_broadcast() {
 
         assert_eq!(json["type"], "new_card");
         assert_eq!(json["card"]["id"], card_id.to_string());
-        assert_eq!(json["card"]["suggested_reply"], "nice to meet you");
+        assert_eq!(json["card"]["content"], "nice to meet you");
     })
     .await
     .expect("test timed out");
@@ -419,7 +419,7 @@ async fn rest_edit_card() {
         assert_eq!(resp.status(), 200);
 
         let body: Value = resp.json().await.unwrap();
-        assert_eq!(body["suggested_reply"], "edited text");
+        assert_eq!(body["content"], "edited text");
         assert_eq!(body["status"], "approved");
     })
     .await
@@ -473,7 +473,7 @@ async fn card_expiry_removes_from_pending() {
         let queue = CardQueue::new();
 
         // Create a card that expires in 0 minutes (already expired).
-        let card = ReplyCard::new("chat_1", "hi", "Bob", "hey", 0.8, "telegram", 0);
+        let card = ApprovalCard::new("chat_1", "hi", "Bob", "hey", 0.8, "telegram", 0);
         queue.push(card).await;
 
         // The card is technically pending but expired; pending() filters it.
@@ -497,7 +497,7 @@ async fn ws_receives_card_expired_broadcast() {
         let (port, queue) = start_server().await;
 
         // Create an already-expired card.
-        let card = ReplyCard::new("chat_1", "hi", "Bob", "hey", 0.8, "telegram", 0);
+        let card = ApprovalCard::new("chat_1", "hi", "Bob", "hey", 0.8, "telegram", 0);
         let card_id = card.id;
         queue.push(card).await;
 

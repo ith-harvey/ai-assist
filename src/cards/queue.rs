@@ -10,7 +10,7 @@ use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 use super::generator::CardGenerator;
-use super::model::{CardStatus, ReplyCard, WsMessage};
+use super::model::{CardSilo, CardStatus, ApprovalCard, WsMessage};
 use crate::store::{Database, MessageStatus};
 
 /// Default broadcast channel capacity.
@@ -22,7 +22,7 @@ const DEFAULT_BROADCAST_CAPACITY: usize = 256;
 /// If a DB write fails, we log the error and continue with the in-memory operation
 /// (graceful degradation).
 pub struct CardQueue {
-    cards: RwLock<VecDeque<ReplyCard>>,
+    cards: RwLock<VecDeque<ApprovalCard>>,
     tx: broadcast::Sender<WsMessage>,
     db: Option<Arc<dyn Database>>,
 }
@@ -69,7 +69,7 @@ impl CardQueue {
     }
 
     /// Push a new card into the queue and broadcast to all subscribers.
-    pub async fn push(&self, card: ReplyCard) {
+    pub async fn push(&self, card: ApprovalCard) {
         info!(
             card_id = %card.id,
             sender = %card.source_sender,
@@ -89,6 +89,8 @@ impl CardQueue {
         {
             let mut cards = self.cards.write().await;
             cards.push_back(card);
+            // Broadcast silo counts while we still hold the lock
+            self.broadcast_silo_counts_from(&cards);
         }
 
         // Broadcast — ok if no receivers are listening yet
@@ -96,7 +98,7 @@ impl CardQueue {
     }
 
     /// Approve a card. Returns the card if found and was pending.
-    pub async fn approve(&self, card_id: Uuid) -> Option<ReplyCard> {
+    pub async fn approve(&self, card_id: Uuid) -> Option<ApprovalCard> {
         let mut cards = self.cards.write().await;
 
         let card = cards.iter_mut().find(|c| c.id == card_id)?;
@@ -129,6 +131,8 @@ impl CardQueue {
             id: card_id,
             status: CardStatus::Approved,
         });
+
+        self.broadcast_silo_counts_from(&cards);
 
         Some(approved)
     }
@@ -166,6 +170,8 @@ impl CardQueue {
                 status: CardStatus::Dismissed,
             });
 
+            self.broadcast_silo_counts_from(&cards);
+
             true
         } else {
             false
@@ -173,7 +179,7 @@ impl CardQueue {
     }
 
     /// Edit a card's reply text. Returns the updated card if successful.
-    pub async fn edit(&self, card_id: Uuid, new_text: String) -> Option<ReplyCard> {
+    pub async fn edit(&self, card_id: Uuid, new_text: String) -> Option<ApprovalCard> {
         let mut cards = self.cards.write().await;
 
         let card = cards.iter_mut().find(|c| c.id == card_id)?;
@@ -193,7 +199,7 @@ impl CardQueue {
             }
         }
 
-        card.suggested_reply = new_text;
+        card.content = new_text;
         card.status = CardStatus::Approved;
         card.updated_at = chrono::Utc::now();
         let edited = card.clone();
@@ -205,6 +211,8 @@ impl CardQueue {
             status: CardStatus::Approved,
         });
 
+        self.broadcast_silo_counts_from(&cards);
+
         Some(edited)
     }
 
@@ -214,7 +222,7 @@ impl CardQueue {
         card_id: Uuid,
         instruction: String,
         generator: &CardGenerator,
-    ) -> Result<ReplyCard, String> {
+    ) -> Result<ApprovalCard, String> {
         // Find the card and verify it's pending
         let card_snapshot = {
             let cards = self.cards.read().await;
@@ -249,7 +257,7 @@ impl CardQueue {
                 return Err(format!("Card {} is no longer pending", card_id));
             }
 
-            card.suggested_reply = new_text;
+            card.content = new_text;
             card.confidence = new_confidence;
             card.updated_at = chrono::Utc::now();
             card.clone()
@@ -258,7 +266,7 @@ impl CardQueue {
         // Persist to DB (keep status as Pending)
         if let Some(ref db) = self.db {
             if let Err(e) = db
-                .update_card_reply(card_id, &updated.suggested_reply, CardStatus::Pending)
+                .update_card_reply(card_id, &updated.content, CardStatus::Pending)
                 .await
             {
                 error!(card_id = %card_id, error = %e, "Failed to persist refine to DB");
@@ -276,7 +284,7 @@ impl CardQueue {
     }
 
     /// Get all pending (non-expired) cards.
-    pub async fn pending(&self) -> Vec<ReplyCard> {
+    pub async fn pending(&self) -> Vec<ApprovalCard> {
         let cards = self.cards.read().await;
         cards
             .iter()
@@ -336,6 +344,7 @@ impl CardQueue {
 
         if expired_count > 0 {
             info!(count = expired_count, "Expired cards");
+            self.broadcast_silo_counts_from(&cards);
         }
 
         expired_count
@@ -377,10 +386,38 @@ impl CardQueue {
                 status: CardStatus::Sent,
             });
 
+            self.broadcast_silo_counts_from(&cards);
+
             true
         } else {
             false
         }
+    }
+
+    /// Compute silo counts from a cards slice and broadcast to all WS clients.
+    /// Call this with the cards already available (to avoid re-acquiring the lock).
+    fn broadcast_silo_counts_from(&self, cards: &VecDeque<ApprovalCard>) {
+        let mut messages = 0usize;
+        let mut todos = 0usize;
+        let mut calendar = 0usize;
+
+        for card in cards.iter() {
+            if card.status == CardStatus::Pending && !card.is_expired() {
+                match card.silo {
+                    CardSilo::Messages => messages += 1,
+                    CardSilo::Todos => todos += 1,
+                    CardSilo::Calendar => calendar += 1,
+                }
+            }
+        }
+
+        let total = messages + todos + calendar;
+        let _ = self.tx.send(WsMessage::SiloCounts {
+            messages,
+            todos,
+            calendar,
+            total,
+        });
     }
 
     /// Helper: update the linked message status (if DB is available).
@@ -410,11 +447,11 @@ pub fn spawn_expiry_task(queue: Arc<CardQueue>) -> tokio::task::JoinHandle<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cards::model::ReplyCard;
+    use crate::cards::model::{ApprovalCard, CardType, CardSilo};
     use crate::store::LibSqlBackend;
 
-    fn make_card(expire_minutes: u32) -> ReplyCard {
-        ReplyCard::new(
+    fn make_card(expire_minutes: u32) -> ApprovalCard {
+        ApprovalCard::new(
             "chat_1",
             "hello",
             "Alice",
@@ -489,8 +526,21 @@ mod tests {
         let edited = queue.edit(card_id, "edited reply".into()).await;
         assert!(edited.is_some());
         let edited = edited.unwrap();
-        assert_eq!(edited.suggested_reply, "edited reply");
+        assert_eq!(edited.content, "edited reply");
         assert_eq!(edited.status, CardStatus::Approved);
+    }
+
+    /// Drain messages from the broadcast receiver until we find one matching the predicate.
+    async fn recv_until<F>(rx: &mut broadcast::Receiver<WsMessage>, pred: F) -> WsMessage
+    where
+        F: Fn(&WsMessage) -> bool,
+    {
+        loop {
+            let msg = rx.recv().await.unwrap();
+            if pred(&msg) {
+                return msg;
+            }
+        }
     }
 
     #[tokio::test]
@@ -502,8 +552,8 @@ mod tests {
         let card_id = card.id;
         queue.push(card).await;
 
-        // Should receive NewCard
-        let msg = rx.recv().await.unwrap();
+        // Should receive NewCard (skip SiloCounts)
+        let msg = recv_until(&mut rx, |m| matches!(m, WsMessage::NewCard { .. })).await;
         match msg {
             WsMessage::NewCard { card } => assert_eq!(card.id, card_id),
             _ => panic!("Expected NewCard"),
@@ -511,8 +561,8 @@ mod tests {
 
         queue.approve(card_id).await;
 
-        // Should receive CardUpdate
-        let msg = rx.recv().await.unwrap();
+        // Should receive CardUpdate (skip SiloCounts)
+        let msg = recv_until(&mut rx, |m| matches!(m, WsMessage::CardUpdate { .. })).await;
         match msg {
             WsMessage::CardUpdate { id, status } => {
                 assert_eq!(id, card_id);
@@ -607,7 +657,7 @@ mod tests {
         queue.edit(card_id, "new reply text".into()).await;
 
         let db_card = db.get_card(card_id).await.unwrap().unwrap();
-        assert_eq!(db_card.suggested_reply, "new reply text");
+        assert_eq!(db_card.content, "new reply text");
         assert_eq!(db_card.status, CardStatus::Approved);
     }
 
@@ -624,5 +674,160 @@ mod tests {
 
         let db_card = db.get_card(card_id).await.unwrap().unwrap();
         assert_eq!(db_card.status, CardStatus::Sent);
+    }
+
+    #[tokio::test]
+    async fn silo_counts_broadcast_on_push() {
+        let queue = CardQueue::new();
+        let mut rx = queue.subscribe();
+
+        let card = make_card(15);
+        queue.push(card).await;
+
+        // After push, we should get a SiloCounts broadcast
+        let msg = recv_until(&mut rx, |m| matches!(m, WsMessage::SiloCounts { .. })).await;
+        match msg {
+            WsMessage::SiloCounts {
+                messages,
+                todos,
+                calendar,
+                total,
+            } => {
+                assert_eq!(messages, 1);
+                assert_eq!(todos, 0);
+                assert_eq!(calendar, 0);
+                assert_eq!(total, 1);
+            }
+            _ => panic!("Expected SiloCounts"),
+        }
+    }
+
+    #[tokio::test]
+    async fn silo_counts_broadcast_on_dismiss() {
+        let queue = CardQueue::new();
+        let mut rx = queue.subscribe();
+
+        let card = make_card(15);
+        let card_id = card.id;
+        queue.push(card).await;
+
+        // Drain push broadcasts
+        let _ = recv_until(&mut rx, |m| matches!(m, WsMessage::SiloCounts { .. })).await;
+
+        queue.dismiss(card_id).await;
+
+        // After dismiss, silo counts should be 0
+        let msg = recv_until(&mut rx, |m| matches!(m, WsMessage::SiloCounts { .. })).await;
+        match msg {
+            WsMessage::SiloCounts {
+                messages, total, ..
+            } => {
+                assert_eq!(messages, 0);
+                assert_eq!(total, 0);
+            }
+            _ => panic!("Expected SiloCounts"),
+        }
+    }
+
+    #[tokio::test]
+    async fn card_default_type_and_silo() {
+        let card = make_card(15);
+        assert_eq!(card.card_type, CardType::Reply);
+        assert_eq!(card.silo, CardSilo::Messages);
+    }
+
+    #[tokio::test]
+    async fn card_with_custom_type_and_silo() {
+        let card = make_card(15)
+            .with_card_type(CardType::Action)
+            .with_silo(CardSilo::Todos);
+        assert_eq!(card.card_type, CardType::Action);
+        assert_eq!(card.silo, CardSilo::Todos);
+    }
+
+    #[tokio::test]
+    async fn silo_counts_multiple_silos() {
+        let queue = CardQueue::new();
+        let mut rx = queue.subscribe();
+
+        // Push a messages card
+        let card1 = make_card(15);
+        queue.push(card1).await;
+        let _ = recv_until(&mut rx, |m| matches!(m, WsMessage::SiloCounts { .. })).await;
+
+        // Push a todos card
+        let card2 = make_card(15).with_silo(CardSilo::Todos);
+        queue.push(card2).await;
+
+        let msg = recv_until(&mut rx, |m| matches!(m, WsMessage::SiloCounts { .. })).await;
+        match msg {
+            WsMessage::SiloCounts {
+                messages,
+                todos,
+                calendar,
+                total,
+            } => {
+                assert_eq!(messages, 1);
+                assert_eq!(todos, 1);
+                assert_eq!(calendar, 0);
+                assert_eq!(total, 2);
+            }
+            _ => panic!("Expected SiloCounts"),
+        }
+    }
+
+    #[tokio::test]
+    async fn with_db_persists_card_type_and_silo() {
+        let db = make_db().await;
+        let queue = CardQueue::with_db(db.clone()).await;
+
+        let card = make_card(15)
+            .with_card_type(CardType::Action)
+            .with_silo(CardSilo::Todos);
+        let card_id = card.id;
+        queue.push(card).await;
+
+        let db_card = db.get_card(card_id).await.unwrap().unwrap();
+        assert_eq!(db_card.card_type, CardType::Action);
+        assert_eq!(db_card.silo, CardSilo::Todos);
+    }
+
+    #[tokio::test]
+    async fn with_db_get_pending_cards_by_silo() {
+        let db = make_db().await;
+        let queue = CardQueue::with_db(db.clone()).await;
+
+        // Push cards to different silos
+        let card1 = make_card(15);
+        let card2 = make_card(15).with_silo(CardSilo::Todos);
+        let card3 = make_card(15).with_silo(CardSilo::Calendar);
+        queue.push(card1).await;
+        queue.push(card2).await;
+        queue.push(card3).await;
+
+        let messages = db.get_pending_cards_by_silo(CardSilo::Messages).await.unwrap();
+        assert_eq!(messages.len(), 1);
+
+        let todos = db.get_pending_cards_by_silo(CardSilo::Todos).await.unwrap();
+        assert_eq!(todos.len(), 1);
+
+        let calendar = db.get_pending_cards_by_silo(CardSilo::Calendar).await.unwrap();
+        assert_eq!(calendar.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn with_db_get_pending_card_counts() {
+        let db = make_db().await;
+        let queue = CardQueue::with_db(db.clone()).await;
+
+        // Push 2 messages, 1 todo
+        queue.push(make_card(15)).await;
+        queue.push(make_card(15)).await;
+        queue.push(make_card(15).with_silo(CardSilo::Todos)).await;
+
+        let counts = db.get_pending_card_counts().await.unwrap();
+        assert_eq!(counts.get(&CardSilo::Messages).copied().unwrap_or(0), 2);
+        assert_eq!(counts.get(&CardSilo::Todos).copied().unwrap_or(0), 1);
+        assert_eq!(counts.get(&CardSilo::Calendar).copied().unwrap_or(0), 0);
     }
 }

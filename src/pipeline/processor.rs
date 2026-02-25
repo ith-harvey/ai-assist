@@ -13,7 +13,7 @@ use std::sync::Arc;
 use chrono::Utc;
 use tracing::{debug, error, info, warn};
 
-use crate::cards::model::ReplyCard;
+use crate::cards::model::ApprovalCard;
 use crate::cards::queue::CardQueue;
 use crate::error::PipelineError;
 use crate::llm::provider::{ChatMessage, CompletionRequest, LlmProvider};
@@ -174,7 +174,7 @@ impl MessageProcessor {
                 Ok(())
             }
             TriageAction::Notify { summary } => {
-                let card = ReplyCard::new(
+                let card = ApprovalCard::new(
                     &message.id,
                     &message.content,
                     &message.sender,
@@ -209,7 +209,7 @@ impl MessageProcessor {
                     metadata["style_notes"] = serde_json::Value::String(s.clone());
                 }
 
-                let card = ReplyCard::new(
+                let card = ApprovalCard::new(
                     &message.id,
                     &message.content,
                     &message.sender,
@@ -237,7 +237,7 @@ impl MessageProcessor {
                     summary = %summary,
                     "Digest item — creating low-priority notification for now"
                 );
-                let card = ReplyCard::new(
+                let card = ApprovalCard::new(
                     &message.id,
                     &message.content,
                     &message.sender,
@@ -815,7 +815,7 @@ mod tests {
 
         let pending = queue.pending().await;
         assert_eq!(pending.len(), 1);
-        assert_eq!(pending[0].suggested_reply, "Sure, Tuesday works!");
+        assert_eq!(pending[0].content, "Sure, Tuesday works!");
         assert!((pending[0].confidence - 0.9).abs() < 0.01);
     }
 
@@ -877,7 +877,7 @@ mod tests {
 
         let pending = queue.pending().await;
         assert_eq!(pending.len(), 1);
-        assert!(pending[0].suggested_reply.contains("Notification"));
+        assert!(pending[0].content.contains("Notification"));
     }
 
     #[tokio::test]
@@ -980,6 +980,6 @@ mod tests {
 
         let pending = queue.pending().await;
         assert_eq!(pending.len(), 1);
-        assert!(pending[0].suggested_reply.contains("Digest"));
+        assert!(pending[0].content.contains("Digest"));
     }
 }

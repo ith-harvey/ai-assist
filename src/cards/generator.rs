@@ -7,7 +7,7 @@ use tracing::{debug, error, info, warn};
 use crate::error::LlmError;
 use crate::llm::provider::{ChatMessage, CompletionRequest, LlmProvider};
 
-use super::model::ReplyCard;
+use super::model::ApprovalCard;
 use super::queue::CardQueue;
 
 /// Configuration for card generation.
@@ -93,7 +93,7 @@ impl CardGenerator {
         thread: Vec<super::model::ThreadMessage>,
         reply_metadata: Option<serde_json::Value>,
         email_thread: Vec<crate::channels::EmailMessage>,
-    ) -> Result<Vec<ReplyCard>, LlmError> {
+    ) -> Result<Vec<ApprovalCard>, LlmError> {
         if !self.should_generate(source_message, sender, chat_id) {
             return Ok(vec![]);
         }
@@ -195,10 +195,10 @@ impl CardGenerator {
 
     /// Refine an existing card's draft using an LLM with the user's instruction.
     ///
-    /// Returns (new_suggested_reply, confidence).
+    /// Returns (new_content, confidence).
     pub async fn refine_card(
         &self,
-        card: &ReplyCard,
+        card: &ApprovalCard,
         instruction: &str,
     ) -> Result<(String, f32), LlmError> {
         info!(
@@ -234,7 +234,7 @@ impl CardGenerator {
         let user_prompt = format!(
             "{context}\n\nCurrent draft reply: \"{draft}\"\n\nUser instruction: {instruction}",
             context = context,
-            draft = card.suggested_reply,
+            draft = card.content,
             instruction = instruction,
         );
 
@@ -257,7 +257,7 @@ impl CardGenerator {
         Ok((refined_text, confidence))
     }
 
-    /// Parse LLM response JSON into ReplyCard objects.
+    /// Parse LLM response JSON into ApprovalCard objects.
     fn parse_suggestions(
         &self,
         llm_response: &str,
@@ -265,7 +265,7 @@ impl CardGenerator {
         sender: &str,
         chat_id: &str,
         channel: &str,
-    ) -> Vec<ReplyCard> {
+    ) -> Vec<ApprovalCard> {
         // Try to extract JSON array from response (LLM might wrap in markdown)
         let json_str = extract_json_array(llm_response);
 
@@ -286,7 +286,7 @@ impl CardGenerator {
             .take(self.config.max_suggestions)
             .filter(|s| !s.text.trim().is_empty())
             .map(|s| {
-                ReplyCard::new(
+                ApprovalCard::new(
                     chat_id,
                     source_message,
                     sender,
