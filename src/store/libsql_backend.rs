@@ -50,7 +50,7 @@ impl LibSqlBackend {
             db: Arc::new(db),
             conn,
         };
-        backend.run_migrations().await?;
+        backend.init_schema().await?;
         info!(path = %path.display(), "Database opened");
         Ok(backend)
     }
@@ -72,7 +72,7 @@ impl LibSqlBackend {
             db: Arc::new(db),
             conn,
         };
-        backend.run_migrations().await?;
+        backend.init_schema().await?;
         Ok(backend)
     }
 
@@ -355,8 +355,8 @@ const MESSAGE_COLUMNS: &str = "id, external_id, channel, sender, subject, conten
 
 #[async_trait]
 impl Database for LibSqlBackend {
-    async fn run_migrations(&self) -> Result<(), DatabaseError> {
-        migrations::run_migrations(self.conn()).await
+    async fn init_schema(&self) -> Result<(), DatabaseError> {
+        migrations::init_schema(self.conn()).await
     }
 
     // ── Cards ───────────────────────────────────────────────────────
@@ -2489,8 +2489,8 @@ mod tests {
     #[tokio::test]
     async fn migrations_are_idempotent() {
         let db = test_db().await;
-        // run_migrations already ran in new_memory. Running again should be fine.
-        db.run_migrations().await.unwrap();
+        // init_schema already ran in new_memory. Running again should be fine.
+        db.init_schema().await.unwrap();
     }
 
     #[tokio::test]
