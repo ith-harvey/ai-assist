@@ -348,18 +348,6 @@ struct TodoExpandedDetail: View {
                 }
             }
 
-            // Context
-            if let context = todo.context, !context.isEmpty {
-                VStack(alignment: .leading, spacing: 2) {
-                    Label("Context", systemImage: "info.circle")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(.secondary)
-                    Text(context)
-                        .font(.subheadline)
-                        .foregroundStyle(.primary)
-                }
-                .padding(.top, 2)
-            }
         }
         .font(.subheadline)
         .transition(.asymmetric(
