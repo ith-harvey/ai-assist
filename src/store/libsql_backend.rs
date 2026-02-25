@@ -1603,8 +1603,8 @@ impl Database for LibSqlBackend {
             .map(|c| serde_json::to_string(c).unwrap_or_default());
 
         conn.execute(
-            "INSERT INTO todos (id, user_id, title, description, todo_type, bucket, status, priority, due_date, context, source_card_id, snoozed_until, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+            "INSERT INTO todos (id, user_id, title, description, todo_type, bucket, status, priority, due_date, context, source_card_id, snoozed_until, parent_id, is_agent_internal, agent_progress, thread_id, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
             params![
                 todo.id.to_string(),
                 todo.user_id.as_str(),
@@ -1618,6 +1618,10 @@ impl Database for LibSqlBackend {
                 context_json,
                 todo.source_card_id.map(|id| id.to_string()),
                 todo.snoozed_until.map(|d| d.to_rfc3339()),
+                todo.parent_id.map(|id| id.to_string()),
+                todo.is_agent_internal as i64,
+                todo.agent_progress.as_deref(),
+                todo.thread_id.map(|id| id.to_string()),
                 todo.created_at.to_rfc3339(),
                 todo.updated_at.to_rfc3339(),
             ],
@@ -1632,7 +1636,7 @@ impl Database for LibSqlBackend {
         let conn = self.conn();
         let mut rows = conn
             .query(
-                "SELECT id, user_id, title, description, todo_type, bucket, status, priority, due_date, context, source_card_id, snoozed_until, created_at, updated_at FROM todos WHERE id = ?1",
+                &format!("SELECT {TODO_COLUMNS} FROM todos WHERE id = ?1"),
                 params![id.to_string()],
             )
             .await
@@ -1649,11 +1653,45 @@ impl Database for LibSqlBackend {
         let conn = self.conn();
         let mut rows = conn
             .query(
-                "SELECT id, user_id, title, description, todo_type, bucket, status, priority, due_date, context, source_card_id, snoozed_until, created_at, updated_at FROM todos WHERE user_id = ?1 ORDER BY priority ASC, created_at ASC",
+                &format!("SELECT {TODO_COLUMNS} FROM todos WHERE user_id = ?1 ORDER BY priority ASC, created_at ASC"),
                 params![user_id],
             )
             .await
             .map_err(|e| DatabaseError::Query(format!("list_todos: {e}")))?;
+
+        let mut todos = Vec::new();
+        while let Ok(Some(row)) = rows.next().await {
+            todos.push(row_to_todo(&row)?);
+        }
+        Ok(todos)
+    }
+
+    async fn list_user_todos(&self, user_id: &str) -> Result<Vec<TodoItem>, DatabaseError> {
+        let conn = self.conn();
+        let mut rows = conn
+            .query(
+                &format!("SELECT {TODO_COLUMNS} FROM todos WHERE user_id = ?1 AND is_agent_internal = 0 ORDER BY priority ASC, created_at ASC"),
+                params![user_id],
+            )
+            .await
+            .map_err(|e| DatabaseError::Query(format!("list_user_todos: {e}")))?;
+
+        let mut todos = Vec::new();
+        while let Ok(Some(row)) = rows.next().await {
+            todos.push(row_to_todo(&row)?);
+        }
+        Ok(todos)
+    }
+
+    async fn list_subtasks(&self, parent_id: Uuid) -> Result<Vec<TodoItem>, DatabaseError> {
+        let conn = self.conn();
+        let mut rows = conn
+            .query(
+                &format!("SELECT {TODO_COLUMNS} FROM todos WHERE parent_id = ?1 ORDER BY priority ASC, created_at ASC"),
+                params![parent_id.to_string()],
+            )
+            .await
+            .map_err(|e| DatabaseError::Query(format!("list_subtasks: {e}")))?;
 
         let mut todos = Vec::new();
         while let Ok(Some(row)) = rows.next().await {
@@ -1674,7 +1712,7 @@ impl Database for LibSqlBackend {
 
         let mut rows = conn
             .query(
-                "SELECT id, user_id, title, description, todo_type, bucket, status, priority, due_date, context, source_card_id, snoozed_until, created_at, updated_at FROM todos WHERE user_id = ?1 AND status = ?2 ORDER BY priority ASC, created_at ASC",
+                &format!("SELECT {TODO_COLUMNS} FROM todos WHERE user_id = ?1 AND status = ?2 ORDER BY priority ASC, created_at ASC"),
                 params![user_id, status_str],
             )
             .await
@@ -1704,7 +1742,7 @@ impl Database for LibSqlBackend {
             .map(|c| serde_json::to_string(c).unwrap_or_default());
 
         conn.execute(
-            "UPDATE todos SET title = ?1, description = ?2, todo_type = ?3, bucket = ?4, status = ?5, priority = ?6, due_date = ?7, context = ?8, source_card_id = ?9, snoozed_until = ?10, updated_at = ?11 WHERE id = ?12",
+            "UPDATE todos SET title = ?1, description = ?2, todo_type = ?3, bucket = ?4, status = ?5, priority = ?6, due_date = ?7, context = ?8, source_card_id = ?9, snoozed_until = ?10, parent_id = ?11, is_agent_internal = ?12, agent_progress = ?13, thread_id = ?14, updated_at = ?15 WHERE id = ?16",
             params![
                 todo.title.as_str(),
                 todo.description.as_deref().unwrap_or(""),
@@ -1716,6 +1754,10 @@ impl Database for LibSqlBackend {
                 context_json,
                 todo.source_card_id.map(|id| id.to_string()),
                 todo.snoozed_until.map(|d| d.to_rfc3339()),
+                todo.parent_id.map(|id| id.to_string()),
+                todo.is_agent_internal as i64,
+                todo.agent_progress.as_deref(),
+                todo.thread_id.map(|id| id.to_string()),
                 todo.updated_at.to_rfc3339(),
                 todo.id.to_string(),
             ],
@@ -1745,6 +1787,18 @@ impl Database for LibSqlBackend {
         self.update_todo_status(id, TodoStatus::Completed).await
     }
 
+    async fn update_agent_progress(&self, id: Uuid, progress: &str) -> Result<(), DatabaseError> {
+        let conn = self.conn();
+        let now = Utc::now().to_rfc3339();
+        conn.execute(
+            "UPDATE todos SET agent_progress = ?1, updated_at = ?2 WHERE id = ?3",
+            params![progress, now, id.to_string()],
+        )
+        .await
+        .map_err(|e| DatabaseError::Query(format!("update_agent_progress: {e}")))?;
+        Ok(())
+    }
+
     async fn delete_todo(&self, id: Uuid) -> Result<bool, DatabaseError> {
         let conn = self.conn();
         let count = conn
@@ -1759,6 +1813,9 @@ impl Database for LibSqlBackend {
 }
 
 // ── Row mapping helpers for todos ───────────────────────────────────
+
+/// Column list for todo SELECT queries (18 columns).
+const TODO_COLUMNS: &str = "id, user_id, title, description, todo_type, bucket, status, priority, due_date, context, source_card_id, snoozed_until, parent_id, is_agent_internal, agent_progress, thread_id, created_at, updated_at";
 
 fn row_to_todo(row: &libsql::Row) -> Result<TodoItem, DatabaseError> {
     let id_str: String = row.get(0).map_err(|e| DatabaseError::Query(format!("todo.id: {e}")))?;
@@ -1806,12 +1863,28 @@ fn row_to_todo(row: &libsql::Row) -> Result<TodoItem, DatabaseError> {
         .and_then(|s| DateTime::parse_from_rfc3339(&s).ok())
         .map(|d| d.with_timezone(&Utc));
 
-    let created_at_str: String = row.get(12).unwrap_or_default();
+    // New subtask columns at positions 12-15
+    let parent_id_str: Option<String> = row.get(12).ok();
+    let parent_id = parent_id_str
+        .filter(|s| !s.is_empty())
+        .and_then(|s| Uuid::parse_str(&s).ok());
+
+    let is_agent_internal: bool = row.get::<i64>(13).unwrap_or(0) != 0;
+
+    let agent_progress: Option<String> = row.get(14).ok();
+    let agent_progress = agent_progress.filter(|s| !s.is_empty());
+
+    let thread_id_str: Option<String> = row.get(15).ok();
+    let thread_id = thread_id_str
+        .filter(|s| !s.is_empty())
+        .and_then(|s| Uuid::parse_str(&s).ok());
+
+    let created_at_str: String = row.get(16).unwrap_or_default();
     let created_at = DateTime::parse_from_rfc3339(&created_at_str)
         .map(|d| d.with_timezone(&Utc))
         .unwrap_or_else(|_| Utc::now());
 
-    let updated_at_str: String = row.get(13).unwrap_or_default();
+    let updated_at_str: String = row.get(17).unwrap_or_default();
     let updated_at = DateTime::parse_from_rfc3339(&updated_at_str)
         .map(|d| d.with_timezone(&Utc))
         .unwrap_or_else(|_| Utc::now());
@@ -1829,6 +1902,10 @@ fn row_to_todo(row: &libsql::Row) -> Result<TodoItem, DatabaseError> {
         context,
         source_card_id,
         snoozed_until,
+        parent_id,
+        is_agent_internal,
+        agent_progress,
+        thread_id,
         created_at,
         updated_at,
     })
@@ -3472,5 +3549,158 @@ mod tests {
         let b_todos = db.list_todos("user_b").await.unwrap();
         assert_eq!(b_todos.len(), 1);
         assert_eq!(b_todos[0].title, "B's task");
+    }
+
+    #[tokio::test]
+    async fn todo_create_subtask_with_parent() {
+        use crate::todos::model::*;
+
+        let db = test_db().await;
+        let parent = TodoItem::new("u", "Parent task", TodoType::Deliverable, TodoBucket::AgentStartable);
+        let parent_id = parent.id;
+        db.create_todo(&parent).await.unwrap();
+
+        let subtask = TodoItem::new("u", "Subtask 1", TodoType::Deliverable, TodoBucket::AgentStartable)
+            .with_parent(parent_id)
+            .as_agent_internal()
+            .with_agent_progress("step 1/3");
+        db.create_todo(&subtask).await.unwrap();
+
+        let fetched = db.get_todo(subtask.id).await.unwrap().unwrap();
+        assert_eq!(fetched.parent_id, Some(parent_id));
+        assert!(fetched.is_agent_internal);
+        assert_eq!(fetched.agent_progress.as_deref(), Some("step 1/3"));
+        assert!(fetched.thread_id.is_none());
+    }
+
+    #[tokio::test]
+    async fn todo_list_user_todos_excludes_internal() {
+        use crate::todos::model::*;
+
+        let db = test_db().await;
+        let parent = TodoItem::new("u", "Visible parent", TodoType::Deliverable, TodoBucket::HumanOnly);
+        let parent_id = parent.id;
+        db.create_todo(&parent).await.unwrap();
+
+        let internal = TodoItem::new("u", "Internal subtask", TodoType::Deliverable, TodoBucket::AgentStartable)
+            .with_parent(parent_id)
+            .as_agent_internal();
+        db.create_todo(&internal).await.unwrap();
+
+        let visible = TodoItem::new("u", "Visible task 2", TodoType::Errand, TodoBucket::HumanOnly);
+        db.create_todo(&visible).await.unwrap();
+
+        // list_todos returns all 3
+        let all = db.list_todos("u").await.unwrap();
+        assert_eq!(all.len(), 3);
+
+        // list_user_todos excludes the internal one
+        let user_visible = db.list_user_todos("u").await.unwrap();
+        assert_eq!(user_visible.len(), 2);
+        assert!(user_visible.iter().all(|t| !t.is_agent_internal));
+    }
+
+    #[tokio::test]
+    async fn todo_list_subtasks() {
+        use crate::todos::model::*;
+
+        let db = test_db().await;
+        let parent = TodoItem::new("u", "Parent", TodoType::Deliverable, TodoBucket::AgentStartable);
+        let parent_id = parent.id;
+        db.create_todo(&parent).await.unwrap();
+
+        let s1 = TodoItem::new("u", "Sub 1", TodoType::Deliverable, TodoBucket::AgentStartable)
+            .with_parent(parent_id)
+            .as_agent_internal()
+            .with_priority(2);
+        let s2 = TodoItem::new("u", "Sub 2", TodoType::Deliverable, TodoBucket::AgentStartable)
+            .with_parent(parent_id)
+            .as_agent_internal()
+            .with_priority(1);
+        db.create_todo(&s1).await.unwrap();
+        db.create_todo(&s2).await.unwrap();
+
+        // Unrelated todo
+        let other = TodoItem::new("u", "Other", TodoType::Errand, TodoBucket::HumanOnly);
+        db.create_todo(&other).await.unwrap();
+
+        let subtasks = db.list_subtasks(parent_id).await.unwrap();
+        assert_eq!(subtasks.len(), 2);
+        // Sorted by priority ASC
+        assert_eq!(subtasks[0].title, "Sub 2");
+        assert_eq!(subtasks[1].title, "Sub 1");
+    }
+
+    #[tokio::test]
+    async fn todo_update_agent_progress() {
+        use crate::todos::model::*;
+
+        let db = test_db().await;
+        let todo = TodoItem::new("u", "Working task", TodoType::Deliverable, TodoBucket::AgentStartable)
+            .as_agent_internal();
+        db.create_todo(&todo).await.unwrap();
+
+        db.update_agent_progress(todo.id, "step 2/5: running tests").await.unwrap();
+
+        let fetched = db.get_todo(todo.id).await.unwrap().unwrap();
+        assert_eq!(fetched.agent_progress.as_deref(), Some("step 2/5: running tests"));
+        assert!(fetched.updated_at > todo.updated_at);
+    }
+
+    #[tokio::test]
+    async fn todo_with_thread_id() {
+        use crate::todos::model::*;
+
+        let db = test_db().await;
+        let thread_id = uuid::Uuid::new_v4();
+        let todo = TodoItem::new("u", "Threaded task", TodoType::Deliverable, TodoBucket::AgentStartable)
+            .with_thread(thread_id);
+        db.create_todo(&todo).await.unwrap();
+
+        let fetched = db.get_todo(todo.id).await.unwrap().unwrap();
+        assert_eq!(fetched.thread_id, Some(thread_id));
+    }
+
+    #[tokio::test]
+    async fn todo_update_preserves_subtask_fields() {
+        use crate::todos::model::*;
+
+        let db = test_db().await;
+        let parent_id = uuid::Uuid::new_v4();
+        let thread_id = uuid::Uuid::new_v4();
+        let mut todo = TodoItem::new("u", "Task", TodoType::Deliverable, TodoBucket::AgentStartable)
+            .with_parent(parent_id)
+            .as_agent_internal()
+            .with_agent_progress("initial")
+            .with_thread(thread_id);
+        db.create_todo(&todo).await.unwrap();
+
+        // Update the title
+        todo.title = "Updated task".into();
+        todo.agent_progress = Some("step 3/5".into());
+        todo.updated_at = chrono::Utc::now();
+        db.update_todo(&todo).await.unwrap();
+
+        let fetched = db.get_todo(todo.id).await.unwrap().unwrap();
+        assert_eq!(fetched.title, "Updated task");
+        assert_eq!(fetched.parent_id, Some(parent_id));
+        assert!(fetched.is_agent_internal);
+        assert_eq!(fetched.agent_progress.as_deref(), Some("step 3/5"));
+        assert_eq!(fetched.thread_id, Some(thread_id));
+    }
+
+    #[tokio::test]
+    async fn todo_default_is_not_internal() {
+        use crate::todos::model::*;
+
+        let db = test_db().await;
+        let todo = TodoItem::new("u", "Normal task", TodoType::Errand, TodoBucket::HumanOnly);
+        db.create_todo(&todo).await.unwrap();
+
+        let fetched = db.get_todo(todo.id).await.unwrap().unwrap();
+        assert!(!fetched.is_agent_internal);
+        assert!(fetched.parent_id.is_none());
+        assert!(fetched.agent_progress.is_none());
+        assert!(fetched.thread_id.is_none());
     }
 }

@@ -375,6 +375,12 @@ pub trait Database: Send + Sync {
     /// List all todos for a user, sorted by priority ascending.
     async fn list_todos(&self, user_id: &str) -> Result<Vec<TodoItem>, DatabaseError>;
 
+    /// List user-visible todos (excludes agent-internal subtasks).
+    async fn list_user_todos(&self, user_id: &str) -> Result<Vec<TodoItem>, DatabaseError>;
+
+    /// List subtasks for a given parent todo.
+    async fn list_subtasks(&self, parent_id: uuid::Uuid) -> Result<Vec<TodoItem>, DatabaseError>;
+
     /// List todos filtered by status, sorted by priority ascending.
     async fn list_todos_by_status(
         &self,
@@ -390,6 +396,13 @@ pub trait Database: Send + Sync {
 
     /// Mark a todo as completed (sets status + updated_at).
     async fn complete_todo(&self, id: Uuid) -> Result<(), DatabaseError>;
+
+    /// Update agent progress text on a todo.
+    async fn update_agent_progress(
+        &self,
+        id: Uuid,
+        progress: &str,
+    ) -> Result<(), DatabaseError>;
 
     /// Delete a todo. Returns true if a row was deleted.
     async fn delete_todo(&self, id: Uuid) -> Result<bool, DatabaseError>;

@@ -69,6 +69,18 @@ pub struct TodoItem {
     /// Snoozed until this time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub snoozed_until: Option<DateTime<Utc>>,
+    /// Parent todo ID (subtask relationship).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<Uuid>,
+    /// Whether this is an agent-internal subtask (never shown to iOS).
+    #[serde(default)]
+    pub is_agent_internal: bool,
+    /// Free-form agent progress notes (e.g. "step 3/5: running tests").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_progress: Option<String>,
+    /// Conversation thread ID linking to agent work context.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<Uuid>,
     /// When the todo was created.
     pub created_at: DateTime<Utc>,
     /// When the todo was last updated.
@@ -97,6 +109,10 @@ impl TodoItem {
             context: None,
             source_card_id: None,
             snoozed_until: None,
+            parent_id: None,
+            is_agent_internal: false,
+            agent_progress: None,
+            thread_id: None,
             created_at: now,
             updated_at: now,
         }
@@ -129,6 +145,30 @@ impl TodoItem {
     /// Builder: link to source card.
     pub fn with_source_card(mut self, card_id: Uuid) -> Self {
         self.source_card_id = Some(card_id);
+        self
+    }
+
+    /// Builder: set parent todo (makes this a subtask).
+    pub fn with_parent(mut self, parent_id: Uuid) -> Self {
+        self.parent_id = Some(parent_id);
+        self
+    }
+
+    /// Builder: mark as agent-internal (hidden from iOS).
+    pub fn as_agent_internal(mut self) -> Self {
+        self.is_agent_internal = true;
+        self
+    }
+
+    /// Builder: set agent progress text.
+    pub fn with_agent_progress(mut self, progress: impl Into<String>) -> Self {
+        self.agent_progress = Some(progress.into());
+        self
+    }
+
+    /// Builder: set thread ID.
+    pub fn with_thread(mut self, thread_id: Uuid) -> Self {
+        self.thread_id = Some(thread_id);
         self
     }
 }
@@ -172,6 +212,15 @@ pub enum TodoAction {
     },
     /// Snooze a todo until a given time.
     Snooze { id: Uuid, until: DateTime<Utc> },
+    /// Create an agent-internal subtask under a parent todo.
+    CreateSubtask {
+        parent_id: Uuid,
+        title: String,
+        #[serde(default)]
+        description: Option<String>,
+        #[serde(default)]
+        todo_type: Option<TodoType>,
+    },
 }
 
 /// Messages sent over the WebSocket (server → client).
@@ -272,6 +321,75 @@ mod tests {
         assert!(!json.contains("\"context\""));
         assert!(!json.contains("\"source_card_id\""));
         assert!(!json.contains("\"snoozed_until\""));
+        assert!(!json.contains("\"parent_id\""));
+        assert!(!json.contains("\"agent_progress\""));
+        assert!(!json.contains("\"thread_id\""));
+    }
+
+    #[test]
+    fn subtask_builder_methods() {
+        let parent_id = Uuid::new_v4();
+        let thread_id = Uuid::new_v4();
+        let todo = TodoItem::new("u", "Subtask", TodoType::Deliverable, TodoBucket::AgentStartable)
+            .with_parent(parent_id)
+            .as_agent_internal()
+            .with_agent_progress("step 1/3: compiling")
+            .with_thread(thread_id);
+        assert_eq!(todo.parent_id, Some(parent_id));
+        assert!(todo.is_agent_internal);
+        assert_eq!(todo.agent_progress.as_deref(), Some("step 1/3: compiling"));
+        assert_eq!(todo.thread_id, Some(thread_id));
+    }
+
+    #[test]
+    fn subtask_serde_roundtrip() {
+        let parent_id = Uuid::new_v4();
+        let todo = TodoItem::new("u", "Sub", TodoType::Deliverable, TodoBucket::AgentStartable)
+            .with_parent(parent_id)
+            .as_agent_internal()
+            .with_agent_progress("running tests");
+        let json = serde_json::to_string(&todo).unwrap();
+        assert!(json.contains("\"parent_id\""));
+        assert!(json.contains("\"is_agent_internal\":true"));
+        assert!(json.contains("\"agent_progress\""));
+        let parsed: TodoItem = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.parent_id, Some(parent_id));
+        assert!(parsed.is_agent_internal);
+        assert_eq!(parsed.agent_progress.as_deref(), Some("running tests"));
+    }
+
+    #[test]
+    fn is_agent_internal_defaults_false() {
+        // Deserializing without is_agent_internal should default to false
+        let json = r#"{"id":"00000000-0000-0000-0000-000000000001","user_id":"u","title":"T","todo_type":"errand","bucket":"human_only","status":"created","priority":0,"created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"}"#;
+        let parsed: TodoItem = serde_json::from_str(json).unwrap();
+        assert!(!parsed.is_agent_internal);
+        assert!(parsed.parent_id.is_none());
+        assert!(parsed.agent_progress.is_none());
+        assert!(parsed.thread_id.is_none());
+    }
+
+    #[test]
+    fn todo_action_create_subtask_serde() {
+        let parent_id = Uuid::new_v4();
+        let action = TodoAction::CreateSubtask {
+            parent_id,
+            title: "Run unit tests".into(),
+            description: Some("cargo test --lib".into()),
+            todo_type: None,
+        };
+        let json = serde_json::to_string(&action).unwrap();
+        assert!(json.contains("\"action\":\"create_subtask\""));
+        assert!(json.contains("\"parent_id\""));
+
+        let parsed: TodoAction = serde_json::from_str(&json).unwrap();
+        match parsed {
+            TodoAction::CreateSubtask { parent_id: pid, title, .. } => {
+                assert_eq!(pid, parent_id);
+                assert_eq!(title, "Run unit tests");
+            }
+            _ => panic!("Expected CreateSubtask"),
+        }
     }
 
     #[test]
