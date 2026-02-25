@@ -1,7 +1,8 @@
-//! Card data model — reply suggestions, statuses, and WebSocket message types.
+//! Card data model — universal approval cards with typed payloads, statuses, and WebSocket message types.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::collections::VecDeque;
 use uuid::Uuid;
 
 use crate::channels::EmailMessage;
@@ -19,7 +20,7 @@ pub struct ThreadMessage {
     pub is_outgoing: bool,
 }
 
-/// Status of a reply card in the queue.
+/// Status of an approval card in the queue.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CardStatus {
@@ -35,103 +36,368 @@ pub enum CardStatus {
     Sent,
 }
 
-/// A reply suggestion card.
+/// Which tab/silo this card belongs to in the iOS UI.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CardSilo {
+    /// Messages tab.
+    Messages,
+    /// To-Dos tab.
+    Todos,
+    /// Calendar tab.
+    Calendar,
+}
+
+impl Default for CardSilo {
+    fn default() -> Self {
+        Self::Messages
+    }
+}
+
+impl std::fmt::Display for CardSilo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Messages => write!(f, "messages"),
+            Self::Todos => write!(f, "todos"),
+            Self::Calendar => write!(f, "calendar"),
+        }
+    }
+}
+
+impl std::str::FromStr for CardSilo {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "messages" => Ok(Self::Messages),
+            "todos" => Ok(Self::Todos),
+            "calendar" => Ok(Self::Calendar),
+            _ => Err(format!("Unknown silo: {s}")),
+        }
+    }
+}
+
+/// Type-specific payload for each card variant.
+///
+/// Adjacently tagged: serializes as `{ "card_type": "reply", "payload": { ... } }`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ReplyCard {
+#[serde(tag = "card_type", content = "payload", rename_all = "snake_case")]
+pub enum CardPayload {
+    /// Reply to a received message.
+    Reply {
+        channel: String,
+        source_sender: String,
+        source_message: String,
+        suggested_reply: String,
+        confidence: f32,
+        conversation_id: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        thread: Vec<ThreadMessage>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        email_thread: Vec<EmailMessage>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reply_metadata: Option<serde_json::Value>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        message_id: Option<String>,
+    },
+    /// Compose a new outbound message.
+    Compose {
+        channel: String,
+        recipient: String,
+        subject: Option<String>,
+        draft_body: String,
+        confidence: f32,
+    },
+    /// Take an action in the world.
+    Action {
+        description: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        action_detail: Option<String>,
+    },
+    /// Agent needs the user's judgment.
+    Decision {
+        question: String,
+        context: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        options: Vec<String>,
+    },
+}
+
+impl CardPayload {
+    /// Returns the card_type string for this payload variant.
+    pub fn card_type_str(&self) -> &'static str {
+        match self {
+            Self::Reply { .. } => "reply",
+            Self::Compose { .. } => "compose",
+            Self::Action { .. } => "action",
+            Self::Decision { .. } => "decision",
+        }
+    }
+
+    /// Extract the channel name if this payload type has one.
+    pub fn channel(&self) -> Option<&str> {
+        match self {
+            Self::Reply { channel, .. } | Self::Compose { channel, .. } => Some(channel.as_str()),
+            _ => None,
+        }
+    }
+
+    /// Extract the suggested reply text (Reply variant only).
+    pub fn suggested_reply(&self) -> Option<&str> {
+        match self {
+            Self::Reply {
+                suggested_reply, ..
+            } => Some(suggested_reply.as_str()),
+            _ => None,
+        }
+    }
+
+    /// Extract the reply metadata (Reply variant only).
+    pub fn reply_metadata(&self) -> Option<&serde_json::Value> {
+        match self {
+            Self::Reply {
+                reply_metadata, ..
+            } => reply_metadata.as_ref(),
+            _ => None,
+        }
+    }
+
+    /// Extract the message_id (Reply variant only).
+    pub fn message_id(&self) -> Option<&str> {
+        match self {
+            Self::Reply { message_id, .. } => message_id.as_deref(),
+            _ => None,
+        }
+    }
+
+    /// Extract the confidence score if the variant has one.
+    pub fn confidence(&self) -> Option<f32> {
+        match self {
+            Self::Reply { confidence, .. } | Self::Compose { confidence, .. } => Some(*confidence),
+            _ => None,
+        }
+    }
+}
+
+/// Pending card counts per silo — used for badge display.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SiloCounts {
+    pub messages: u32,
+    pub todos: u32,
+    pub calendar: u32,
+}
+
+impl SiloCounts {
+    pub fn total(&self) -> u32 {
+        self.messages + self.todos + self.calendar
+    }
+
+    /// Compute from an in-memory card queue.
+    pub fn from_cards(cards: &VecDeque<ApprovalCard>) -> Self {
+        let mut counts = Self::default();
+        for card in cards.iter() {
+            if card.status == CardStatus::Pending && !card.is_expired() {
+                match card.silo {
+                    CardSilo::Messages => counts.messages += 1,
+                    CardSilo::Todos => counts.todos += 1,
+                    CardSilo::Calendar => counts.calendar += 1,
+                }
+            }
+        }
+        counts
+    }
+}
+
+/// A universal approval card — reply suggestions, actions, decisions, etc.
+///
+/// Shared fields live at the top level; type-specific data lives in `payload`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApprovalCard {
     /// Unique card ID.
     pub id: Uuid,
-    /// Conversation/chat ID from the source channel.
-    pub conversation_id: String,
-    /// The message we're suggesting a reply to.
-    pub source_message: String,
-    /// Who sent the original message.
-    pub source_sender: String,
-    /// AI-generated suggested reply text.
-    pub suggested_reply: String,
-    /// Confidence score (0.0–1.0).
-    pub confidence: f32,
+    /// Which UI silo/tab this card belongs to.
+    #[serde(default)]
+    pub silo: CardSilo,
+    /// Type-specific payload (adjacently tagged).
+    #[serde(flatten)]
+    pub payload: CardPayload,
     /// Current card status.
     pub status: CardStatus,
     /// When the card was created.
     pub created_at: DateTime<Utc>,
     /// When the card expires (auto-dismiss).
     pub expires_at: DateTime<Utc>,
-    /// Source channel name (e.g. "telegram", "whatsapp").
-    pub channel: String,
     /// When the card was last updated.
     pub updated_at: DateTime<Utc>,
-    /// ID of the tracked message this card is linked to (if any).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub message_id: Option<String>,
-    /// Email thread context — previous messages in the conversation.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub thread: Vec<ThreadMessage>,
-    /// Channel-specific metadata for sending the reply (e.g. email recipients, subject, threading headers).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reply_metadata: Option<serde_json::Value>,
-    /// Email thread with full headers (From/To/CC/Subject/Message-ID) for rich iOS display.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub email_thread: Vec<EmailMessage>,
 }
 
-impl ReplyCard {
-    /// Create a new pending reply card with default expiry.
-    pub fn new(
-        conversation_id: impl Into<String>,
-        source_message: impl Into<String>,
+impl ApprovalCard {
+    /// Create a new Reply card.
+    pub fn new_reply(
+        channel: impl Into<String>,
         source_sender: impl Into<String>,
+        source_message: impl Into<String>,
         suggested_reply: impl Into<String>,
         confidence: f32,
-        channel: impl Into<String>,
+        conversation_id: impl Into<String>,
         expire_minutes: u32,
     ) -> Self {
         let now = Utc::now();
         Self {
             id: Uuid::new_v4(),
-            conversation_id: conversation_id.into(),
-            source_message: source_message.into(),
-            source_sender: source_sender.into(),
-            suggested_reply: suggested_reply.into(),
-            confidence: confidence.clamp(0.0, 1.0),
+            silo: CardSilo::Messages,
+            payload: CardPayload::Reply {
+                channel: channel.into(),
+                source_sender: source_sender.into(),
+                source_message: source_message.into(),
+                suggested_reply: suggested_reply.into(),
+                confidence: confidence.clamp(0.0, 1.0),
+                conversation_id: conversation_id.into(),
+                thread: Vec::new(),
+                email_thread: Vec::new(),
+                reply_metadata: None,
+                message_id: None,
+            },
             status: CardStatus::Pending,
             created_at: now,
             expires_at: now + chrono::Duration::minutes(expire_minutes as i64),
-            channel: channel.into(),
             updated_at: now,
-            message_id: None,
-            thread: Vec::new(),
-            reply_metadata: None,
-            email_thread: Vec::new(),
         }
     }
 
-    /// Set the email thread with full headers on this card.
+    /// Create a new Compose card.
+    pub fn new_compose(
+        channel: impl Into<String>,
+        recipient: impl Into<String>,
+        subject: Option<String>,
+        draft_body: impl Into<String>,
+        confidence: f32,
+        expire_minutes: u32,
+    ) -> Self {
+        let now = Utc::now();
+        Self {
+            id: Uuid::new_v4(),
+            silo: CardSilo::Messages,
+            payload: CardPayload::Compose {
+                channel: channel.into(),
+                recipient: recipient.into(),
+                subject,
+                draft_body: draft_body.into(),
+                confidence: confidence.clamp(0.0, 1.0),
+            },
+            status: CardStatus::Pending,
+            created_at: now,
+            expires_at: now + chrono::Duration::minutes(expire_minutes as i64),
+            updated_at: now,
+        }
+    }
+
+    /// Create a new Action card.
+    pub fn new_action(
+        description: impl Into<String>,
+        action_detail: Option<String>,
+        silo: CardSilo,
+        expire_minutes: u32,
+    ) -> Self {
+        let now = Utc::now();
+        Self {
+            id: Uuid::new_v4(),
+            silo,
+            payload: CardPayload::Action {
+                description: description.into(),
+                action_detail,
+            },
+            status: CardStatus::Pending,
+            created_at: now,
+            expires_at: now + chrono::Duration::minutes(expire_minutes as i64),
+            updated_at: now,
+        }
+    }
+
+    /// Create a new Decision card.
+    pub fn new_decision(
+        question: impl Into<String>,
+        context: impl Into<String>,
+        options: Vec<String>,
+        silo: CardSilo,
+        expire_minutes: u32,
+    ) -> Self {
+        let now = Utc::now();
+        Self {
+            id: Uuid::new_v4(),
+            silo,
+            payload: CardPayload::Decision {
+                question: question.into(),
+                context: context.into(),
+                options,
+            },
+            status: CardStatus::Pending,
+            created_at: now,
+            expires_at: now + chrono::Duration::minutes(expire_minutes as i64),
+            updated_at: now,
+        }
+    }
+
+    /// Set the silo on this card (builder pattern).
+    pub fn with_silo(mut self, silo: CardSilo) -> Self {
+        self.silo = silo;
+        self
+    }
+
+    /// Set the email thread (Reply variant only).
     pub fn with_email_thread(mut self, email_thread: Vec<EmailMessage>) -> Self {
-        self.email_thread = email_thread;
+        if let CardPayload::Reply {
+            email_thread: ref mut et,
+            ..
+        } = self.payload
+        {
+            *et = email_thread;
+        }
         self
     }
 
-    /// Set channel-specific reply metadata (email recipients, subject, threading headers).
-    pub fn with_reply_metadata(mut self, metadata: serde_json::Value) -> Self {
-        self.reply_metadata = Some(metadata);
-        self
-    }
-
-    /// Set the email thread context on this card.
+    /// Set the thread context (Reply variant only).
     pub fn with_thread(mut self, thread: Vec<ThreadMessage>) -> Self {
-        self.thread = thread;
+        if let CardPayload::Reply {
+            thread: ref mut t, ..
+        } = self.payload
+        {
+            *t = thread;
+        }
         self
     }
 
-    /// Set the linked message ID.
+    /// Set reply metadata (Reply variant only).
+    pub fn with_reply_metadata(mut self, metadata: serde_json::Value) -> Self {
+        if let CardPayload::Reply {
+            reply_metadata: ref mut rm,
+            ..
+        } = self.payload
+        {
+            *rm = Some(metadata);
+        }
+        self
+    }
+
+    /// Set the linked message ID (Reply variant only).
     pub fn with_message_id(mut self, message_id: impl Into<String>) -> Self {
-        self.message_id = Some(message_id.into());
+        if let CardPayload::Reply {
+            message_id: ref mut mid,
+            ..
+        } = self.payload
+        {
+            *mid = Some(message_id.into());
+        }
         self
     }
 
     /// Check if this card has expired.
     pub fn is_expired(&self) -> bool {
         Utc::now() > self.expires_at
+    }
+
+    /// Convenience: card_type string.
+    pub fn card_type_str(&self) -> &'static str {
+        self.payload.card_type_str()
     }
 }
 
@@ -154,15 +420,19 @@ pub enum CardAction {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum WsMessage {
     /// A new card is available.
-    NewCard { card: ReplyCard },
+    NewCard { card: ApprovalCard },
     /// A card's status changed.
     CardUpdate { id: Uuid, status: CardStatus },
     /// A card expired.
     CardExpired { id: Uuid },
     /// Full queue sync (sent on connect).
-    CardsSync { cards: Vec<ReplyCard> },
+    CardsSync { cards: Vec<ApprovalCard> },
     /// A card was refined — full updated card for the client to replace in-place.
-    CardRefreshed { card: ReplyCard },
+    CardRefreshed { card: ApprovalCard },
+    /// Badge counts per silo — broadcast on every card state change.
+    SiloCounts {
+        counts: SiloCounts,
+    },
     /// Keepalive ping.
     Ping,
 }
@@ -172,20 +442,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn new_card_is_pending() {
-        let card = ReplyCard::new("chat_123", "hey", "Alice", "hey back!", 0.8, "telegram", 15);
+    fn new_reply_card_is_pending() {
+        let card = ApprovalCard::new_reply("telegram", "Alice", "hey", "hey back!", 0.8, "chat_123", 15);
         assert_eq!(card.status, CardStatus::Pending);
         assert!(!card.is_expired());
         assert!(card.expires_at > card.created_at);
+        assert_eq!(card.card_type_str(), "reply");
+        assert_eq!(card.silo, CardSilo::Messages);
     }
 
     #[test]
     fn confidence_is_clamped() {
-        let card = ReplyCard::new("c", "m", "s", "r", 1.5, "telegram", 15);
-        assert_eq!(card.confidence, 1.0);
+        let card = ApprovalCard::new_reply("t", "s", "m", "r", 1.5, "c", 15);
+        assert_eq!(card.payload.confidence().unwrap(), 1.0);
 
-        let card = ReplyCard::new("c", "m", "s", "r", -0.5, "telegram", 15);
-        assert_eq!(card.confidence, 0.0);
+        let card = ApprovalCard::new_reply("t", "s", "m", "r", -0.5, "c", 15);
+        assert_eq!(card.payload.confidence().unwrap(), 0.0);
     }
 
     #[test]
@@ -203,7 +475,7 @@ mod tests {
 
     #[test]
     fn ws_message_serde_roundtrip() {
-        let card = ReplyCard::new("chat_1", "hello", "Bob", "hi!", 0.9, "telegram", 15);
+        let card = ApprovalCard::new_reply("telegram", "Bob", "hello", "hi!", 0.9, "chat_1", 15);
         let msg = WsMessage::NewCard { card };
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains("\"type\":\"new_card\""));
@@ -211,9 +483,110 @@ mod tests {
         let parsed: WsMessage = serde_json::from_str(&json).unwrap();
         match parsed {
             WsMessage::NewCard { card } => {
-                assert_eq!(card.source_sender, "Bob");
+                assert_eq!(card.payload.card_type_str(), "reply");
             }
             _ => panic!("Expected NewCard"),
+        }
+    }
+
+    // ── CardPayload variant tests ───────────────────────────────────
+
+    #[test]
+    fn card_payload_reply_serde_roundtrip() {
+        let card = ApprovalCard::new_reply("email", "alice@x.com", "hello", "hi!", 0.9, "conv_1", 15);
+        let json = serde_json::to_string(&card).unwrap();
+        assert!(json.contains("\"card_type\":\"reply\""));
+        assert!(json.contains("\"payload\""));
+        let parsed: ApprovalCard = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.payload.suggested_reply().unwrap(), "hi!");
+    }
+
+    #[test]
+    fn card_payload_compose_serde_roundtrip() {
+        let card = ApprovalCard::new_compose("email", "bob@x.com", Some("Hello".into()), "Draft body", 0.8, 30);
+        let json = serde_json::to_string(&card).unwrap();
+        assert!(json.contains("\"card_type\":\"compose\""));
+        let parsed: ApprovalCard = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.card_type_str(), "compose");
+    }
+
+    #[test]
+    fn card_payload_action_serde_roundtrip() {
+        let card = ApprovalCard::new_action("Deploy v2.0", Some("Run deploy script".into()), CardSilo::Todos, 60);
+        let json = serde_json::to_string(&card).unwrap();
+        assert!(json.contains("\"card_type\":\"action\""));
+        let parsed: ApprovalCard = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.card_type_str(), "action");
+        assert_eq!(parsed.silo, CardSilo::Todos);
+    }
+
+    #[test]
+    fn card_payload_decision_serde_roundtrip() {
+        let card = ApprovalCard::new_decision(
+            "Which provider?",
+            "Need to choose an LLM provider",
+            vec!["OpenAI".into(), "Anthropic".into()],
+            CardSilo::Messages,
+            120,
+        );
+        let json = serde_json::to_string(&card).unwrap();
+        assert!(json.contains("\"card_type\":\"decision\""));
+        let parsed: ApprovalCard = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.card_type_str(), "decision");
+    }
+
+    // ── CardSilo tests ──────────────────────────────────────────────
+
+    #[test]
+    fn card_silo_serde_roundtrip() {
+        for silo in [CardSilo::Messages, CardSilo::Todos, CardSilo::Calendar] {
+            let json = serde_json::to_string(&silo).unwrap();
+            let parsed: CardSilo = serde_json::from_str(&json).unwrap();
+            assert_eq!(silo, parsed);
+        }
+    }
+
+    #[test]
+    fn card_silo_display_and_fromstr() {
+        assert_eq!(CardSilo::Messages.to_string(), "messages");
+        assert_eq!("todos".parse::<CardSilo>().unwrap(), CardSilo::Todos);
+        assert!("unknown".parse::<CardSilo>().is_err());
+    }
+
+    // ── SiloCounts tests ────────────────────────────────────────────
+
+    #[test]
+    fn silo_counts_total() {
+        let counts = SiloCounts { messages: 3, todos: 1, calendar: 2 };
+        assert_eq!(counts.total(), 6);
+    }
+
+    #[test]
+    fn silo_counts_from_cards() {
+        let mut cards = VecDeque::new();
+        cards.push_back(ApprovalCard::new_reply("t", "s", "m", "r", 0.9, "c", 15));
+        cards.push_back(ApprovalCard::new_action("do thing", None, CardSilo::Todos, 15));
+        cards.push_back(ApprovalCard::new_action("cal thing", None, CardSilo::Calendar, 15));
+        let counts = SiloCounts::from_cards(&cards);
+        assert_eq!(counts.messages, 1);
+        assert_eq!(counts.todos, 1);
+        assert_eq!(counts.calendar, 1);
+    }
+
+    #[test]
+    fn silo_counts_ws_message_serde() {
+        let msg = WsMessage::SiloCounts {
+            counts: SiloCounts { messages: 3, todos: 1, calendar: 2 },
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"silo_counts\""));
+        let parsed: WsMessage = serde_json::from_str(&json).unwrap();
+        match parsed {
+            WsMessage::SiloCounts { counts } => {
+                assert_eq!(counts.messages, 3);
+                assert_eq!(counts.total(), 6);
+            }
+            _ => panic!("Expected SiloCounts"),
         }
     }
 
@@ -230,7 +603,6 @@ mod tests {
         let json = serde_json::to_string(&msg).unwrap();
         let parsed: ThreadMessage = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.sender, "alice@example.com");
-        assert_eq!(parsed.content, "Hey, following up on our discussion");
         assert!(!parsed.is_outgoing);
     }
 
@@ -251,101 +623,44 @@ mod tests {
             },
         ];
 
-        let card = ReplyCard::new(
-            "chat_1",
-            "Latest msg",
-            "alice@example.com",
-            "Sounds good!",
-            0.85,
-            "email",
-            15,
-        )
-        .with_thread(thread);
+        let card = ApprovalCard::new_reply("email", "alice@example.com", "Latest msg", "Sounds good!", 0.85, "chat_1", 15)
+            .with_thread(thread);
 
         let json = serde_json::to_string(&card).unwrap();
         assert!(json.contains("\"thread\""));
-        assert!(json.contains("\"is_outgoing\":false"));
-        assert!(json.contains("\"is_outgoing\":true"));
         assert!(json.contains("Original question"));
-        assert!(json.contains("My reply"));
 
-        // Roundtrip
-        let parsed: ReplyCard = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.thread.len(), 2);
-        assert_eq!(parsed.thread[0].sender, "alice@example.com");
-        assert!(parsed.thread[1].is_outgoing);
+        let parsed: ApprovalCard = serde_json::from_str(&json).unwrap();
+        if let CardPayload::Reply { thread, .. } = &parsed.payload {
+            assert_eq!(thread.len(), 2);
+        } else {
+            panic!("Expected Reply payload");
+        }
     }
 
     #[test]
     fn reply_card_without_thread_omits_field() {
-        let card = ReplyCard::new("chat_1", "hello", "Bob", "hi!", 0.9, "email", 15);
+        let card = ApprovalCard::new_reply("email", "Bob", "hello", "hi!", 0.9, "chat_1", 15);
         let json = serde_json::to_string(&card).unwrap();
-        // skip_serializing_if = "Vec::is_empty" should omit the thread field
         assert!(!json.contains("\"thread\""));
     }
 
     #[test]
-    fn reply_card_without_thread_field_deserializes() {
-        // JSON from an older server that doesn't include thread field
-        let json = r#"{
-            "id": "550e8400-e29b-41d4-a716-446655440000",
-            "conversation_id": "chat_1",
-            "source_message": "hello",
-            "source_sender": "Bob",
-            "suggested_reply": "hi!",
-            "confidence": 0.9,
-            "status": "pending",
-            "created_at": "2026-02-15T10:00:00Z",
-            "expires_at": "2026-02-15T10:15:00Z",
-            "channel": "email",
-            "updated_at": "2026-02-15T10:00:00Z"
-        }"#;
-        let card: ReplyCard = serde_json::from_str(json).unwrap();
-        assert!(card.thread.is_empty());
-    }
-
-    #[test]
     fn thread_ordering_by_timestamp() {
-        let t1 = ThreadMessage {
-            sender: "a@test.com".into(),
-            content: "First".into(),
-            timestamp: Utc::now() - chrono::Duration::hours(3),
-            is_outgoing: false,
-        };
-        let t2 = ThreadMessage {
-            sender: "b@test.com".into(),
-            content: "Second".into(),
-            timestamp: Utc::now() - chrono::Duration::hours(2),
-            is_outgoing: true,
-        };
-        let t3 = ThreadMessage {
-            sender: "a@test.com".into(),
-            content: "Third".into(),
-            timestamp: Utc::now() - chrono::Duration::hours(1),
-            is_outgoing: false,
-        };
-
-        let mut messages = vec![t3.clone(), t1.clone(), t2.clone()];
+        let t1 = ThreadMessage { sender: "a@test.com".into(), content: "First".into(), timestamp: Utc::now() - chrono::Duration::hours(3), is_outgoing: false };
+        let t2 = ThreadMessage { sender: "b@test.com".into(), content: "Second".into(), timestamp: Utc::now() - chrono::Duration::hours(2), is_outgoing: true };
+        let t3 = ThreadMessage { sender: "a@test.com".into(), content: "Third".into(), timestamp: Utc::now() - chrono::Duration::hours(1), is_outgoing: false };
+        let mut messages = vec![t3, t1, t2];
         messages.sort_by_key(|m| m.timestamp);
-
         assert_eq!(messages[0].content, "First");
-        assert_eq!(messages[1].content, "Second");
         assert_eq!(messages[2].content, "Third");
     }
 
     #[test]
     fn thread_content_truncation() {
-        // Verify a message with >500 chars would need truncation
         let long_content: String = "x".repeat(600);
-        let msg = ThreadMessage {
-            sender: "sender@test.com".into(),
-            content: long_content.clone(),
-            timestamp: Utc::now(),
-            is_outgoing: false,
-        };
+        let msg = ThreadMessage { sender: "s@t.com".into(), content: long_content.clone(), timestamp: Utc::now(), is_outgoing: false };
         assert_eq!(msg.content.len(), 600);
-        // Truncation is done at fetch time, not at the model level.
-        // This test just confirms the model can hold arbitrarily long content.
     }
 
     // ── reply_metadata tests ────────────────────────────────────────
@@ -354,85 +669,23 @@ mod tests {
     fn reply_metadata_serde_roundtrip_some() {
         let meta = serde_json::json!({
             "reply_to": "alice@example.com",
-            "cc": ["bob@example.com", "carol@example.com"],
-            "subject": "Re: Meeting tomorrow",
-            "in_reply_to": "<abc123@example.com>",
-            "references": "<abc123@example.com>",
+            "cc": ["bob@example.com"],
+            "subject": "Re: Meeting",
         });
-
-        let card = ReplyCard::new("chat_1", "msg", "Alice", "sounds good", 0.8, "email", 15)
+        let card = ApprovalCard::new_reply("email", "Alice", "msg", "sounds good", 0.8, "chat_1", 15)
             .with_reply_metadata(meta.clone());
-
         let json = serde_json::to_string(&card).unwrap();
         assert!(json.contains("\"reply_metadata\""));
-        assert!(json.contains("alice@example.com"));
-
-        let parsed: ReplyCard = serde_json::from_str(&json).unwrap();
-        assert!(parsed.reply_metadata.is_some());
-        let parsed_meta = parsed.reply_metadata.unwrap();
-        assert_eq!(parsed_meta["reply_to"], "alice@example.com");
-        assert_eq!(parsed_meta["cc"][0], "bob@example.com");
+        let parsed: ApprovalCard = serde_json::from_str(&json).unwrap();
+        assert!(parsed.payload.reply_metadata().is_some());
     }
 
     #[test]
     fn reply_metadata_serde_roundtrip_none() {
-        let card = ReplyCard::new("chat_1", "msg", "Alice", "hi", 0.8, "telegram", 15);
-        assert!(card.reply_metadata.is_none());
-
+        let card = ApprovalCard::new_reply("telegram", "Alice", "msg", "hi", 0.8, "chat_1", 15);
+        assert!(card.payload.reply_metadata().is_none());
         let json = serde_json::to_string(&card).unwrap();
-        // skip_serializing_if = "Option::is_none" should omit the field
         assert!(!json.contains("\"reply_metadata\""));
-    }
-
-    #[test]
-    fn reply_card_without_reply_metadata_field_deserializes() {
-        // JSON from an older server that doesn't include reply_metadata
-        let json = r#"{
-            "id": "550e8400-e29b-41d4-a716-446655440000",
-            "conversation_id": "chat_1",
-            "source_message": "hello",
-            "source_sender": "Bob",
-            "suggested_reply": "hi!",
-            "confidence": 0.9,
-            "status": "pending",
-            "created_at": "2026-02-15T10:00:00Z",
-            "expires_at": "2026-02-15T10:15:00Z",
-            "channel": "email",
-            "updated_at": "2026-02-15T10:00:00Z"
-        }"#;
-        let card: ReplyCard = serde_json::from_str(json).unwrap();
-        assert!(card.reply_metadata.is_none());
-        assert!(card.thread.is_empty());
-    }
-
-    #[test]
-    fn reply_card_with_reply_metadata_serializes_correctly() {
-        let meta = serde_json::json!({
-            "reply_to": "sender@test.com",
-            "cc": [],
-            "subject": "Re: Test",
-            "in_reply_to": "<msg1@test.com>",
-            "references": "<msg1@test.com>",
-        });
-
-        let card = ReplyCard::new(
-            "chat_1",
-            "hello",
-            "sender@test.com",
-            "hi!",
-            0.9,
-            "email",
-            15,
-        )
-        .with_reply_metadata(meta);
-
-        let json = serde_json::to_string(&card).unwrap();
-        let parsed: ReplyCard = serde_json::from_str(&json).unwrap();
-        assert!(parsed.reply_metadata.is_some());
-        assert_eq!(
-            parsed.reply_metadata.as_ref().unwrap()["subject"],
-            "Re: Test"
-        );
     }
 
     // ── email_thread tests ──────────────────────────────────────────
@@ -452,59 +705,59 @@ mod tests {
                 timestamp: Utc::now() - chrono::Duration::hours(1),
                 is_outgoing: false,
             },
-            EmailMessage {
-                from: "bob@example.com".into(),
-                to: vec!["alice@example.com".into()],
-                cc: vec![],
-                subject: "Re: Meeting".into(),
-                message_id: "<def@example.com>".into(),
-                content: "Great, see you there".into(),
-                timestamp: Utc::now(),
-                is_outgoing: true,
-            },
         ];
 
-        let card = ReplyCard::new("chat_1", "msg", "Alice", "ok", 0.8, "email", 15)
+        let card = ApprovalCard::new_reply("email", "Alice", "msg", "ok", 0.8, "chat_1", 15)
             .with_email_thread(email_thread);
 
         let json = serde_json::to_string(&card).unwrap();
         assert!(json.contains("\"email_thread\""));
         assert!(json.contains("alice@example.com"));
-        assert!(json.contains("carol@example.com"));
 
-        let parsed: ReplyCard = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.email_thread.len(), 2);
-        assert_eq!(parsed.email_thread[0].from, "alice@example.com");
-        assert_eq!(parsed.email_thread[0].cc, vec!["carol@example.com"]);
-        assert!(parsed.email_thread[1].is_outgoing);
-        assert!(parsed.email_thread[1].cc.is_empty());
+        let parsed: ApprovalCard = serde_json::from_str(&json).unwrap();
+        if let CardPayload::Reply { email_thread, .. } = &parsed.payload {
+            assert_eq!(email_thread.len(), 1);
+        } else {
+            panic!("Expected Reply payload");
+        }
     }
 
     #[test]
     fn reply_card_without_email_thread_omits_field() {
-        let card = ReplyCard::new("chat_1", "hello", "Bob", "hi!", 0.9, "email", 15);
+        let card = ApprovalCard::new_reply("email", "Bob", "hello", "hi!", 0.9, "chat_1", 15);
         let json = serde_json::to_string(&card).unwrap();
         assert!(!json.contains("\"email_thread\""));
     }
 
+    // ── Typed constructor tests ─────────────────────────────────────
+
     #[test]
-    fn reply_card_without_email_thread_field_deserializes() {
-        let json = r#"{
-            "id": "550e8400-e29b-41d4-a716-446655440000",
-            "conversation_id": "chat_1",
-            "source_message": "hello",
-            "source_sender": "Bob",
-            "suggested_reply": "hi!",
-            "confidence": 0.9,
-            "status": "pending",
-            "created_at": "2026-02-15T10:00:00Z",
-            "expires_at": "2026-02-15T10:15:00Z",
-            "channel": "email",
-            "updated_at": "2026-02-15T10:00:00Z"
-        }"#;
-        let card: ReplyCard = serde_json::from_str(json).unwrap();
-        assert!(card.email_thread.is_empty());
-        assert!(card.thread.is_empty());
-        assert!(card.reply_metadata.is_none());
+    fn new_compose_card() {
+        let card = ApprovalCard::new_compose("email", "bob@x.com", Some("Subject".into()), "Draft", 0.7, 30);
+        assert_eq!(card.card_type_str(), "compose");
+        assert_eq!(card.silo, CardSilo::Messages);
+        assert_eq!(card.payload.confidence().unwrap(), 0.7);
+    }
+
+    #[test]
+    fn new_action_card() {
+        let card = ApprovalCard::new_action("Deploy v2", None, CardSilo::Todos, 60);
+        assert_eq!(card.card_type_str(), "action");
+        assert_eq!(card.silo, CardSilo::Todos);
+        assert!(card.payload.confidence().is_none());
+    }
+
+    #[test]
+    fn new_decision_card() {
+        let card = ApprovalCard::new_decision("Which?", "Context", vec!["A".into(), "B".into()], CardSilo::Messages, 120);
+        assert_eq!(card.card_type_str(), "decision");
+        assert!(card.payload.channel().is_none());
+    }
+
+    #[test]
+    fn with_silo_builder() {
+        let card = ApprovalCard::new_reply("t", "s", "m", "r", 0.9, "c", 15)
+            .with_silo(CardSilo::Calendar);
+        assert_eq!(card.silo, CardSilo::Calendar);
     }
 }

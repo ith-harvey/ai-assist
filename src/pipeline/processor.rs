@@ -13,7 +13,7 @@ use std::sync::Arc;
 use chrono::Utc;
 use tracing::{debug, error, info, warn};
 
-use crate::cards::model::ReplyCard;
+use crate::cards::model::ApprovalCard;
 use crate::cards::queue::CardQueue;
 use crate::error::PipelineError;
 use crate::llm::provider::{ChatMessage, CompletionRequest, LlmProvider};
@@ -174,13 +174,13 @@ impl MessageProcessor {
                 Ok(())
             }
             TriageAction::Notify { summary } => {
-                let card = ReplyCard::new(
-                    &message.id,
-                    &message.content,
+                let card = ApprovalCard::new_reply(
+                    &message.channel,
                     &message.sender,
+                    &message.content,
                     format!("[Notification] {}", summary),
                     0.0, // No reply confidence — this is FYI only
-                    &message.channel,
+                    &message.id,
                     CARD_EXPIRE_MINUTES,
                 )
                 .with_reply_metadata(message.reply_metadata.clone());
@@ -209,13 +209,13 @@ impl MessageProcessor {
                     metadata["style_notes"] = serde_json::Value::String(s.clone());
                 }
 
-                let card = ReplyCard::new(
-                    &message.id,
-                    &message.content,
+                let card = ApprovalCard::new_reply(
+                    &message.channel,
                     &message.sender,
+                    &message.content,
                     draft,
                     *confidence,
-                    &message.channel,
+                    &message.id,
                     CARD_EXPIRE_MINUTES,
                 )
                 .with_reply_metadata(metadata);
@@ -237,13 +237,13 @@ impl MessageProcessor {
                     summary = %summary,
                     "Digest item — creating low-priority notification for now"
                 );
-                let card = ReplyCard::new(
-                    &message.id,
-                    &message.content,
+                let card = ApprovalCard::new_reply(
+                    &message.channel,
                     &message.sender,
+                    &message.content,
                     format!("[Digest] {}", summary),
                     0.0,
-                    &message.channel,
+                    &message.id,
                     CARD_EXPIRE_MINUTES * 4, // longer expiry for digest items
                 )
                 .with_reply_metadata(message.reply_metadata.clone());
@@ -815,8 +815,8 @@ mod tests {
 
         let pending = queue.pending().await;
         assert_eq!(pending.len(), 1);
-        assert_eq!(pending[0].suggested_reply, "Sure, Tuesday works!");
-        assert!((pending[0].confidence - 0.9).abs() < 0.01);
+        assert_eq!(pending[0].payload.suggested_reply().unwrap(), "Sure, Tuesday works!");
+        assert!((pending[0].payload.confidence().unwrap() - 0.9).abs() < 0.01);
     }
 
     #[tokio::test]
@@ -844,7 +844,7 @@ mod tests {
         let pending = queue.pending().await;
         assert_eq!(pending.len(), 1);
 
-        let meta = pending[0].reply_metadata.as_ref().unwrap();
+        let meta = pending[0].payload.reply_metadata().unwrap();
         assert_eq!(meta["tone"], "casual and friendly");
         assert_eq!(meta["style_notes"], "keep it brief");
         // Original metadata preserved
@@ -877,7 +877,7 @@ mod tests {
 
         let pending = queue.pending().await;
         assert_eq!(pending.len(), 1);
-        assert!(pending[0].suggested_reply.contains("Notification"));
+        assert!(pending[0].payload.suggested_reply().unwrap().contains("Notification"));
     }
 
     #[tokio::test]
@@ -980,6 +980,6 @@ mod tests {
 
         let pending = queue.pending().await;
         assert_eq!(pending.len(), 1);
-        assert!(pending[0].suggested_reply.contains("Digest"));
+        assert!(pending[0].payload.suggested_reply().unwrap().contains("Digest"));
     }
 }

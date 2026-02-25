@@ -8,7 +8,7 @@ use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
 use uuid::Uuid;
 
-use crate::cards::model::{CardStatus, ReplyCard};
+use crate::cards::model::{ApprovalCard, CardSilo, CardStatus, SiloCounts};
 use crate::error::DatabaseError;
 use crate::todos::model::{TodoItem, TodoStatus};
 
@@ -91,11 +91,11 @@ pub trait Database: Send + Sync {
 
     // ── Cards ───────────────────────────────────────────────────────
 
-    /// Insert a new reply card.
-    async fn insert_card(&self, card: &ReplyCard) -> Result<(), DatabaseError>;
+    /// Insert a new approval card.
+    async fn insert_card(&self, card: &ApprovalCard) -> Result<(), DatabaseError>;
 
     /// Get a card by ID.
-    async fn get_card(&self, id: Uuid) -> Result<Option<ReplyCard>, DatabaseError>;
+    async fn get_card(&self, id: Uuid) -> Result<Option<ApprovalCard>, DatabaseError>;
 
     /// Update a card's status.
     async fn update_card_status(&self, id: Uuid, status: CardStatus) -> Result<(), DatabaseError>;
@@ -109,14 +109,23 @@ pub trait Database: Send + Sync {
     ) -> Result<(), DatabaseError>;
 
     /// Get all pending (non-expired) cards.
-    async fn get_pending_cards(&self) -> Result<Vec<ReplyCard>, DatabaseError>;
+    async fn get_pending_cards(&self) -> Result<Vec<ApprovalCard>, DatabaseError>;
 
     /// Get cards for a specific channel, up to `limit`.
     async fn get_cards_by_channel(
         &self,
         channel: &str,
         limit: usize,
-    ) -> Result<Vec<ReplyCard>, DatabaseError>;
+    ) -> Result<Vec<ApprovalCard>, DatabaseError>;
+
+    /// Get all pending (non-expired) cards for a specific silo.
+    async fn get_pending_cards_by_silo(
+        &self,
+        silo: CardSilo,
+    ) -> Result<Vec<ApprovalCard>, DatabaseError>;
+
+    /// Get pending card counts per silo for badge display.
+    async fn get_pending_card_counts(&self) -> Result<SiloCounts, DatabaseError>;
 
     /// Check if there's an active (pending) card for a given message_id.
     async fn has_pending_card_for_message(&self, message_id: &str) -> Result<bool, DatabaseError>;

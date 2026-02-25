@@ -109,13 +109,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 continue;
             }
             // No active card — create a placeholder card for the UI
-            let card = ai_assist::cards::model::ReplyCard::new(
+            let card = ai_assist::cards::model::ApprovalCard::new_reply(
+                &msg.channel,
                 &msg.sender,
                 &msg.content,
-                &msg.sender,
                 "(pending re-generation)",
                 0.0,
-                &msg.channel,
+                &msg.sender,
                 card_expire_min,
             )
             .with_message_id(&msg.id);
