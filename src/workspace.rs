@@ -74,10 +74,35 @@ impl Workspace {
         self.base_path.join(relative)
     }
 
-    /// Ensure the workspace directory structure exists.
+    /// Ensure the workspace directory structure exists and seed default files.
     pub async fn ensure_dirs(&self) -> Result<(), WorkspaceError> {
         fs::create_dir_all(&self.base_path).await?;
         fs::create_dir_all(self.base_path.join("memory")).await?;
+
+        // Seed AGENTS.md if it doesn't exist
+        let agents_path = self.resolve_path(paths::AGENTS);
+        if !agents_path.exists() {
+            fs::write(
+                &agents_path,
+                "# Agent Instructions\n\n\
+                 You are an autonomous agent executing tasks on behalf of the user.\n\
+                 Be thorough, check your work, and report clearly when done.\n\
+                 If you encounter issues you cannot resolve, explain what went wrong.\n",
+            )
+            .await?;
+        }
+
+        // Seed USER.md if it doesn't exist
+        let user_path = self.resolve_path(paths::USER);
+        if !user_path.exists() {
+            fs::write(
+                &user_path,
+                "# User Context\n\n\
+                 (Add information about yourself here — preferences, projects, etc.)\n",
+            )
+            .await?;
+        }
+
         Ok(())
     }
 
@@ -241,6 +266,25 @@ impl Workspace {
         })
     }
 
+    /// Load AGENTS.md + USER.md for the worker system prompt.
+    ///
+    /// Skips files that don't exist or are empty — no error, just omit.
+    /// Returns empty string if both are missing.
+    pub async fn worker_prompt(&self) -> Result<String, WorkspaceError> {
+        let mut parts = Vec::new();
+        for &file in &[paths::AGENTS, paths::USER] {
+            let path = self.resolve_path(file);
+            if path.exists() {
+                if let Ok(content) = fs::read_to_string(&path).await {
+                    if !content.trim().is_empty() {
+                        parts.push(content);
+                    }
+                }
+            }
+        }
+        Ok(parts.join("\n\n---\n\n"))
+    }
+
     /// Load and concatenate identity files for the system prompt.
     pub async fn system_prompt(&self) -> Result<String, WorkspaceError> {
         let mut parts = Vec::new();
@@ -262,7 +306,8 @@ mod tests {
     async fn test_workspace() -> (Workspace, TempDir) {
         let dir = TempDir::new().unwrap();
         let ws = Workspace::new(dir.path().to_path_buf());
-        ws.ensure_dirs().await.unwrap();
+        // Create dirs without seeding default files — tests control their own state
+        tokio::fs::create_dir_all(dir.path().join("memory")).await.unwrap();
         (ws, dir)
     }
 
@@ -331,6 +376,77 @@ mod tests {
         let (ws, _dir) = test_workspace().await;
         let results = ws.search("", 10).await.unwrap();
         assert!(results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn worker_prompt_both_present() {
+        let (ws, _dir) = test_workspace().await;
+        ws.write(paths::AGENTS, "You are a coding agent.").await.unwrap();
+        ws.write(paths::USER, "Name: Ian").await.unwrap();
+
+        let prompt = ws.worker_prompt().await.unwrap();
+        assert!(prompt.contains("You are a coding agent."));
+        assert!(prompt.contains("Name: Ian"));
+        assert!(prompt.contains("---"));
+    }
+
+    #[tokio::test]
+    async fn worker_prompt_one_missing() {
+        let (ws, _dir) = test_workspace().await;
+        ws.write(paths::AGENTS, "Agent instructions here").await.unwrap();
+        // USER.md not created
+
+        let prompt = ws.worker_prompt().await.unwrap();
+        assert!(prompt.contains("Agent instructions here"));
+        assert!(!prompt.contains("---"));
+    }
+
+    #[tokio::test]
+    async fn worker_prompt_both_missing() {
+        let (ws, _dir) = test_workspace().await;
+        let prompt = ws.worker_prompt().await.unwrap();
+        assert!(prompt.is_empty());
+    }
+
+    #[tokio::test]
+    async fn worker_prompt_skips_empty_files() {
+        let (ws, _dir) = test_workspace().await;
+        ws.write(paths::AGENTS, "   ").await.unwrap();
+        ws.write(paths::USER, "Name: Ian").await.unwrap();
+
+        let prompt = ws.worker_prompt().await.unwrap();
+        assert!(!prompt.contains("---"));
+        assert!(prompt.contains("Name: Ian"));
+    }
+
+    #[tokio::test]
+    async fn ensure_dirs_seeds_default_files() {
+        let dir = TempDir::new().unwrap();
+        let ws = Workspace::new(dir.path().to_path_buf());
+        ws.ensure_dirs().await.unwrap();
+
+        let agents = ws.read(paths::AGENTS).await.unwrap();
+        assert!(agents.contains("Agent Instructions"));
+        assert!(agents.contains("autonomous agent"));
+
+        let user = ws.read(paths::USER).await.unwrap();
+        assert!(user.contains("User Context"));
+    }
+
+    #[tokio::test]
+    async fn ensure_dirs_does_not_overwrite_existing() {
+        let dir = TempDir::new().unwrap();
+        let ws = Workspace::new(dir.path().to_path_buf());
+
+        // Create workspace and seed defaults
+        ws.ensure_dirs().await.unwrap();
+        // Overwrite with custom content
+        ws.write(paths::AGENTS, "Custom agent instructions").await.unwrap();
+
+        // Re-run ensure_dirs — should NOT overwrite
+        ws.ensure_dirs().await.unwrap();
+        let agents = ws.read(paths::AGENTS).await.unwrap();
+        assert_eq!(agents, "Custom agent instructions");
     }
 
     #[tokio::test]
