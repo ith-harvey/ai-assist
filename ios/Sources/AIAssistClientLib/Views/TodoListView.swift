@@ -210,19 +210,21 @@ public struct TodoListView: View {
                 expandedTodoId = isCollapsing ? nil : todo.id
             }
         }
-        // Right swipe — complete
+        // Right swipe — complete (hide on already-completed todos)
         .swipeActions(edge: .leading) {
-            Button {
-                // TODO: Mark todo complete via WebSocket
-            } label: {
-                Label("Complete", systemImage: "checkmark.circle.fill")
+            if todo.status != .completed {
+                Button {
+                    todoSocket.complete(todoId: todo.id)
+                } label: {
+                    Label("Complete", systemImage: "checkmark.circle.fill")
+                }
+                .tint(.green)
             }
-            .tint(.green)
         }
         // Left swipe — delete
         .swipeActions(edge: .trailing) {
             Button(role: .destructive) {
-                // TODO: Delete todo via WebSocket
+                todoSocket.delete(todoId: todo.id)
             } label: {
                 Label("Delete", systemImage: "trash.fill")
             }
