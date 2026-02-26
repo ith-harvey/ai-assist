@@ -15,54 +15,45 @@ public struct TodoDetailView: View {
     }
 
     public var body: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                VStack(alignment: .leading, spacing: 0) {
-                    // ── Header ──────────────────────────────────────
-                    headerSection
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                // ── Header ──────────────────────────────────────
+                headerSection
+                    .padding(.horizontal, 20)
+                    .padding(.top, 16)
+                    .padding(.bottom, 12)
+
+                // ── Metadata ────────────────────────────────────
+                metadataSection
+                    .padding(.horizontal, 20)
+                    .padding(.bottom, 12)
+
+                // ── Description ─────────────────────────────────
+                if let description = todo.description, !description.isEmpty {
+                    Text(description)
+                        .font(.subheadline)
+                        .foregroundStyle(.primary)
                         .padding(.horizontal, 20)
-                        .padding(.top, 16)
-                        .padding(.bottom, 12)
-
-                    // ── Metadata ────────────────────────────────────
-                    metadataSection
-                        .padding(.horizontal, 20)
-                        .padding(.bottom, 12)
-
-                    // ── Description ─────────────────────────────────
-                    if let description = todo.description, !description.isEmpty {
-                        Text(description)
-                            .font(.subheadline)
-                            .foregroundStyle(.primary)
-                            .padding(.horizontal, 20)
-                            .padding(.bottom, 16)
-                    }
-
-                    // ── Divider ─────────────────────────────────────
-                    if todo.bucket == .agentStartable {
-                        Rectangle()
-                            .fill(Color.gray.opacity(0.2))
-                            .frame(height: 1)
-                            .padding(.horizontal, 20)
-
-                        // ── Activity Feed ───────────────────────────────
-                        activitySection
-                            .padding(.top, 12)
-                    }
+                        .padding(.bottom, 16)
                 }
-                .padding(.bottom, 20)
-            }
-            #if os(iOS)
-            .scrollDismissesKeyboard(.interactively)
-            #endif
-            .onChange(of: activitySocket.messages.count) { _, _ in
-                if let last = activitySocket.messages.last {
-                    withAnimation(.easeOut(duration: 0.3)) {
-                        proxy.scrollTo(last.id, anchor: .bottom)
-                    }
+
+                // ── Divider ─────────────────────────────────────
+                if todo.bucket == .agentStartable {
+                    Rectangle()
+                        .fill(Color.gray.opacity(0.2))
+                        .frame(height: 1)
+                        .padding(.horizontal, 20)
+
+                    // ── Activity Feed ───────────────────────────────
+                    activitySection
+                        .padding(.top, 12)
                 }
             }
+            .padding(.bottom, 20)
         }
+        #if os(iOS)
+        .scrollDismissesKeyboard(.interactively)
+        #endif
         #if os(iOS)
         .background(Color(uiColor: .secondarySystemBackground).ignoresSafeArea())
         #else
@@ -208,17 +199,15 @@ public struct TodoDetailView: View {
             .foregroundStyle(.secondary)
             .padding(.horizontal, 20)
 
-            if activitySocket.messages.isEmpty {
+            if let latest = activitySocket.latestActivity {
+                // Show only the latest event — replaces on each update
+                activityRow(latest)
+                    .id(latest.id)
+                    .padding(.horizontal, 20)
+                    .animation(.easeInOut(duration: 0.2), value: latest.id)
+            } else {
                 activityEmptyState
                     .padding(.horizontal, 20)
-            } else {
-                LazyVStack(alignment: .leading, spacing: 12) {
-                    ForEach(activitySocket.messages) { message in
-                        activityRow(message)
-                            .id(message.id)
-                    }
-                }
-                .padding(.horizontal, 20)
             }
         }
     }

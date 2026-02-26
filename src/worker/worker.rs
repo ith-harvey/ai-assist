@@ -284,12 +284,6 @@ impl Worker {
                 return Ok(());
             }
 
-            // Emit thinking activity
-            self.emit_activity(TodoActivityMessage::Thinking {
-                job_id: self.job_id,
-                iteration,
-            });
-
             // Refresh tool definitions
             reason_ctx.available_tools = self.tools().tool_definitions().await;
 
@@ -691,12 +685,7 @@ impl Worker {
             );
 
             // Emit tool started activity
-            self.emit_activity(TodoActivityMessage::ToolStarted {
-                job_id: self.job_id,
-                tool_name: action.tool_name.clone(),
-            });
-
-            let result = self
+                        let result = self
                 .execute_tool(&action.tool_name, &action.parameters)
                 .await;
 
@@ -746,12 +735,6 @@ impl Worker {
         tool_name: &str,
         params: &serde_json::Value,
     ) -> Result<String, Error> {
-        // Emit tool started activity
-        self.emit_activity(TodoActivityMessage::ToolStarted {
-            job_id: self.job_id,
-            tool_name: tool_name.to_string(),
-        });
-
         Self::execute_tool_inner(
             self.tools().clone(),
             self.context_manager().clone(),

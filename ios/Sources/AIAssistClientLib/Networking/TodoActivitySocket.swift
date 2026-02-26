@@ -12,7 +12,10 @@ public final class TodoActivitySocket: @unchecked Sendable {
 
     // MARK: - Published State
 
-    public var messages: [ActivityMessage] = []
+    /// The latest activity event for this todo (replaces on each update).
+    public var latestActivity: ActivityMessage? = nil
+    /// Full history kept internally for replay on reconnect.
+    public private(set) var messages: [ActivityMessage] = []
     public var isConnected: Bool = false
 
     // MARK: - Configuration
@@ -107,6 +110,7 @@ public final class TodoActivitySocket: @unchecked Sendable {
 
         DispatchQueue.main.async { [weak self] in
             self?.messages.append(activityMessage)
+            self?.latestActivity = activityMessage
         }
     }
 
