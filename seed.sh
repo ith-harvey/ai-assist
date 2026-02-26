@@ -20,34 +20,34 @@ echo "📬 Creating approval cards..."
 
 cards=(
   # Email — work (M0)
-  '{"sender":"luca@m0.xyz","message":"Hey Ian, the Stellar integration tests are failing on the fee calculation path. Can you take a look before we cut the release?","reply":"On it — I saw the fee rounding issue in the logs. Will push a fix this afternoon.","confidence":0.88,"channel":"email"}'
+  '{"sender":"ith.harvey@gmail.com","message":"Hey Ian, the Stellar integration tests are failing on the fee calculation path. Can you take a look before we cut the release?","reply":"On it — I saw the fee rounding issue in the logs. Will push a fix this afternoon.","confidence":0.88,"channel":"email"}'
 
   # Email — personal
-  '{"sender":"christina.harvey@gmail.com","message":"Can you pick up groceries on the way home? We need milk, eggs, and that sourdough from Whole Foods.","reply":"Sure thing, I will swing by Whole Foods after work. Need anything else?","confidence":0.94,"channel":"email"}'
+  '{"sender":"ith.harvey@gmail.com","message":"Can you pick up groceries on the way home? We need milk, eggs, and that sourdough from Whole Foods.","reply":"Sure thing, I will swing by Whole Foods after work. Need anything else?","confidence":0.94,"channel":"email"}'
 
   # Email — GitHub notification
-  '{"sender":"notifications@github.com","message":"[ith-harvey/ai-assist] PR #67: Rex left a review — 2 comments on the migration logic, requesting changes to the backfill query.","reply":"Thanks Rex, good catches. I will update the backfill to handle NULL payload rows and push a fix.","confidence":0.82,"channel":"email"}'
+  '{"sender":"ith.harvey@gmail.com","message":"[ith-harvey/ai-assist] PR #67: Rex left a review — 2 comments on the migration logic, requesting changes to the backfill query.","reply":"Thanks Rex, good catches. I will update the backfill to handle NULL payload rows and push a fix.","confidence":0.82,"channel":"email"}'
 
   # Email — Joey bachelor party
-  '{"sender":"joey.martinez@gmail.com","message":"Yo Ian! So for the bachelor party — thinking Nashville March 15-17. Can you check flights from Vegas? Budget around $400 for airfare.","reply":"Nashville sounds perfect. Let me check Southwest and Frontier, I will send you options by tomorrow.","confidence":0.91,"channel":"email"}'
+  '{"sender":"ith.harvey@gmail.com","message":"Yo Ian! So for the bachelor party — thinking Nashville March 15-17. Can you check flights from Vegas? Budget around $400 for airfare.","reply":"Nashville sounds perfect. Let me check Southwest and Frontier, I will send you options by tomorrow.","confidence":0.91,"channel":"email"}'
 
   # Email — newsletter/digest worth surfacing
-  '{"sender":"digest@a]exfriedman.com","message":"New episode: Lex Fridman Podcast #428 — Andrej Karpathy on the future of AI agents, tool use, and why transformers are not enough.","reply":"Saving this for my commute. Karpathy on tool use is directly relevant to what we are building.","confidence":0.73,"channel":"email"}'
+  '{"sender":"ith.harvey@gmail.com","message":"New episode: Lex Fridman Podcast #428 — Andrej Karpathy on the future of AI agents, tool use, and why transformers are not enough.","reply":"Saving this for my commute. Karpathy on tool use is directly relevant to what we are building.","confidence":0.73,"channel":"email"}'
 
   # Telegram — friend
-  '{"sender":"Marcus","message":"Dude did you see the new Ghost in the Shell trailer? SAC_2045 season 3 confirmed","reply":"No way!! Just saw it — the animation style looks way better this time. We gotta watch together.","confidence":0.95,"channel":"telegram"}'
+  '{"sender":"ith.harvey@gmail.com","message":"Dude did you see the new Ghost in the Shell trailer? SAC_2045 season 3 confirmed","reply":"No way!! Just saw it — the animation style looks way better this time. We gotta watch together.","confidence":0.95,"channel":"telegram"}'
 
   # Slack — M0 work
-  '{"sender":"Devon (M0 #engineering)","message":"@ian heads up — the staging environment is down. Looks like the Stellar Horizon node is unresponsive. Already paged infra.","reply":"Thanks for the heads up. I will hold off deploying until staging is back. Let me know if you need help debugging the Horizon issue.","confidence":0.86,"channel":"slack"}'
+  '{"sender":"ith.harvey@gmail.com","message":"@ian heads up — the staging environment is down. Looks like the Stellar Horizon node is unresponsive. Already paged infra.","reply":"Thanks for the heads up. I will hold off deploying until staging is back. Let me know if you need help debugging the Horizon issue.","confidence":0.86,"channel":"slack"}'
 
   # WhatsApp — Christina
-  '{"sender":"Christina","message":"The electrician can come Thursday or Friday. Which works better for you?","reply":"Friday is better — I have back to back meetings Thursday. Morning or afternoon?","confidence":0.93,"channel":"whatsapp"}'
+  '{"sender":"ith.harvey@gmail.com","message":"The electrician can come Thursday or Friday. Which works better for you?","reply":"Friday is better — I have back to back meetings Thursday. Morning or afternoon?","confidence":0.93,"channel":"whatsapp"}'
 
   # Email — film production
-  '{"sender":"mike.chen@gmail.com","message":"Ian, the Atlanta location scout found two more houses for the slasher scenes. Sending photos. Can you review and pick your top choice by Wednesday?","reply":"Perfect, I will review the photos tonight and send my pick with notes on lighting angles.","confidence":0.79,"channel":"email"}'
+  '{"sender":"ith.harvey@gmail.com","message":"Ian, the Atlanta location scout found two more houses for the slasher scenes. Sending photos. Can you review and pick your top choice by Wednesday?","reply":"Perfect, I will review the photos tonight and send my pick with notes on lighting angles.","confidence":0.79,"channel":"email"}'
 
   # Email — AI/tech newsletter
-  '{"sender":"updates@openclaw.ai","message":"OpenClaw v2026.2.24 released: Per-agent model overrides, improved session cleanup, and 3 new built-in skills. See changelog for migration notes.","reply":"Nice, the per-agent model overrides are exactly what we needed for Clark. I will upgrade this weekend.","confidence":0.76,"channel":"email"}'
+  '{"sender":"ith.harvey@gmail.com","message":"OpenClaw v2026.2.24 released: Per-agent model overrides, improved session cleanup, and 3 new built-in skills. See changelog for migration notes.","reply":"Nice, the per-agent model overrides are exactly what we needed for Clark. I will upgrade this weekend.","confidence":0.76,"channel":"email"}'
 )
 
 for card in "${cards[@]}"; do
