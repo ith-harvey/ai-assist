@@ -1,4 +1,5 @@
 import Foundation
+import SwiftUI
 
 // MARK: - Enums
 
@@ -75,6 +76,18 @@ public enum TodoStatus: String, Codable, Sendable {
         case .waitingOnYou: "Waiting on you"
         case .snoozed: "Snoozed"
         case .completed: "Completed"
+        }
+    }
+
+    /// Status color for UI indicators (stripe, icon tint).
+    public var color: Color {
+        switch self {
+        case .created: .blue
+        case .agentWorking: .orange
+        case .readyForReview: .green
+        case .waitingOnYou: .purple
+        case .snoozed: .gray
+        case .completed: .green
         }
     }
 
