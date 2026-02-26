@@ -291,12 +291,8 @@ impl Scheduler {
 
         let job_ctx = worker_ctx.to_job_context();
 
-        if tool.requires_approval() {
-            return Err(crate::error::ToolError::AuthRequired {
-                name: tool_name.to_string(),
-            }
-            .into());
-        }
+        // Note: requires_approval() is NOT checked for Worker tool execution.
+        // The todo approval itself is the human gate. SafetyLayer still applies.
 
         let validation = safety.validator().validate_tool_params(&params);
         if !validation.is_valid {

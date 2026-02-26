@@ -1,0 +1,862 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Assist — Architecture Diagrams</title>
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+    <style>
+        :root {
+            --bg: #0d1117;
+            --surface: #161b22;
+            --border: #30363d;
+            --text: #e6edf3;
+            --text-muted: #8b949e;
+            --accent: #58a6ff;
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: var(--bg);
+            color: var(--text);
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+            line-height: 1.6;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 2rem 1.5rem;
+        }
+        h1 {
+            font-size: 2.5rem;
+            font-weight: 700;
+            margin-bottom: 0.5rem;
+            background: linear-gradient(135deg, #58a6ff, #bc8cff);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        .subtitle {
+            color: var(--text-muted);
+            font-size: 1.1rem;
+            margin-bottom: 2.5rem;
+        }
+        nav {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 1.25rem 1.5rem;
+            margin-bottom: 2.5rem;
+        }
+        nav h2 {
+            font-size: 0.85rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--text-muted);
+            margin-bottom: 0.75rem;
+        }
+        nav ul {
+            list-style: none;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.5rem;
+        }
+        nav a {
+            display: inline-block;
+            padding: 0.35rem 0.75rem;
+            font-size: 0.85rem;
+            color: var(--accent);
+            text-decoration: none;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            transition: all 0.15s;
+        }
+        nav a:hover {
+            background: rgba(88, 166, 255, 0.1);
+            border-color: var(--accent);
+        }
+        section {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 2rem;
+            margin-bottom: 2rem;
+        }
+        section h2 {
+            font-size: 1.5rem;
+            font-weight: 600;
+            margin-bottom: 0.5rem;
+        }
+        section .desc {
+            color: var(--text-muted);
+            margin-bottom: 1.5rem;
+            font-size: 0.95rem;
+        }
+        .mermaid {
+            background: #fff;
+            border-radius: 8px;
+            padding: 1.5rem;
+            overflow-x: auto;
+        }
+        .note {
+            margin-top: 1rem;
+            padding: 0.75rem 1rem;
+            background: rgba(88, 166, 255, 0.08);
+            border-left: 3px solid var(--accent);
+            border-radius: 0 6px 6px 0;
+            font-size: 0.9rem;
+            color: var(--text-muted);
+        }
+        footer {
+            text-align: center;
+            color: var(--text-muted);
+            font-size: 0.85rem;
+            padding: 2rem 0;
+        }
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+            gap: 1rem;
+            margin-bottom: 2.5rem;
+        }
+        .stat {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 1rem;
+            text-align: center;
+        }
+        .stat .number {
+            font-size: 1.75rem;
+            font-weight: 700;
+            color: var(--accent);
+        }
+        .stat .label {
+            font-size: 0.8rem;
+            color: var(--text-muted);
+            margin-top: 0.25rem;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>AI Assist Architecture</h1>
+        <p class="subtitle">15 system diagrams · Generated from codebase · Feb 25, 2026</p>
+
+        <div class="stats">
+            <div class="stat"><div class="number">26.5k</div><div class="label">Lines of Rust</div></div>
+            <div class="stat"><div class="number">5.4k</div><div class="label">Lines of Swift</div></div>
+            <div class="stat"><div class="number">62</div><div class="label">Rust Files</div></div>
+            <div class="stat"><div class="number">513</div><div class="label">Tests Passing</div></div>
+            <div class="stat"><div class="number">13</div><div class="label">Built-in Tools</div></div>
+            <div class="stat"><div class="number">6</div><div class="label">DB Migrations</div></div>
+        </div>
+
+        <nav>
+            <h2>Jump to Diagram</h2>
+            <ul>
+                <li><a href="#system">1. System Architecture</a></li>
+                <li><a href="#mainloop">2. Agent Main Loop</a></li>
+                <li><a href="#dispatch">3. Message Dispatch</a></li>
+                <li><a href="#userinput">4. User Input Processing</a></li>
+                <li><a href="#agentic">5. Agentic Tool Loop</a></li>
+                <li><a href="#approval">6. Tool Approval Flow</a></li>
+                <li><a href="#compaction">7. Context Compaction</a></li>
+                <li><a href="#cards">8. Approval Card System</a></li>
+                <li><a href="#pipeline">9. Message Pipeline</a></li>
+                <li><a href="#routines">10. Routine Engine</a></li>
+                <li><a href="#todos">11. Todo System</a></li>
+                <li><a href="#schema">12. Database Schema</a></li>
+                <li><a href="#sessions">13. Session Model</a></li>
+                <li><a href="#tools">14. Built-in Tools</a></li>
+            </ul>
+        </nav>
+
+        <!-- 1. System Architecture -->
+        <section id="system">
+            <h2>1. High-Level System Architecture</h2>
+            <p class="desc">How all the pieces connect at startup (main.rs → Agent::run())</p>
+            <div class="mermaid">
+graph TB
+    subgraph "main.rs — Startup"
+        ENV["Environment Vars&lt;br/&gt;ANTHROPIC_API_KEY&lt;br/&gt;AI_ASSIST_MODEL&lt;br/&gt;TELEGRAM_BOT_TOKEN&lt;br/&gt;IMAP_HOST / SMTP_HOST"]
+        LLM["LlmProvider&lt;br/&gt;(Anthropic via rig-core)"]
+        DB["Database&lt;br/&gt;(libSQL/SQLite)"]
+        CARDS["CardGenerator&lt;br/&gt;+ CardQueue"]
+        TOOLS["ToolRegistry&lt;br/&gt;(13 tools registered)"]
+        SAFETY["SafetyLayer"]
+        WORKSPACE["Workspace&lt;br/&gt;(~/.ai-assist/workspace)"]
+        ROUTINE["RoutineEngine&lt;br/&gt;(cron/event/webhook)"]
+    end
+    subgraph "Axum Server (port 8080)"
+        WS_CARDS["/ws — Card WebSocket"]
+        WS_CHAT["/ws/chat — iOS Chat"]
+        WS_TODOS["/ws/todos — Todo Sync"]
+        REST_CARDS["/api/cards — Card REST"]
+        REST_CHAT["/api/chat/history"]
+        REST_TODOS["/api/todos/test"]
+    end
+    subgraph "ChannelManager"
+        CH_CLI["CliChannel&lt;br/&gt;(stdin/stdout)"]
+        CH_IOS["IosChannel&lt;br/&gt;(WebSocket)"]
+        CH_TG["TelegramChannel&lt;br/&gt;(Bot API)"]
+        CH_EMAIL["EmailChannel&lt;br/&gt;(IMAP/SMTP)"]
+    end
+    subgraph "Agent"
+        DEPS["AgentDeps bundle"]
+        SESS_MGR["SessionManager"]
+        CTX_MON["ContextMonitor"]
+        ROUTER["Router (/ commands)"]
+    end
+    ENV --> LLM
+    ENV --> DB
+    LLM --> CARDS
+    DB --> CARDS
+    LLM --> DEPS
+    SAFETY --> DEPS
+    TOOLS --> DEPS
+    CARDS --> DEPS
+    WORKSPACE --> DEPS
+    ROUTINE --> DEPS
+    DB --> DEPS
+    CH_CLI --> ChannelManager
+    CH_IOS --> ChannelManager
+    CH_TG --> ChannelManager
+    CH_EMAIL --> ChannelManager
+    DEPS --> Agent
+    ChannelManager --> Agent
+    SESS_MGR --> Agent
+    CTX_MON --> Agent
+    ROUTER --> Agent
+    Agent -->|"channels.start_all()"| MSG_STREAM["MessageStream&lt;br/&gt;(merged from all channels)"]
+    style TOOLS fill:#99ff99,stroke:#009900
+    style CARDS fill:#99ddff,stroke:#0066cc
+    style ROUTINE fill:#ffcc99,stroke:#cc6600
+    style DB fill:#ddbbff,stroke:#7700cc
+            </div>
+        </section>
+
+        <!-- 2. Agent Main Loop -->
+        <section id="mainloop">
+            <h2>2. Agent Main Loop</h2>
+            <p class="desc">The outer event loop that receives messages and dispatches them</p>
+            <div class="mermaid">
+flowchart TD
+    START["Agent::run()"]
+    START --> START_CH["channels.start_all()&lt;br/&gt;→ merged MessageStream"]
+    START_CH --> SPAWN_PRUNE["Spawn session pruning task&lt;br/&gt;(every 10 min)"]
+    SPAWN_PRUNE --> READY["✅ Agent ready and listening"]
+    READY --> SELECT{"tokio::select!&lt;br/&gt;(biased)"}
+    SELECT -->|"Ctrl+C"| SHUTDOWN["🛑 Shutdown"]
+    SELECT -->|"message from stream"| HANDLE["handle_message(&msg)"]
+    HANDLE --> RESULT{"Result?"}
+    RESULT -->|"Ok(Some(response))&lt;br/&gt;non-empty"| RESPOND["channels.respond(&msg, response)"]
+    RESULT -->|"Ok(Some(''))&lt;br/&gt;empty"| SKIP["Skip (approval handled&lt;br/&gt;via send_status)"]
+    RESULT -->|"Ok(None)"| SHUTDOWN
+    RESULT -->|"Err(e)"| ERR_RESPOND["channels.respond(&msg,&lt;br/&gt;Error: ...)"]
+    RESPOND --> SELECT
+    SKIP --> SELECT
+    ERR_RESPOND --> SELECT
+    SHUTDOWN --> CLEANUP["pruning_handle.abort()&lt;br/&gt;channels.shutdown_all()"]
+            </div>
+        </section>
+
+        <!-- 3. Message Dispatch -->
+        <section id="dispatch">
+            <h2>3. Message Dispatch</h2>
+            <p class="desc">How a raw IncomingMessage gets classified and routed</p>
+            <div class="mermaid">
+flowchart TD
+    MSG["IncomingMessage"]
+    MSG --> PARSE["SubmissionParser::parse(&content)"]
+    PARSE --> HYDRATE{"Has thread_id?"}
+    HYDRATE -->|"Yes"| DO_HYDRATE["maybe_hydrate_thread()&lt;br/&gt;Load from DB if not in memory"]
+    HYDRATE -->|"No"| RESOLVE
+    DO_HYDRATE --> RESOLVE
+    RESOLVE["session_manager.resolve_thread()&lt;br/&gt;→ (Session, thread_id)"]
+    RESOLVE --> DISPATCH{"Submission Type"}
+    DISPATCH -->|"UserInput"| USER["process_user_input()"]
+    DISPATCH -->|"SystemCommand"| SYSCMD["handle_system_command()"]
+    DISPATCH -->|"Undo"| UNDO["process_undo()"]
+    DISPATCH -->|"Redo"| REDO["process_redo()"]
+    DISPATCH -->|"Interrupt"| INT["process_interrupt()"]
+    DISPATCH -->|"Compact"| COMPACT["process_compact()"]
+    DISPATCH -->|"Clear"| CLEAR["process_clear()"]
+    DISPATCH -->|"NewThread"| NEWT["process_new_thread()"]
+    DISPATCH -->|"Heartbeat"| HB["process_heartbeat()"]
+    DISPATCH -->|"Summarize"| SUM["process_summarize()"]
+    DISPATCH -->|"Suggest"| SUG["process_suggest()"]
+    DISPATCH -->|"Quit"| QUIT["return Ok(None) → shutdown"]
+    DISPATCH -->|"SwitchThread"| SWITCH["process_switch_thread()"]
+    DISPATCH -->|"Resume"| RESUME["process_resume()"]
+    DISPATCH -->|"Approval"| APPROVE["process_approval()"]
+    USER --> RESULT["SubmissionResult"]
+    APPROVE --> RESULT
+    style USER fill:#99ddff,stroke:#0066cc
+    style APPROVE fill:#ffcc99,stroke:#cc6600
+            </div>
+        </section>
+
+        <!-- 4. User Input Processing -->
+        <section id="userinput">
+            <h2>4. User Input Processing</h2>
+            <p class="desc">Every natural language message goes through here — the heart of the system</p>
+            <div class="mermaid">
+flowchart TD
+    INPUT["process_user_input(msg, session, thread_id, content)"]
+    INPUT --> CHECK_STATE{"Thread State?"}
+    CHECK_STATE -->|"Processing"| REJECT1["❌ Turn in progress"]
+    CHECK_STATE -->|"AwaitingApproval"| REJECT2["❌ Waiting for approval"]
+    CHECK_STATE -->|"Completed"| REJECT3["❌ Thread completed"]
+    CHECK_STATE -->|"Idle / Interrupted"| SAFETY
+    SAFETY["Safety Validation"]
+    SAFETY --> VALIDATE_INPUT["safety.validate_input(content)"]
+    VALIDATE_INPUT --> POLICY["safety.check_policy(content)"]
+    POLICY --> POLICY_CHECK{"Blocked?"}
+    POLICY_CHECK -->|"Yes"| REJECT4["❌ Input rejected"]
+    POLICY_CHECK -->|"No"| CARDS
+    CARDS["🃏 Fire-and-forget: Card Generation"]
+    CARDS --> CARD_SPAWN["tokio::spawn(card_gen.generate_cards(...))"]
+    CARD_SPAWN --> COMPACT_CHECK
+    COMPACT_CHECK["Auto-Compaction Check"]
+    COMPACT_CHECK --> CTX_MON{"context_monitor.suggest_compaction()"}
+    CTX_MON -->|"Some(strategy)"| DO_COMPACT["ContextCompactor::compact()"]
+    CTX_MON -->|"None"| CHECKPOINT
+    DO_COMPACT --> CHECKPOINT
+    CHECKPOINT["Create Undo Checkpoint"]
+    CHECKPOINT --> START_TURN["thread.start_turn(content)"]
+    START_TURN --> THINK["📡 send_status(Thinking)"]
+    THINK --> AGENTIC["🔄 run_agentic_loop()"]
+    AGENTIC --> FINALIZE["finalize_loop_result()"]
+    FINALIZE --> FIN_CHECK{"AgenticLoopResult?"}
+    FIN_CHECK -->|"Response(text)"| COMPLETE["thread.complete_turn(text)&lt;br/&gt;persist to DB"]
+    FIN_CHECK -->|"NeedApproval"| AWAIT["thread.await_approval(pending)"]
+    FIN_CHECK -->|"Err(e)"| FAIL["thread.fail_turn(e)"]
+    style AGENTIC fill:#ffdd99,stroke:#cc8800,stroke-width:3px
+    style CARDS fill:#99ddff,stroke:#0066cc
+    style SAFETY fill:#ffcccc,stroke:#cc0000
+    style CHECKPOINT fill:#ccffcc,stroke:#009900
+            </div>
+        </section>
+
+        <!-- 5. Agentic Tool Loop -->
+        <section id="agentic">
+            <h2>5. The Agentic Tool Loop</h2>
+            <p class="desc">LLM → Tool → Repeat cycle — the core engine (max 10 iterations)</p>
+            <div class="mermaid">
+flowchart TD
+    ENTRY["run_agentic_loop(messages, resume_after_tool)"]
+    ENTRY --> LOAD_SYS["Load workspace system prompt&lt;br/&gt;(AGENTS.md, SOUL.md, USER.md, IDENTITY.md)"]
+    LOAD_SYS --> INIT["Initialize: iteration=0, MAX=10"]
+    INIT --> LOOP_START["🔄 LOOP START"]
+    LOOP_START --> INC["iteration += 1"]
+    INC --> MAX_CHECK{"iteration > 10?"}
+    MAX_CHECK -->|"Yes"| ERR_MAX["❌ Exceeded max iterations"]
+    MAX_CHECK -->|"No"| INT_CHECK{"Thread interrupted?"}
+    INT_CHECK -->|"Yes"| ERR_INT["❌ Interrupted"]
+    INT_CHECK -->|"No"| REFRESH["Refresh tool definitions"]
+    REFRESH --> LLM_CALL["📡 reasoning.respond_with_tools()"]
+    LLM_CALL --> LLM_RESULT{"RespondResult?"}
+    LLM_RESULT -->|"Text(text)"| NUDGE_CHECK{"!tools_executed &amp;&amp; iteration &lt; 3?"}
+    NUDGE_CHECK -->|"Yes"| NUDGE["Tool Nudge: append hint"]
+    NUDGE --> LOOP_START
+    NUDGE_CHECK -->|"No"| RETURN_TEXT["✅ Response(text)"]
+    LLM_RESULT -->|"ToolCalls"| TOOLS_START["tools_executed = true"]
+    TOOLS_START --> TOOL_ITER["For each tool_call"]
+    TOOL_ITER --> APPROVAL_CHECK{"requires_approval()?"}
+    APPROVAL_CHECK -->|"Yes + not auto-approved"| NEED_APPROVAL["⏸️ NeedApproval"]
+    APPROVAL_CHECK -->|"No or auto-approved"| EXECUTE["execute_chat_tool(name, args)"]
+    EXECUTE --> ADD_RESULT["Append tool_result to context"]
+    ADD_RESULT --> NEXT_TOOL{"More calls?"}
+    NEXT_TOOL -->|"Yes"| TOOL_ITER
+    NEXT_TOOL -->|"No"| LOOP_START
+    style LOOP_START fill:#ffdd99,stroke:#cc8800,stroke-width:2px
+    style LLM_CALL fill:#ddbbff,stroke:#7700cc,stroke-width:2px
+    style EXECUTE fill:#bbddff,stroke:#0055cc
+    style NEED_APPROVAL fill:#ffcc99,stroke:#cc6600
+    style RETURN_TEXT fill:#bbffbb,stroke:#009900
+    style NUDGE fill:#ffffaa,stroke:#aa8800
+            </div>
+        </section>
+
+        <!-- 6. Tool Approval Flow -->
+        <section id="approval">
+            <h2>6. Tool Approval Flow</h2>
+            <p class="desc">What happens when a tool needs user permission</p>
+            <div class="mermaid">
+sequenceDiagram
+    participant User
+    participant Channel as ChannelManager
+    participant Agent
+    participant Session as Session/Thread
+    participant Tool as ToolRegistry
+    Note over Agent: During agentic loop...
+    Agent->>Tool: tool.requires_approval()?
+    Tool-->>Agent: true
+    Agent->>Session: session.is_tool_auto_approved(name)?
+    Session-->>Agent: false
+    Agent->>Session: thread.await_approval(PendingApproval)
+    Agent->>Channel: send_status(ApprovalNeeded)
+    Channel->>User: Tool X wants to run. Approve?
+    alt User approves
+        User->>Channel: yes or always
+        Channel->>Agent: process_approval(approved=true)
+        Agent->>Tool: execute_chat_tool(name, params)
+        Tool-->>Agent: result
+        Agent->>Agent: Resume agentic loop
+        Agent->>Channel: Response or another NeedApproval
+    else User rejects
+        User->>Channel: no
+        Channel->>Agent: process_approval(approved=false)
+        Agent->>Channel: Tool X was rejected.
+    end
+            </div>
+        </section>
+
+        <!-- 7. Context Compaction -->
+        <section id="compaction">
+            <h2>7. Context Compaction Flow</h2>
+            <p class="desc">How conversations avoid blowing the context window</p>
+            <div class="mermaid">
+flowchart TD
+    CHECK["context_monitor.suggest_compaction(messages)"]
+    CHECK --> ANALYZE["ContextBreakdown::analyze()&lt;br/&gt;Estimate tokens: words × 1.3"]
+    ANALYZE --> THRESHOLD{"total_tokens > 80k?"}
+    THRESHOLD -->|"No"| NONE["None — no compaction needed"]
+    THRESHOLD -->|"Yes"| USAGE{"usage %?"}
+    USAGE -->|"80-90%"| SUMMARIZE["Summarize — keep_recent: 10"]
+    USAGE -->|"90-95%"| SUMMARIZE5["Summarize — keep_recent: 5"]
+    USAGE -->|"> 95%"| TRUNCATE["Truncate — keep_recent: 3"]
+    SUMMARIZE --> COMPACT["ContextCompactor::compact()"]
+    SUMMARIZE5 --> COMPACT
+    TRUNCATE --> COMPACT
+    COMPACT --> STRAT{"Strategy?"}
+    STRAT -->|"Summarize"| SUM_FLOW["LLM summarizes old turns&lt;br/&gt;Write to workspace/daily/&lt;br/&gt;Truncate thread"]
+    STRAT -->|"Truncate"| TRUNC_FLOW["Just truncate, no summary"]
+    STRAT -->|"MoveToWorkspace"| MOVE_FLOW["Format as markdown&lt;br/&gt;Write to workspace/daily/&lt;br/&gt;Truncate to 10"]
+    SUM_FLOW --> RESULT["CompactionResult"]
+    TRUNC_FLOW --> RESULT
+    MOVE_FLOW --> RESULT
+            </div>
+        </section>
+
+        <!-- 8. Approval Card System -->
+        <section id="cards">
+            <h2>8. Approval Card System</h2>
+            <p class="desc">Typed card system powering the iOS swipe UI — 4 card types × 3 silos</p>
+            <div class="mermaid">
+flowchart TD
+    subgraph "Inbound Sources"
+        TG["Telegram Message"]
+        EMAIL["Email Message"]
+        PIPE["Message Pipeline&lt;br/&gt;(Rules + LLM Triage)"]
+    end
+    subgraph "Card Generation"
+        GEN["CardGenerator.generate_cards()"]
+        GEN --> LLM_CARDS["LLM call (temp=0.3)"]
+        LLM_CARDS --> PARSE["Parse ApprovalCard + CardPayload"]
+    end
+    subgraph "Card Types"
+        REPLY["Reply&lt;br/&gt;channel, sender, message,&lt;br/&gt;suggested_reply, confidence"]
+        COMPOSE["Compose&lt;br/&gt;channel, recipient,&lt;br/&gt;subject, draft_body"]
+        ACTION["Action&lt;br/&gt;description, action_detail"]
+        DECISION["Decision&lt;br/&gt;question, context, options"]
+    end
+    subgraph "Storage and Delivery"
+        QUEUE["CardQueue (broadcast)"]
+        DB_STORE["SQLite (V6 schema)"]
+        WS["WebSocket /ws"]
+        SILO["SiloCounts broadcast"]
+    end
+    subgraph "iOS App"
+        TABS["Messages · Todos · Calendar · Brain"]
+        BADGES["Live Badge Counts"]
+        SWIPE["Swipe Actions"]
+        SWIPE -->|"Right"| APPROVE["Approve → Send"]
+        SWIPE -->|"Left"| DISMISS["Dismiss"]
+        SWIPE -->|"Tap"| EDIT["Edit → Send"]
+    end
+    TG --> GEN
+    EMAIL --> GEN
+    PIPE --> GEN
+    PARSE --> REPLY
+    PARSE --> COMPOSE
+    PARSE --> ACTION
+    PARSE --> DECISION
+    REPLY --> QUEUE
+    COMPOSE --> QUEUE
+    ACTION --> QUEUE
+    DECISION --> QUEUE
+    QUEUE --> DB_STORE
+    QUEUE --> WS
+    QUEUE --> SILO
+    WS --> TABS
+    SILO --> BADGES
+    style REPLY fill:#99ddff,stroke:#0066cc
+    style COMPOSE fill:#ccffcc,stroke:#009900
+    style ACTION fill:#ffcc99,stroke:#cc6600
+    style DECISION fill:#ddbbff,stroke:#7700cc
+    style QUEUE fill:#ffffaa,stroke:#aa8800
+            </div>
+        </section>
+
+        <!-- 9. Message Pipeline -->
+        <section id="pipeline">
+            <h2>9. Message Pipeline</h2>
+            <p class="desc">Inbound message triage — rules engine then LLM. Core invariant: no outbound without human approval.</p>
+            <div class="mermaid">
+flowchart LR
+    MSG["InboundMessage&lt;br/&gt;(channel, sender, content,&lt;br/&gt;thread_context, priority_hints)"]
+    MSG --> RULES["Rules Engine&lt;br/&gt;(fast, no LLM)"]
+    RULES --> RULES_CHECK{"Match?"}
+    RULES_CHECK -->|"Yes"| ACTION
+    RULES_CHECK -->|"No"| TRIAGE
+    TRIAGE["LLM Triage&lt;br/&gt;(temp=0.1, max 512 tokens)"]
+    TRIAGE --> ACTION{"TriageAction"}
+    ACTION -->|"Ignore"| IGNORE["Drop message"]
+    ACTION -->|"Notify"| NOTIFY["Notification card"]
+    ACTION -->|"DraftReply"| DRAFT["Reply card with suggestion"]
+    ACTION -->|"Digest"| DIGEST["Batch into digest"]
+    DRAFT --> CARD["→ CardQueue"]
+    NOTIFY --> CARD
+    style RULES fill:#ccffcc,stroke:#009900
+    style TRIAGE fill:#ddbbff,stroke:#7700cc
+    style DRAFT fill:#99ddff,stroke:#0066cc
+            </div>
+        </section>
+
+        <!-- 10. Routine Engine -->
+        <section id="routines">
+            <h2>10. Routine Engine</h2>
+            <p class="desc">Background task execution with triggers and guardrails</p>
+            <div class="mermaid">
+flowchart TD
+    subgraph "Triggers"
+        CRON["⏰ Cron&lt;br/&gt;(schedule expression)"]
+        EVENT["📨 Event&lt;br/&gt;(channel + pattern match)"]
+        WEBHOOK["🔗 Webhook&lt;br/&gt;(HTTP POST + secret)"]
+        MANUAL["🖐️ Manual&lt;br/&gt;(tool call / CLI)"]
+    end
+    subgraph "Routine Engine"
+        TICKER["Cron Ticker"]
+        CACHE["Event Cache"]
+        EXEC["execute_routine()"]
+    end
+    subgraph "Guardrails"
+        MAX_TOK["max_tokens: 2048"]
+        MAX_COST["max_cost_per_run: $0.10"]
+        COOLDOWN["cooldown: Duration"]
+        FAILURES["consecutive_failures&lt;br/&gt;(auto-disable)"]
+    end
+    subgraph "Execution"
+        LLM_CALL["LLM Call"]
+        RECORD["Record run in DB"]
+        NOTIFY["Send notification"]
+        COST["Record LLM costs"]
+    end
+    CRON --> TICKER
+    TICKER --> EXEC
+    EVENT --> CACHE
+    CACHE --> EXEC
+    WEBHOOK --> EXEC
+    MANUAL --> EXEC
+    EXEC --> MAX_TOK
+    EXEC --> MAX_COST
+    EXEC --> COOLDOWN
+    EXEC --> FAILURES
+    EXEC --> LLM_CALL
+    LLM_CALL --> RECORD
+    LLM_CALL --> NOTIFY
+    LLM_CALL --> COST
+    style CRON fill:#99ddff,stroke:#0066cc
+    style EVENT fill:#ccffcc,stroke:#009900
+    style WEBHOOK fill:#ffcc99,stroke:#cc6600
+    style MANUAL fill:#ddbbff,stroke:#7700cc
+            </div>
+        </section>
+
+        <!-- 11. Todo System -->
+        <section id="todos">
+            <h2>11. Todo System</h2>
+            <p class="desc">Full lifecycle todos with types, buckets, and WebSocket sync</p>
+            <div class="mermaid">
+flowchart TD
+    subgraph "Creation"
+        VOICE["Voice (Brain tab)"]
+        CARD["From approval card"]
+        AGENT["Agent/routine"]
+        API["REST API"]
+    end
+    subgraph "Types"
+        T1["Deliverable"]
+        T2["Research"]
+        T3["Errand"]
+        T4["Learning"]
+        T5["Administrative"]
+        T6["Creative"]
+        T7["Review"]
+    end
+    subgraph "Buckets"
+        B1["AgentStartable&lt;br/&gt;AI works in background"]
+        B2["HumanOnly&lt;br/&gt;AI reminds/organizes"]
+    end
+    subgraph "Status Flow"
+        S1["Created"] --> S2["AgentWorking"]
+        S2 --> S3["ReadyForReview"]
+        S3 --> S4["WaitingOnYou"]
+        S4 --> S5["Completed"]
+        S1 --> S6["Snoozed"]
+        S6 --> S1
+    end
+    subgraph "Delivery"
+        DB_TODO["SQLite"]
+        WS_TODO["WebSocket /ws/todos"]
+        IOS_TODO["iOS Todos Tab"]
+    end
+    VOICE --> DB_TODO
+    CARD --> DB_TODO
+    AGENT --> DB_TODO
+    API --> DB_TODO
+    DB_TODO --> WS_TODO
+    WS_TODO --> IOS_TODO
+    style B1 fill:#99ddff,stroke:#0066cc
+    style B2 fill:#ffcc99,stroke:#cc6600
+            </div>
+        </section>
+
+        <!-- 12. Database Schema -->
+        <section id="schema">
+            <h2>12. Database Schema (V6)</h2>
+            <p class="desc">8 tables across 6 migrations — libSQL/SQLite</p>
+            <div class="mermaid">
+erDiagram
+    cards {
+        TEXT id PK
+        TEXT conversation_id
+        TEXT source_message
+        TEXT source_sender
+        TEXT suggested_reply
+        REAL confidence
+        TEXT status
+        TEXT channel
+        TEXT card_type
+        TEXT silo
+        TEXT payload
+        TEXT message_id
+        TEXT created_at
+        TEXT expires_at
+        TEXT updated_at
+    }
+    messages {
+        TEXT id PK
+        TEXT external_id
+        TEXT channel
+        TEXT sender
+        TEXT content
+        TEXT status
+        TEXT created_at
+        TEXT updated_at
+    }
+    conversations {
+        TEXT id PK
+        TEXT channel
+        TEXT user_id
+        TEXT thread_id
+        TEXT started_at
+        TEXT last_activity
+    }
+    conversation_messages {
+        TEXT id PK
+        TEXT conversation_id FK
+        TEXT role
+        TEXT content
+        TEXT created_at
+    }
+    llm_calls {
+        TEXT id PK
+        TEXT conversation_id FK
+        TEXT routine_run_id FK
+        TEXT provider
+        TEXT model
+        INT input_tokens
+        INT output_tokens
+        TEXT cost
+        TEXT created_at
+    }
+    routines {
+        TEXT id PK
+        TEXT name
+        TEXT user_id
+        INT enabled
+        TEXT trigger_type
+        TEXT trigger_config
+        TEXT action_type
+        TEXT action_config
+        TEXT guardrails
+        INT run_count
+        TEXT created_at
+        TEXT updated_at
+    }
+    routine_runs {
+        TEXT id PK
+        TEXT routine_id FK
+        TEXT status
+        TEXT output
+        INT duration_ms
+        TEXT cost
+        TEXT started_at
+        TEXT completed_at
+    }
+    todos {
+        TEXT id PK
+        TEXT user_id
+        TEXT title
+        TEXT todo_type
+        TEXT bucket
+        TEXT status
+        INT priority
+        TEXT due_date
+        TEXT source_card_id FK
+        TEXT created_at
+        TEXT updated_at
+    }
+    conversations ||--o{ conversation_messages : contains
+    conversations ||--o{ llm_calls : tracks
+    routines ||--o{ routine_runs : executes
+    routines ||--o{ llm_calls : tracks
+    cards ||--o| messages : linked_via_message_id
+    todos ||--o| cards : source_card_id
+            </div>
+        </section>
+
+        <!-- 13. Session Model -->
+        <section id="sessions">
+            <h2>13. Session & Thread Model</h2>
+            <p class="desc">Data structures maintaining conversation state</p>
+            <div class="mermaid">
+classDiagram
+    class SessionManager {
+        +get_or_create_session(user_id)
+        +resolve_thread(user_id, channel, thread_id)
+        +prune_stale_sessions(timeout)
+        +get_undo_manager(thread_id)
+        +maybe_hydrate_thread(session, thread_id, db)
+    }
+    class Session {
+        +id Uuid
+        +user_id String
+        +active_thread Option~Uuid~
+        +threads HashMap~Uuid Thread~
+        +auto_approved_tools HashSet~String~
+        +create_thread()
+        +is_tool_auto_approved(name)
+        +auto_approve_tool(name)
+    }
+    class Thread {
+        +id Uuid
+        +session_id Uuid
+        +state ThreadState
+        +turns Vec~Turn~
+        +pending_approval Option~PendingApproval~
+        +start_turn(content)
+        +complete_turn(response)
+        +fail_turn(error)
+        +interrupt()
+        +await_approval(pending)
+        +messages() Vec~ChatMessage~
+        +truncate_turns(keep)
+    }
+    class ThreadState {
+        Idle
+        Processing
+        AwaitingApproval
+        Interrupted
+        Completed
+    }
+    class Turn {
+        +turn_number usize
+        +user_input String
+        +response Option~String~
+        +tool_calls Vec~ToolCallRecord~
+    }
+    class PendingApproval {
+        +request_id Uuid
+        +tool_name String
+        +parameters Value
+        +tool_call_id String
+        +context_messages Vec~ChatMessage~
+    }
+    class UndoManager {
+        +checkpoint(turn, messages)
+        +undo()
+        +redo()
+    }
+    SessionManager "1" --> "*" Session
+    Session "1" --> "*" Thread
+    Thread "1" --> "*" Turn
+    Thread "1" --> "0..1" PendingApproval
+    Thread --> ThreadState
+    SessionManager "1" --> "*" UndoManager
+            </div>
+        </section>
+
+        <!-- 14. Built-in Tools -->
+        <section id="tools">
+            <h2>14. Built-in Tools (13)</h2>
+            <p class="desc">All tools require approval. Organized in 4 categories.</p>
+            <div class="mermaid">
+graph LR
+    subgraph "Shell (1 tool)"
+        SHELL["shell_exec&lt;br/&gt;Command execution&lt;br/&gt;blocked patterns, timeout&lt;br/&gt;output truncation 64KB"]
+    end
+    subgraph "File (4 tools)"
+        READ["read_file&lt;br/&gt;Line-numbered&lt;br/&gt;Max 1MB"]
+        WRITE["write_file&lt;br/&gt;Auto-create parents&lt;br/&gt;Max 5MB"]
+        LIST["list_dir&lt;br/&gt;Recursive&lt;br/&gt;Max 500 entries"]
+        PATCH["apply_patch&lt;br/&gt;Search/replace&lt;br/&gt;Exact match"]
+    end
+    subgraph "Memory (3 tools)"
+        MSEARCH["memory_search&lt;br/&gt;Search workspace"]
+        MREAD["memory_read&lt;br/&gt;Read with offset"]
+        MWRITE["memory_write&lt;br/&gt;Write (protected files)"]
+    end
+    subgraph "Routine (5 tools)"
+        RCREATE["routine_create"]
+        RLIST["routine_list"]
+        RUPDATE["routine_update"]
+        RDELETE["routine_delete"]
+        RHISTORY["routine_history"]
+    end
+    style SHELL fill:#ffcccc,stroke:#cc0000
+    style READ fill:#ccffcc,stroke:#009900
+    style WRITE fill:#ccffcc,stroke:#009900
+    style LIST fill:#ccffcc,stroke:#009900
+    style PATCH fill:#ccffcc,stroke:#009900
+    style MSEARCH fill:#99ddff,stroke:#0066cc
+    style MREAD fill:#99ddff,stroke:#0066cc
+    style MWRITE fill:#99ddff,stroke:#0066cc
+    style RCREATE fill:#ffcc99,stroke:#cc6600
+    style RLIST fill:#ffcc99,stroke:#cc6600
+    style RUPDATE fill:#ffcc99,stroke:#cc6600
+    style RDELETE fill:#ffcc99,stroke:#cc6600
+    style RHISTORY fill:#ffcc99,stroke:#cc6600
+            </div>
+        </section>
+
+        <footer>
+            AI Assist · 26.5k lines Rust · 5.4k lines Swift · 513 tests · Generated Feb 25, 2026
+        </footer>
+    </div>
+
+    <script>
+        mermaid.initialize({
+            startOnLoad: true,
+            theme: 'default',
+            flowchart: { useMaxWidth: true, htmlLabels: true, curve: 'basis' },
+            sequence: { useMaxWidth: true },
+            er: { useMaxWidth: true },
+            themeVariables: {
+                fontSize: '14px'
+            }
+        });
+    </script>
+</body>
+</html>

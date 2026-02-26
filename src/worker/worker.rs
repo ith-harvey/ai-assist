@@ -438,12 +438,10 @@ Report when the job is complete or if you encounter issues you cannot resolve."#
                 name: tool_name.to_string(),
             })?;
 
-        if tool.requires_approval() {
-            return Err(crate::error::ToolError::AuthRequired {
-                name: tool_name.to_string(),
-            }
-            .into());
-        }
+        // Note: requires_approval() is NOT checked here. Workers execute
+        // already-approved tasks — the user approved the work when they created
+        // (or accepted) the AgentStartable todo. SafetyLayer still validates
+        // parameters and sanitizes outputs.
 
         let worker_ctx = context_manager.get_context(job_id).await?;
         if worker_ctx.state == JobState::Cancelled {
