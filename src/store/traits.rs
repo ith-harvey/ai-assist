@@ -413,12 +413,16 @@ pub trait Database: Send + Sync {
     async fn save_job_action(
         &self,
         job_id: Uuid,
+        todo_id: Option<Uuid>,
         action_type: &str,
         action_data: &str,
     ) -> Result<(), DatabaseError>;
 
     /// Get all job actions for a job, ordered by creation time.
     async fn get_job_actions(&self, job_id: Uuid) -> Result<Vec<String>, DatabaseError>;
+
+    /// Get all activity (job actions) for a todo, ordered by creation time.
+    async fn get_activity_for_todo(&self, todo_id: Uuid) -> Result<Vec<String>, DatabaseError>;
 
     /// Update job status (maps to todo status update internally).
     async fn update_job_status(

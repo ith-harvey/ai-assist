@@ -2,4 +2,5 @@
 
 pub mod activity;
 pub mod model;
+pub mod pickup;
 pub mod ws;

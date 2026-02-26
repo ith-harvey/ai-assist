@@ -185,7 +185,27 @@ async fn handle_client_action(text: &str, state: &TodoState) {
                 match state.db.create_todo(&todo).await {
                     Ok(()) => {
                         info!(id = %todo.id, title = %todo.title, "Todo created via WS");
+                        let is_agent_startable = todo.bucket == TodoBucket::AgentStartable;
+                        let todo_for_schedule = todo.clone();
                         let _ = state.tx.send(TodoWsMessage::TodoCreated { todo });
+
+                        // Instant pickup: schedule immediately if agent-startable
+                        if is_agent_startable {
+                            if let Some(ref sched) = state.scheduler {
+                                let db = state.db.clone();
+                                let sched = Arc::clone(sched);
+                                let tx = state.tx.clone();
+                                tokio::spawn(async move {
+                                    if let Err(e) = crate::todos::pickup::try_schedule_todo(
+                                        &db, &sched, &todo_for_schedule,
+                                    ).await {
+                                        warn!(error = %e, "Instant pickup failed for WS-created todo");
+                                    } else if let Ok(Some(updated)) = db.get_todo(todo_for_schedule.id).await {
+                                        let _ = tx.send(TodoWsMessage::TodoUpdated { todo: updated });
+                                    }
+                                });
+                            }
+                        }
                     }
                     Err(e) => warn!(error = %e, "Failed to create todo"),
                 }
@@ -388,10 +408,31 @@ async fn create_test_todo(
     }
 
     let todo_id = todo.id;
+    let is_agent_startable = todo.bucket == TodoBucket::AgentStartable;
     match state.db.create_todo(&todo).await {
         Ok(()) => {
             info!(id = %todo_id, title = %todo.title, "Test todo created via REST");
-            let _ = state.tx.send(TodoWsMessage::TodoCreated { todo });
+            let _ = state.tx.send(TodoWsMessage::TodoCreated { todo: todo.clone() });
+
+            // Instant pickup: schedule immediately if agent-startable
+            if is_agent_startable {
+                if let Some(ref sched) = state.scheduler {
+                    let db = state.db.clone();
+                    let sched = Arc::clone(sched);
+                    let tx = state.tx.clone();
+                    let todo_for_schedule = todo;
+                    tokio::spawn(async move {
+                        if let Err(e) = crate::todos::pickup::try_schedule_todo(
+                            &db, &sched, &todo_for_schedule,
+                        ).await {
+                            warn!(error = %e, "Instant pickup failed for REST-created todo");
+                        } else if let Ok(Some(updated)) = db.get_todo(todo_for_schedule.id).await {
+                            let _ = tx.send(TodoWsMessage::TodoUpdated { todo: updated });
+                        }
+                    });
+                }
+            }
+
             (
                 StatusCode::CREATED,
                 Json(serde_json::json!({"todo_id": todo_id, "status": "created"})),

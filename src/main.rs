@@ -243,6 +243,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let todo_state = TodoState::with_scheduler(Arc::clone(&db), Arc::clone(&scheduler));
     let activity_state = ActivityState::new(Arc::clone(&db), activity_tx.clone());
 
+    // ── Todo Pickup Loop (auto-schedules AgentStartable todos) ──────
+    let _pickup_handle = ai_assist::todos::pickup::spawn_todo_pickup_loop(
+        Arc::clone(&db),
+        Arc::clone(&scheduler),
+        todo_state.tx.clone(),
+    );
+    eprintln!("   Todo pickup: enabled (every 15m, immediate on create)");
+
     // Create iOS channel (needs to exist before router build)
     let ios_channel = IosChannel::new(Some(Arc::clone(&db)));
     let ios_router = ios_channel.router();

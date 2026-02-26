@@ -175,11 +175,13 @@ const SCHEMA: &str = r#"
     CREATE TABLE IF NOT EXISTS job_actions (
         id TEXT PRIMARY KEY,
         job_id TEXT NOT NULL,
+        todo_id TEXT,
         action_type TEXT NOT NULL,
         action_data TEXT NOT NULL,
         created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
     CREATE INDEX IF NOT EXISTS idx_job_actions_job_id ON job_actions(job_id);
+    CREATE INDEX IF NOT EXISTS idx_job_actions_todo_id ON job_actions(todo_id);
     CREATE INDEX IF NOT EXISTS idx_job_actions_created ON job_actions(created_at);
 "#;
 
@@ -191,6 +193,21 @@ pub async fn init_schema(conn: &Connection) -> Result<(), DatabaseError> {
     conn.execute_batch(SCHEMA)
         .await
         .map_err(|e| DatabaseError::Migration(format!("Schema initialization failed: {e}")))?;
+
+    // Additive column migration: add todo_id to job_actions if missing.
+    // ALTER TABLE ADD COLUMN is idempotent-safe: SQLite errors on duplicate columns,
+    // which we silently ignore.
+    let _ = conn
+        .execute("ALTER TABLE job_actions ADD COLUMN todo_id TEXT", ())
+        .await;
+
+    // Ensure index exists (idempotent via IF NOT EXISTS in SCHEMA, but also here for safety)
+    let _ = conn
+        .execute(
+            "CREATE INDEX IF NOT EXISTS idx_job_actions_todo_id ON job_actions(todo_id)",
+            (),
+        )
+        .await;
 
     tracing::info!("Database schema initialized");
     Ok(())
