@@ -11,7 +11,10 @@ use ai_assist::config::{AgentConfig, RoutineConfig};
 use ai_assist::llm::{LlmBackend, LlmConfig, create_provider};
 use ai_assist::safety::SafetyLayer;
 use ai_assist::store::{Database, LibSqlBackend};
+use ai_assist::todos::activity::{ActivityState, TodoActivityMessage, activity_routes};
+use ai_assist::todos::ws::{TodoState, todo_routes};
 use ai_assist::tools::ToolRegistry;
+use ai_assist::worker::{ContextManager, Scheduler};
 use ai_assist::workspace::Workspace;
 
 #[tokio::main]
@@ -133,24 +136,60 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Build EmailConfig for the card server (so approve/edit can send replies)
     let email_config_for_cards = EmailConfig::from_env();
 
-    // Create iOS channel (needs to exist before router build)
-    let ios_channel = IosChannel::new(Some(Arc::clone(&db)));
-    let ios_router = ios_channel.router();
+    // ── Agent Config (created early — Scheduler needs it) ──────────────
+    let system_prompt = std::env::var("AI_ASSIST_SYSTEM_PROMPT")
+        .ok()
+        .or_else(|| Some(ai_assist::config::DEFAULT_SYSTEM_PROMPT.to_string()));
 
-    // Spawn Axum WS/REST server for cards + iOS chat
-    let app = card_routes(
-        card_queue.clone(),
-        email_config_for_cards,
-        card_generator.clone(),
-    )
-    .merge(ios_router);
-    tokio::spawn(async move {
-        let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", ws_port))
-            .await
-            .expect("Failed to bind card server port");
-        tracing::info!(port = ws_port, "Card WebSocket server started");
-        axum::serve(listener, app).await.ok();
-    });
+    let agent_config = AgentConfig {
+        system_prompt,
+        ..AgentConfig::default()
+    };
+
+    // ── Safety (shared between Scheduler and Agent) ──────────────────
+    let safety = Arc::new(SafetyLayer::new());
+
+    // ── Workspace ─────────────────────────────────────────────────────────
+    let workspace_path = std::env::var("AI_ASSIST_WORKSPACE")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| {
+            let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+            std::path::PathBuf::from(home).join(".ai-assist/workspace")
+        });
+    let workspace = Arc::new(Workspace::new(workspace_path.clone()));
+    if let Err(e) = workspace.ensure_dirs().await {
+        eprintln!("   Warning: Could not create workspace dirs: {}", e);
+    }
+    eprintln!("   Workspace: {}", workspace_path.display());
+
+    // ── Tools ────────────────────────────────────────────────────────────
+    let tools = Arc::new(ToolRegistry::new());
+    // Shell + file tools
+    tools.register_sync(Arc::new(ai_assist::tools::builtin::shell::ShellTool::new()));
+    tools.register_sync(Arc::new(ai_assist::tools::builtin::file::ReadFileTool::new()));
+    tools.register_sync(Arc::new(ai_assist::tools::builtin::file::WriteFileTool::new()));
+    tools.register_sync(Arc::new(ai_assist::tools::builtin::file::ListDirTool::new()));
+    tools.register_sync(Arc::new(ai_assist::tools::builtin::file::ApplyPatchTool::new()));
+    // Memory tools
+    tools.register_memory_tools(Arc::clone(&workspace));
+
+    // ── Worker System (Scheduler + ContextManager) ───────────────────
+    let (activity_tx, _activity_rx) = tokio::sync::broadcast::channel::<TodoActivityMessage>(256);
+    let context_manager = Arc::new(ContextManager::new(agent_config.max_parallel_jobs));
+    let scheduler = Arc::new(Scheduler::new(
+        agent_config.clone(),
+        Arc::clone(&context_manager),
+        llm.clone(),
+        Arc::clone(&safety),
+        Arc::clone(&tools),
+        Some(Arc::clone(&db)),
+        activity_tx.clone(),
+    ));
+    eprintln!(
+        "   Worker: enabled (max {} parallel jobs, {}s timeout)",
+        agent_config.max_parallel_jobs,
+        agent_config.job_timeout.as_secs(),
+    );
 
     // ── Routine Engine ────────────────────────────────────────────────────
     let routine_config = RoutineConfig::from_env();
@@ -163,6 +202,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             llm.clone(),
             None, // Workspace not yet implemented
             notify_tx,
+            Some(Arc::clone(&scheduler)),
         ));
 
         // Refresh event cache on startup
@@ -188,47 +228,48 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             routine_config.cron_interval_secs, routine_config.max_concurrent_routines,
         );
 
+        // Register routine tools (needs engine reference)
+        tools.register_routine_tools(Arc::clone(&db), Arc::clone(&engine));
+
         Some(engine)
     } else {
         eprintln!("   Routines: disabled");
         None
     };
 
-    // ── Workspace ─────────────────────────────────────────────────────────
-    let workspace_path = std::env::var("AI_ASSIST_WORKSPACE")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| {
-            let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-            std::path::PathBuf::from(home).join(".ai-assist/workspace")
-        });
-    let workspace = Arc::new(Workspace::new(workspace_path.clone()));
-    if let Err(e) = workspace.ensure_dirs().await {
-        eprintln!("   Warning: Could not create workspace dirs: {}", e);
-    }
-    eprintln!("   Workspace: {}", workspace_path.display());
-
-    // ── Tools ────────────────────────────────────────────────────────────
-    let tools = Arc::new(ToolRegistry::new());
-    // Shell + file tools (Phase 1)
-    tools.register_sync(Arc::new(ai_assist::tools::builtin::shell::ShellTool::new()));
-    tools.register_sync(Arc::new(ai_assist::tools::builtin::file::ReadFileTool::new()));
-    tools.register_sync(Arc::new(ai_assist::tools::builtin::file::WriteFileTool::new()));
-    tools.register_sync(Arc::new(ai_assist::tools::builtin::file::ListDirTool::new()));
-    tools.register_sync(Arc::new(ai_assist::tools::builtin::file::ApplyPatchTool::new()));
-    // Routine tools (Phase 2)
-    if let Some(ref engine) = routine_engine {
-        tools.register_routine_tools(Arc::clone(&db), Arc::clone(engine));
-    }
-    // Memory tools (Phase 2)
-    tools.register_memory_tools(Arc::clone(&workspace));
     eprintln!("   Tools: {} registered", tools.count());
+
+    // ── Todo + Activity WebSocket State ──────────────────────────────
+    let todo_state = TodoState::with_scheduler(Arc::clone(&db), Arc::clone(&scheduler));
+    let activity_state = ActivityState::new(Arc::clone(&db), activity_tx.clone());
+
+    // Create iOS channel (needs to exist before router build)
+    let ios_channel = IosChannel::new(Some(Arc::clone(&db)));
+    let ios_router = ios_channel.router();
+
+    // Spawn Axum WS/REST server — cards + iOS chat + todos + activity
+    let app = card_routes(
+        card_queue.clone(),
+        email_config_for_cards,
+        card_generator.clone(),
+    )
+    .merge(ios_router)
+    .merge(todo_routes(todo_state))
+    .merge(activity_routes(activity_state));
+    tokio::spawn(async move {
+        let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", ws_port))
+            .await
+            .expect("Failed to bind card server port");
+        tracing::info!(port = ws_port, "Card WebSocket server started");
+        axum::serve(listener, app).await.ok();
+    });
 
     // ── Agent ───────────────────────────────────────────────────────────
     let llm_for_pipeline = llm.clone();
     let deps = AgentDeps {
         store: Some(Arc::clone(&db)),
         llm,
-        safety: Arc::new(SafetyLayer::new()),
+        safety,
         tools,
         workspace: Some(Arc::clone(&workspace)),
         extension_manager: None,
@@ -317,17 +358,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     eprintln!("   Channels: {}\n", active_channels.join(", "));
 
-    // Create agent config with optional custom system prompt
-    let system_prompt = std::env::var("AI_ASSIST_SYSTEM_PROMPT")
-        .ok()
-        .or_else(|| Some(ai_assist::config::DEFAULT_SYSTEM_PROMPT.to_string()));
-
-    let config = AgentConfig {
-        system_prompt,
-        ..AgentConfig::default()
-    };
-
-    let agent = Agent::new(config, deps, channels, None);
+    let agent = Agent::new(agent_config, deps, channels, None);
     agent.run().await?;
 
     Ok(())
