@@ -43,7 +43,7 @@ impl Default for AgentConfig {
             max_context_tokens: 100_000,
             allow_local_tools: true,
             session_idle_timeout: Duration::from_secs(3600), // 1 hour
-            max_parallel_jobs: 10,
+            max_parallel_jobs: 1,
             job_timeout: Duration::from_secs(600), // 10 minutes
             use_planning: false,
             stuck_threshold: Duration::from_secs(300), // 5 minutes
