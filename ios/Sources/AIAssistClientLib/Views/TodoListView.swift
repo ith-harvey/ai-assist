@@ -14,11 +14,7 @@ public struct TodoListView: View {
     @State private var expandedTodoId: UUID?
     @State private var activityTodo: TodoItem?
 
-    private let title: String
-
-    public init(title: String = "To-Dos") {
-        self.title = title
-    }
+    public init() {}
 
     public var body: some View {
         ZStack {
@@ -36,7 +32,7 @@ public struct TodoListView: View {
                 todoList
             }
         }
-        .navigationTitle(title)
+        .navigationTitle("To-Dos")
         #if os(iOS)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
