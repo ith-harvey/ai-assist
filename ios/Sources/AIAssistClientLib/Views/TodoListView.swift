@@ -142,7 +142,13 @@ public struct TodoListView: View {
     // MARK: - Todo Card (compact, tappable → pushes detail)
 
     private func todoCard(_ todo: TodoItem) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
+        HStack(spacing: 0) {
+            // Status color stripe
+            RoundedRectangle(cornerRadius: 2)
+                .fill(todo.status.color)
+                .frame(width: 4)
+                .padding(.vertical, 6)
+
             TodoRowView(todo: todo)
                 .padding(.horizontal, 14)
                 .padding(.vertical, 10)
@@ -211,11 +217,17 @@ struct TodoRowView: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            // Status icon
-            Image(systemName: todo.status.iconName)
-                .font(.system(size: 18))
-                .foregroundStyle(statusColor)
-                .frame(width: 24)
+            // Status icon (spinner for agentWorking)
+            if todo.status == .agentWorking {
+                ProgressView()
+                    .controlSize(.small)
+                    .frame(width: 24)
+            } else {
+                Image(systemName: todo.status.iconName)
+                    .font(.system(size: 18))
+                    .foregroundStyle(statusColor)
+                    .frame(width: 24)
+            }
 
             // Content
             VStack(alignment: .leading, spacing: 3) {
@@ -278,14 +290,7 @@ struct TodoRowView: View {
     // MARK: - Colors
 
     private var statusColor: Color {
-        switch todo.status {
-        case .created: .blue
-        case .agentWorking: .orange
-        case .readyForReview: .green
-        case .waitingOnYou: .purple
-        case .snoozed: .gray
-        case .completed: .green
-        }
+        todo.status.color
     }
 
     private var badgeColor: Color {
