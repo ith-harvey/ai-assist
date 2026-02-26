@@ -98,8 +98,7 @@ impl Workspace {
         if !user_path.exists() {
             fs::write(
                 &user_path,
-                "# User Context\n\n\
-                 (Add information about yourself here — preferences, projects, etc.)\n",
+                include_str!("../USER.md"),
             )
             .await?;
         }
