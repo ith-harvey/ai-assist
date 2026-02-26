@@ -15,6 +15,7 @@ use crate::safety::SafetyLayer;
 use crate::store::Database;
 use crate::todos::activity::TodoActivityMessage;
 use crate::tools::ToolRegistry;
+use crate::workspace::Workspace;
 use crate::worker::context::ContextManager;
 use crate::worker::scheduler::WorkerMessage;
 use crate::worker::state::JobState;
@@ -27,6 +28,7 @@ pub struct WorkerDeps {
     pub safety: Arc<SafetyLayer>,
     pub tools: Arc<ToolRegistry>,
     pub store: Option<Arc<dyn Database>>,
+    pub workspace: Arc<Workspace>,
     pub activity_tx: broadcast::Sender<TodoActivityMessage>,
     pub timeout: Duration,
     pub use_planning: bool,
@@ -148,18 +150,33 @@ impl Worker {
         // Build initial reasoning context
         let mut reason_ctx = ReasoningContext::new().with_job(&job_ctx.description);
 
-        // Add system message
-        reason_ctx.messages.push(ChatMessage::system(format!(
-            r#"You are an autonomous agent working on a job.
+        // Build system prompt from workspace files + task context
+        let system_prompt = match self.deps.workspace.worker_prompt().await {
+            Ok(wp) if !wp.is_empty() => {
+                format!(
+                    "{}\n\n---\n\n## Current Task\n\n\
+                     **Title:** {}\n\
+                     **Description:** {}\n\n\
+                     Complete this task using the tools available to you.\n\
+                     Report when done or if you hit issues you cannot resolve.",
+                    wp, job_ctx.title, job_ctx.description
+                )
+            }
+            _ => {
+                // Fallback: no workspace files found
+                format!(
+                    "You are an autonomous agent working on a job.\n\n\
+                     Job: {}\n\
+                     Description: {}\n\n\
+                     You have access to tools to complete this job. Plan your approach and execute tools as needed.\n\
+                     You may request multiple tools at once if they can be executed in parallel.\n\
+                     Report when the job is complete or if you encounter issues you cannot resolve.",
+                    job_ctx.title, job_ctx.description
+                )
+            }
+        };
 
-Job: {}
-Description: {}
-
-You have access to tools to complete this job. Plan your approach and execute tools as needed.
-You may request multiple tools at once if they can be executed in parallel.
-Report when the job is complete or if you encounter issues you cannot resolve."#,
-            job_ctx.title, job_ctx.description
-        )));
+        reason_ctx.messages.push(ChatMessage::system(system_prompt));
 
         // Main execution loop with timeout
         let result = tokio::time::timeout(self.timeout(), async {
