@@ -8,6 +8,7 @@
 //!
 //! **No auto-reply path exists.** Every outbound message requires card approval.
 
+pub mod email_processor;
 pub mod processor;
 pub mod rules;
 pub mod types;

@@ -3,6 +3,7 @@
 pub mod channel;
 pub mod cli;
 pub mod email;
+pub mod email_poller;
 pub mod email_types;
 pub mod ios;
 pub mod manager;
