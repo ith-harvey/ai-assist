@@ -109,15 +109,7 @@ impl Workspace {
         if !worker_path.exists() {
             fs::write(
                 &worker_path,
-                "# Worker Instructions\n\n\
-                 You are an autonomous worker agent executing tasks.\n\n\
-                 ## Guidelines\n\n\
-                 - Read the task description carefully before starting\n\
-                 - Break complex tasks into smaller steps\n\
-                 - Use the available tools to complete the work\n\
-                 - Check your work before reporting completion\n\
-                 - If you encounter issues you cannot resolve, explain what went wrong\n\
-                 - Report clearly when the task is done\n",
+                include_str!("../WORKER.md"),
             )
             .await?;
         }
@@ -449,7 +441,7 @@ mod tests {
 
         let worker = ws.read(paths::WORKER).await.unwrap();
         assert!(worker.contains("Worker Instructions"));
-        assert!(worker.contains("autonomous worker agent"));
+        assert!(worker.contains("autonomous agent"));
     }
 
     #[tokio::test]
