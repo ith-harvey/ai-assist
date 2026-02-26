@@ -37,6 +37,8 @@ pub struct RoutineEngine {
     running_count: Arc<AtomicUsize>,
     /// Compiled event regex cache: (routine_id, routine, compiled_regex).
     event_cache: Arc<RwLock<Vec<(Uuid, Routine, Regex)>>>,
+    /// Optional scheduler for FullJob execution.
+    scheduler: Option<Arc<crate::worker::Scheduler>>,
 }
 
 impl RoutineEngine {
@@ -46,6 +48,7 @@ impl RoutineEngine {
         llm: Arc<dyn LlmProvider>,
         workspace: Option<Arc<Workspace>>,
         notify_tx: mpsc::Sender<OutgoingResponse>,
+        scheduler: Option<Arc<crate::worker::Scheduler>>,
     ) -> Self {
         Self {
             config,
@@ -55,6 +58,7 @@ impl RoutineEngine {
             notify_tx,
             running_count: Arc::new(AtomicUsize::new(0)),
             event_cache: Arc::new(RwLock::new(Vec::new())),
+            scheduler,
         }
     }
 
@@ -213,6 +217,7 @@ impl RoutineEngine {
             notify_tx: self.notify_tx.clone(),
             running_count: self.running_count.clone(),
             max_lightweight_tokens: self.config.max_lightweight_tokens,
+            scheduler: self.scheduler.clone(),
         };
 
         tokio::spawn(async move {
@@ -245,6 +250,7 @@ impl RoutineEngine {
             notify_tx: self.notify_tx.clone(),
             running_count: self.running_count.clone(),
             max_lightweight_tokens: self.config.max_lightweight_tokens,
+            scheduler: self.scheduler.clone(),
         };
 
         let store = self.store.clone();
@@ -291,6 +297,7 @@ struct EngineContext {
     notify_tx: mpsc::Sender<OutgoingResponse>,
     running_count: Arc<AtomicUsize>,
     max_lightweight_tokens: u32,
+    scheduler: Option<Arc<crate::worker::Scheduler>>,
 }
 
 /// Execute a routine run.
@@ -303,22 +310,8 @@ async fn execute_routine(ctx: EngineContext, routine: Routine, run: RoutineRun) 
             context_paths,
             max_tokens,
         } => execute_lightweight(&ctx, &routine, run.id, prompt, context_paths, *max_tokens).await,
-        RoutineAction::FullJob { description, .. } => {
-            // TODO: Full job mode — currently falls back to lightweight execution.
-            // Full scheduler/tool integration will come in a follow-up.
-            tracing::info!(
-                routine = %routine.name,
-                "FullJob mode executing as lightweight (scheduler integration pending)"
-            );
-            execute_lightweight(
-                &ctx,
-                &routine,
-                run.id,
-                description,
-                &[],
-                ctx.max_lightweight_tokens,
-            )
-            .await
+        RoutineAction::FullJob { title, description, .. } => {
+            execute_full_job(&ctx, &routine, run.id, title, description).await
         }
     };
 
@@ -550,6 +543,82 @@ pub fn spawn_cron_ticker(
             engine.check_cron_triggers().await;
         }
     })
+}
+
+/// Execute a FullJob routine by creating an agent-internal todo and scheduling it.
+///
+/// Falls back to lightweight execution if no scheduler is available.
+async fn execute_full_job(
+    ctx: &EngineContext,
+    routine: &Routine,
+    run_id: Uuid,
+    title: &str,
+    description: &str,
+) -> Result<(RunStatus, Option<String>, Option<i32>), String> {
+    let Some(ref scheduler) = ctx.scheduler else {
+        tracing::info!(
+            routine = %routine.name,
+            "FullJob falling back to lightweight (no scheduler)"
+        );
+        return execute_lightweight(ctx, routine, run_id, description, &[], ctx.max_lightweight_tokens).await;
+    };
+
+    // Create an agent-internal todo for this job
+    let todo = crate::todos::model::TodoItem::new(
+        "system",
+        format!("[routine:{}] {}", routine.name, title),
+        crate::todos::model::TodoType::Deliverable,
+        crate::todos::model::TodoBucket::AgentStartable,
+    )
+    .with_description(description)
+    .as_agent_internal();
+
+    let todo_id = todo.id;
+
+    // Persist to DB
+    if let Err(e) = ctx.store.create_todo(&todo).await {
+        return Err(format!("Failed to create todo for FullJob: {e}"));
+    }
+
+    // Update status to AgentWorking
+    if let Err(e) = ctx
+        .store
+        .update_todo_status(todo_id, crate::todos::model::TodoStatus::AgentWorking)
+        .await
+    {
+        return Err(format!("Failed to update todo status: {e}"));
+    }
+
+    // Create job context in the scheduler's context manager
+    let job_id = match scheduler
+        .context_manager()
+        .create_job_for_user("system", title, description)
+        .await
+    {
+        Ok(id) => id,
+        Err(e) => {
+            return Err(format!("Failed to create job context: {e}"));
+        }
+    };
+
+    // Schedule the job
+    if let Err(e) = scheduler.schedule(job_id, Some(todo_id)).await {
+        return Err(format!("Failed to schedule job: {e}"));
+    }
+
+    tracing::info!(
+        routine = %routine.name,
+        job_id = %job_id,
+        todo_id = %todo_id,
+        "FullJob scheduled via worker system"
+    );
+
+    // Return success — the job runs asynchronously; tokens tracked by the worker.
+    Ok((
+        RunStatus::Ok,
+        Some(format!("FullJob scheduled: job={job_id}, todo={todo_id}")),
+        None,
+    ))
 }
 
 fn truncate(s: &str, max: usize) -> String {
