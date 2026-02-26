@@ -53,6 +53,43 @@ impl Default for AgentConfig {
     }
 }
 
+impl AgentConfig {
+    /// Build AgentConfig from environment variables, falling back to defaults.
+    ///
+    /// | Env Var | Field | Default |
+    /// |---------|-------|---------|
+    /// | `AI_ASSIST_SYSTEM_PROMPT` | system_prompt | DEFAULT_SYSTEM_PROMPT |
+    /// | `AI_ASSIST_MAX_WORKERS` | max_parallel_jobs | 1 |
+    /// | `AI_ASSIST_JOB_TIMEOUT` | job_timeout (secs) | 600 |
+    /// | `AI_ASSIST_USE_PLANNING` | use_planning | false |
+    /// | `AI_ASSIST_MAX_CONTEXT_TOKENS` | max_context_tokens | 100000 |
+    pub fn from_env() -> Self {
+        Self {
+            system_prompt: std::env::var("AI_ASSIST_SYSTEM_PROMPT")
+                .ok()
+                .or_else(|| Some(DEFAULT_SYSTEM_PROMPT.to_string())),
+            max_parallel_jobs: std::env::var("AI_ASSIST_MAX_WORKERS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(1),
+            job_timeout: Duration::from_secs(
+                std::env::var("AI_ASSIST_JOB_TIMEOUT")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(600),
+            ),
+            use_planning: std::env::var("AI_ASSIST_USE_PLANNING")
+                .map(|v| v == "true" || v == "1")
+                .unwrap_or(false),
+            max_context_tokens: std::env::var("AI_ASSIST_MAX_CONTEXT_TOKENS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(100_000),
+            ..Self::default()
+        }
+    }
+}
+
 /// Configuration for the routines engine.
 #[derive(Debug, Clone)]
 pub struct RoutineConfig {

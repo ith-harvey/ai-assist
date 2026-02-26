@@ -137,14 +137,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let email_config_for_cards = EmailConfig::from_env();
 
     // ── Agent Config (created early — Scheduler needs it) ──────────────
-    let system_prompt = std::env::var("AI_ASSIST_SYSTEM_PROMPT")
-        .ok()
-        .or_else(|| Some(ai_assist::config::DEFAULT_SYSTEM_PROMPT.to_string()));
+    let agent_config = AgentConfig::from_env();
 
-    let agent_config = AgentConfig {
-        system_prompt,
-        ..AgentConfig::default()
-    };
+    tracing::info!(
+        max_workers = agent_config.max_parallel_jobs,
+        job_timeout_secs = agent_config.job_timeout.as_secs(),
+        use_planning = agent_config.use_planning,
+        max_context_tokens = agent_config.max_context_tokens,
+        "Agent config loaded"
+    );
 
     // ── Safety (shared between Scheduler and Agent) ──────────────────
     let safety = Arc::new(SafetyLayer::new());
