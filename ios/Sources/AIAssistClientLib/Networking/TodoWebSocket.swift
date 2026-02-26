@@ -58,11 +58,11 @@ enum TodoWsAction: Encodable {
         let payload: [String: Any]
         switch self {
         case .complete(let id):
-            payload = ["action": "complete", "todo_id": id.uuidString.lowercased()]
+            payload = ["action": "complete", "id": id.uuidString.lowercased()]
         case .delete(let id):
-            payload = ["action": "delete", "todo_id": id.uuidString.lowercased()]
+            payload = ["action": "delete", "id": id.uuidString.lowercased()]
         case .snooze(let id, let until):
-            var p: [String: Any] = ["action": "snooze", "todo_id": id.uuidString.lowercased()]
+            var p: [String: Any] = ["action": "snooze", "id": id.uuidString.lowercased()]
             if let until {
                 let formatter = ISO8601DateFormatter()
                 p["until"] = formatter.string(from: until)
