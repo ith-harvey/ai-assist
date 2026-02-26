@@ -337,33 +337,53 @@ Report when the job is complete or if you encounter issues you cannot resolve."#
                         }
                     }
                 }
-            } else if selections.len() == 1 {
-                let selection = &selections[0];
-                tracing::debug!(
-                    "Job {} selecting tool: {} - {}",
-                    self.job_id,
-                    selection.tool_name,
-                    selection.reasoning
-                );
-
-                let result = self
-                    .execute_tool(&selection.tool_name, &selection.parameters)
-                    .await;
-
-                self.process_tool_result(reason_ctx, selection, result)
-                    .await?;
             } else {
-                tracing::debug!(
-                    "Job {} executing {} tools in parallel",
-                    self.job_id,
-                    selections.len()
-                );
+                // Build the assistant message with tool_use blocks BEFORE executing.
+                // Claude requires every tool_result to have a matching tool_use in the
+                // preceding assistant message.
+                let tool_calls: Vec<crate::llm::ToolCall> = selections
+                    .iter()
+                    .map(|s| crate::llm::ToolCall {
+                        id: s.tool_call_id.clone(),
+                        name: s.tool_name.clone(),
+                        arguments: s.parameters.clone(),
+                    })
+                    .collect();
+                reason_ctx
+                    .messages
+                    .push(ChatMessage::assistant_with_tool_calls(
+                        Some(selections[0].reasoning.clone()),
+                        tool_calls,
+                    ));
 
-                let results = self.execute_tools_parallel(&selections).await;
+                if selections.len() == 1 {
+                    let selection = &selections[0];
+                    tracing::debug!(
+                        "Job {} selecting tool: {} - {}",
+                        self.job_id,
+                        selection.tool_name,
+                        selection.reasoning
+                    );
 
-                for (selection, result) in selections.iter().zip(results) {
-                    self.process_tool_result(reason_ctx, selection, result.result)
+                    let result = self
+                        .execute_tool(&selection.tool_name, &selection.parameters)
+                        .await;
+
+                    self.process_tool_result(reason_ctx, selection, result)
                         .await?;
+                } else {
+                    tracing::debug!(
+                        "Job {} executing {} tools in parallel",
+                        self.job_id,
+                        selections.len()
+                    );
+
+                    let results = self.execute_tools_parallel(&selections).await;
+
+                    for (selection, result) in selections.iter().zip(results) {
+                        self.process_tool_result(reason_ctx, selection, result.result)
+                            .await?;
+                    }
                 }
             }
 
