@@ -1811,6 +1811,39 @@ impl Database for LibSqlBackend {
         Ok(count > 0)
     }
 
+    async fn search_todos(
+        &self,
+        user_id: &str,
+        query: &str,
+        limit: u32,
+    ) -> Result<Vec<TodoItem>, DatabaseError> {
+        let conn = self.conn();
+        let pattern = format!("%{}%", query);
+        let mut rows = conn
+            .query(
+                &format!(
+                    "SELECT {TODO_COLUMNS} FROM todos \
+                     WHERE user_id = ?1 AND is_agent_internal = 0 \
+                     AND (title LIKE ?2 COLLATE NOCASE OR description LIKE ?2 COLLATE NOCASE) \
+                     ORDER BY \
+                       CASE WHEN title LIKE ?2 COLLATE NOCASE THEN 0 ELSE 1 END, \
+                       priority ASC, created_at DESC \
+                     LIMIT ?3"
+                ),
+                params![user_id, pattern, limit],
+            )
+            .await
+            .map_err(|e| DatabaseError::Query(format!("search_todos: {e}")))?;
+
+        let mut todos = Vec::new();
+        while let Ok(Some(row)) = rows.next().await {
+            if let Ok(todo) = row_to_todo(&row) {
+                todos.push(todo);
+            }
+        }
+        Ok(todos)
+    }
+
     // ── Job Actions ─────────────────────────────────────────────────
 
     async fn save_job_action(
@@ -3778,5 +3811,84 @@ mod tests {
         assert!(fetched.parent_id.is_none());
         assert!(fetched.agent_progress.is_none());
         assert!(fetched.thread_id.is_none());
+    }
+
+    #[tokio::test]
+    async fn search_todos_by_title() {
+        use crate::todos::model::*;
+
+        let db = test_db().await;
+        db.create_todo(&TodoItem::new("u", "Buy milk", TodoType::Errand, TodoBucket::HumanOnly))
+            .await.unwrap();
+        db.create_todo(&TodoItem::new("u", "Buy eggs", TodoType::Errand, TodoBucket::HumanOnly))
+            .await.unwrap();
+        db.create_todo(&TodoItem::new("u", "Fix bug in parser", TodoType::Deliverable, TodoBucket::AgentStartable))
+            .await.unwrap();
+
+        let results = db.search_todos("u", "buy", 20).await.unwrap();
+        assert_eq!(results.len(), 2);
+        assert!(results.iter().all(|t| t.title.to_lowercase().contains("buy")));
+    }
+
+    #[tokio::test]
+    async fn search_todos_by_description() {
+        use crate::todos::model::*;
+
+        let db = test_db().await;
+        db.create_todo(
+            &TodoItem::new("u", "Weekly review", TodoType::Administrative, TodoBucket::HumanOnly)
+                .with_description("Check grocery list and restock pantry"),
+        )
+        .await.unwrap();
+        db.create_todo(&TodoItem::new("u", "Ship feature", TodoType::Deliverable, TodoBucket::HumanOnly))
+            .await.unwrap();
+
+        let results = db.search_todos("u", "grocery", 20).await.unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].title, "Weekly review");
+    }
+
+    #[tokio::test]
+    async fn search_todos_excludes_internal() {
+        use crate::todos::model::*;
+
+        let db = test_db().await;
+        db.create_todo(&TodoItem::new("u", "Visible task", TodoType::Errand, TodoBucket::HumanOnly))
+            .await.unwrap();
+        db.create_todo(
+            &TodoItem::new("u", "Internal task", TodoType::Deliverable, TodoBucket::AgentStartable)
+                .as_agent_internal(),
+        )
+        .await.unwrap();
+
+        let results = db.search_todos("u", "task", 20).await.unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].title, "Visible task");
+    }
+
+    #[tokio::test]
+    async fn search_todos_respects_limit() {
+        use crate::todos::model::*;
+
+        let db = test_db().await;
+        for i in 0..5 {
+            db.create_todo(&TodoItem::new("u", &format!("Item {i}"), TodoType::Errand, TodoBucket::HumanOnly))
+                .await.unwrap();
+        }
+
+        let results = db.search_todos("u", "Item", 3).await.unwrap();
+        assert_eq!(results.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn search_todos_no_match() {
+        use crate::todos::model::*;
+
+        let db = test_db().await;
+        db.create_todo(&TodoItem::new("u", "Buy milk", TodoType::Errand, TodoBucket::HumanOnly))
+            .await.unwrap();
+
+        let results = db.search_todos("u", "zebra", 20).await.unwrap();
+        assert!(results.is_empty());
     }
 }

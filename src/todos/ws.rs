@@ -129,7 +129,14 @@ async fn handle_socket(mut socket: WebSocket, state: TodoState) {
             result = socket.recv() => {
                 match result {
                     Some(Ok(Message::Text(text))) => {
-                        handle_client_action(&text, &state).await;
+                        // handle_client_action returns Some for directed responses (e.g. search)
+                        if let Some(response) = handle_client_action(&text, &state).await {
+                            if let Ok(json) = serde_json::to_string(&response) {
+                                if socket.send(Message::Text(json.into())).await.is_err() {
+                                    break;
+                                }
+                            }
+                        }
                     }
                     Some(Ok(Message::Ping(data))) => {
                         if socket.send(Message::Pong(data)).await.is_err() {
@@ -153,7 +160,9 @@ async fn handle_socket(mut socket: WebSocket, state: TodoState) {
     info!("Todo WebSocket connection closed");
 }
 
-async fn handle_client_action(text: &str, state: &TodoState) {
+/// Handle a client action. Returns `Some(msg)` for directed responses (search),
+/// `None` for broadcast-only actions (create, update, delete, etc.).
+async fn handle_client_action(text: &str, state: &TodoState) -> Option<TodoWsMessage> {
     let default_user = "default";
 
     match serde_json::from_str::<TodoAction>(text) {
@@ -189,6 +198,7 @@ async fn handle_client_action(text: &str, state: &TodoState) {
                     }
                     Err(e) => warn!(error = %e, "Failed to create todo"),
                 }
+                None
             }
 
             TodoAction::Complete { id } => {
@@ -207,6 +217,7 @@ async fn handle_client_action(text: &str, state: &TodoState) {
                     }
                     Err(e) => warn!(id = %id, error = %e, "Failed to complete todo"),
                 }
+                None
             }
 
             TodoAction::Delete { id } => {
@@ -220,6 +231,7 @@ async fn handle_client_action(text: &str, state: &TodoState) {
                     }
                     Err(e) => warn!(id = %id, error = %e, "Failed to delete todo"),
                 }
+                None
             }
 
             TodoAction::Update {
@@ -266,6 +278,7 @@ async fn handle_client_action(text: &str, state: &TodoState) {
                     Ok(None) => warn!(id = %id, "Update failed — todo not found"),
                     Err(e) => warn!(id = %id, error = %e, "Failed to fetch todo for update"),
                 }
+                None
             }
 
             TodoAction::CreateSubtask {
@@ -299,6 +312,7 @@ async fn handle_client_action(text: &str, state: &TodoState) {
                     }
                     Err(e) => warn!(error = %e, "Failed to create agent subtask"),
                 }
+                None
             }
 
             TodoAction::Snooze { id, until } => {
@@ -319,10 +333,29 @@ async fn handle_client_action(text: &str, state: &TodoState) {
                     Ok(None) => warn!(id = %id, "Snooze failed — todo not found"),
                     Err(e) => warn!(id = %id, error = %e, "Failed to fetch todo for snooze"),
                 }
+                None
+            }
+
+            TodoAction::Search { query, limit } => {
+                let limit = limit.min(100); // Cap at 100
+                match state.db.search_todos("default", &query, limit).await {
+                    Ok(results) => {
+                        debug!(query = %query, count = results.len(), "Todo search");
+                        Some(TodoWsMessage::SearchResults { query, results })
+                    }
+                    Err(e) => {
+                        warn!(error = %e, query = %query, "Todo search failed");
+                        Some(TodoWsMessage::SearchResults {
+                            query,
+                            results: vec![],
+                        })
+                    }
+                }
             }
         },
         Err(e) => {
             debug!(error = %e, text = text, "Unrecognized todo WS message");
+            None
         }
     }
 }
