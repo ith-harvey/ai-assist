@@ -21,6 +21,7 @@ pub mod paths {
     pub const IDENTITY: &str = "IDENTITY.md";
     pub const MEMORY: &str = "MEMORY.md";
     pub const HEARTBEAT: &str = "HEARTBEAT.md";
+    pub const WORKER: &str = "WORKER.md";
 }
 
 /// Identity files loaded into the system prompt.
@@ -99,6 +100,24 @@ impl Workspace {
                 &user_path,
                 "# User Context\n\n\
                  (Add information about yourself here — preferences, projects, etc.)\n",
+            )
+            .await?;
+        }
+
+        // Seed WORKER.md if it doesn't exist
+        let worker_path = self.resolve_path(paths::WORKER);
+        if !worker_path.exists() {
+            fs::write(
+                &worker_path,
+                "# Worker Instructions\n\n\
+                 You are an autonomous worker agent executing tasks.\n\n\
+                 ## Guidelines\n\n\
+                 - Read the task description carefully before starting\n\
+                 - Break complex tasks into smaller steps\n\
+                 - Use the available tools to complete the work\n\
+                 - Check your work before reporting completion\n\
+                 - If you encounter issues you cannot resolve, explain what went wrong\n\
+                 - Report clearly when the task is done\n",
             )
             .await?;
         }
@@ -266,23 +285,20 @@ impl Workspace {
         })
     }
 
-    /// Load AGENTS.md + USER.md for the worker system prompt.
+    /// Load WORKER.md for the worker system prompt.
     ///
-    /// Skips files that don't exist or are empty — no error, just omit.
-    /// Returns empty string if both are missing.
+    /// Returns the file content if it exists and is non-empty,
+    /// otherwise returns an empty string (no error).
     pub async fn worker_prompt(&self) -> Result<String, WorkspaceError> {
-        let mut parts = Vec::new();
-        for &file in &[paths::AGENTS, paths::USER] {
-            let path = self.resolve_path(file);
-            if path.exists() {
-                if let Ok(content) = fs::read_to_string(&path).await {
-                    if !content.trim().is_empty() {
-                        parts.push(content);
-                    }
+        let path = self.resolve_path(paths::WORKER);
+        if path.exists() {
+            if let Ok(content) = fs::read_to_string(&path).await {
+                if !content.trim().is_empty() {
+                    return Ok(content);
                 }
             }
         }
-        Ok(parts.join("\n\n---\n\n"))
+        Ok(String::new())
     }
 
     /// Load and concatenate identity files for the system prompt.
@@ -379,44 +395,43 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn worker_prompt_both_present() {
+    async fn worker_prompt_reads_worker_md() {
         let (ws, _dir) = test_workspace().await;
-        ws.write(paths::AGENTS, "You are a coding agent.").await.unwrap();
-        ws.write(paths::USER, "Name: Ian").await.unwrap();
+        ws.write(paths::WORKER, "You are a focused coding agent.\nAlways write tests.")
+            .await
+            .unwrap();
 
         let prompt = ws.worker_prompt().await.unwrap();
-        assert!(prompt.contains("You are a coding agent."));
-        assert!(prompt.contains("Name: Ian"));
-        assert!(prompt.contains("---"));
+        assert!(prompt.contains("focused coding agent"));
+        assert!(prompt.contains("Always write tests"));
     }
 
     #[tokio::test]
-    async fn worker_prompt_one_missing() {
+    async fn worker_prompt_missing_returns_empty() {
         let (ws, _dir) = test_workspace().await;
-        ws.write(paths::AGENTS, "Agent instructions here").await.unwrap();
-        // USER.md not created
-
-        let prompt = ws.worker_prompt().await.unwrap();
-        assert!(prompt.contains("Agent instructions here"));
-        assert!(!prompt.contains("---"));
-    }
-
-    #[tokio::test]
-    async fn worker_prompt_both_missing() {
-        let (ws, _dir) = test_workspace().await;
+        // No WORKER.md created
         let prompt = ws.worker_prompt().await.unwrap();
         assert!(prompt.is_empty());
     }
 
     #[tokio::test]
-    async fn worker_prompt_skips_empty_files() {
+    async fn worker_prompt_empty_file_returns_empty() {
         let (ws, _dir) = test_workspace().await;
-        ws.write(paths::AGENTS, "   ").await.unwrap();
-        ws.write(paths::USER, "Name: Ian").await.unwrap();
+        ws.write(paths::WORKER, "   ").await.unwrap();
 
         let prompt = ws.worker_prompt().await.unwrap();
-        assert!(!prompt.contains("---"));
-        assert!(prompt.contains("Name: Ian"));
+        assert!(prompt.is_empty());
+    }
+
+    #[tokio::test]
+    async fn worker_prompt_ignores_agents_and_user() {
+        let (ws, _dir) = test_workspace().await;
+        // Only AGENTS.md and USER.md — no WORKER.md
+        ws.write(paths::AGENTS, "Agent instructions").await.unwrap();
+        ws.write(paths::USER, "User info").await.unwrap();
+
+        let prompt = ws.worker_prompt().await.unwrap();
+        assert!(prompt.is_empty(), "worker_prompt should only read WORKER.md");
     }
 
     #[tokio::test]
@@ -431,6 +446,10 @@ mod tests {
 
         let user = ws.read(paths::USER).await.unwrap();
         assert!(user.contains("User Context"));
+
+        let worker = ws.read(paths::WORKER).await.unwrap();
+        assert!(worker.contains("Worker Instructions"));
+        assert!(worker.contains("autonomous worker agent"));
     }
 
     #[tokio::test]
@@ -442,11 +461,14 @@ mod tests {
         ws.ensure_dirs().await.unwrap();
         // Overwrite with custom content
         ws.write(paths::AGENTS, "Custom agent instructions").await.unwrap();
+        ws.write(paths::WORKER, "Custom worker instructions").await.unwrap();
 
         // Re-run ensure_dirs — should NOT overwrite
         ws.ensure_dirs().await.unwrap();
         let agents = ws.read(paths::AGENTS).await.unwrap();
         assert_eq!(agents, "Custom agent instructions");
+        let worker = ws.read(paths::WORKER).await.unwrap();
+        assert_eq!(worker, "Custom worker instructions");
     }
 
     #[tokio::test]
