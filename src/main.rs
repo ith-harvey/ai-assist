@@ -6,7 +6,7 @@ use ai_assist::cards::generator::{CardGenerator, GeneratorConfig};
 use ai_assist::cards::queue::{self, CardQueue};
 use ai_assist::cards::ws::card_routes;
 use ai_assist::channels::email::EmailConfig;
-use ai_assist::channels::{ChannelManager, CliChannel, EmailChannel, IosChannel, TelegramChannel};
+use ai_assist::channels::{ChannelManager, CliChannel, IosChannel, TelegramChannel};
 use ai_assist::config::{AgentConfig, RoutineConfig};
 use ai_assist::llm::{LlmBackend, LlmConfig, create_provider};
 use ai_assist::safety::SafetyLayer;
@@ -224,6 +224,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     eprintln!("   Tools: {} registered", tools.count());
 
     // ── Agent ───────────────────────────────────────────────────────────
+    let llm_for_pipeline = llm.clone();
     let deps = AgentDeps {
         store: Some(Arc::clone(&db)),
         llm,
@@ -270,7 +271,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         active_channels.push("telegram");
     }
 
-    // Conditionally add Email if IMAP host is set
+    // Conditionally add Email pipeline if IMAP host is set
+    // Email no longer goes through the agent loop — it uses the standalone pipeline:
+    //   IMAP poller → messages DB → email processor → pipeline → cards
     if let Some(email_config) = EmailConfig::from_env() {
         let senders = &email_config.allowed_senders;
         eprintln!(
@@ -285,11 +288,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 senders.join(", ")
             }
         );
-        channels.add(Box::new(EmailChannel::new(
-            email_config,
-            Some(Arc::clone(&db)),
-        )));
-        active_channels.push("email");
+
+        // Spawn IMAP poller (persists to DB, marks \Seen)
+        let (_poller_handle, _poller_shutdown) =
+            ai_assist::channels::email_poller::spawn_email_poller(
+                email_config.clone(),
+                Arc::clone(&db),
+            );
+
+        // Create pipeline processor for emails
+        let rules = ai_assist::pipeline::rules::RulesEngine::default_rules();
+        let email_pipeline = Arc::new(ai_assist::pipeline::processor::MessageProcessor::new(
+            llm_for_pipeline.clone(),
+            card_queue.clone(),
+            rules,
+        ));
+
+        // Spawn background email processor (timer-based)
+        let (_processor_handle, _processor_shutdown) =
+            ai_assist::pipeline::email_processor::spawn_email_processor(
+                Arc::clone(&db),
+                email_pipeline,
+                None, // Uses EMAIL_PROCESS_INTERVAL_SECS env var or 2h default
+            );
+
+        active_channels.push("email (pipeline)");
     }
 
     eprintln!("   Channels: {}\n", active_channels.join(", "));

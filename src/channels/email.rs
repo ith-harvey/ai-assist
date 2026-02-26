@@ -509,7 +509,7 @@ fn extract_text(parsed: &mail_parser::Message) -> String {
 }
 
 /// A fetched email: (uid, message_id, sender, content, subject, timestamp, reply_metadata).
-type FetchedEmail = (
+pub(crate) type FetchedEmail = (
     String,
     String,
     String,
@@ -520,10 +520,10 @@ type FetchedEmail = (
 );
 
 /// Error type for IMAP fetch operations.
-type ImapError = Box<dyn std::error::Error + Send + Sync>;
+pub(crate) type ImapError = Box<dyn std::error::Error + Send + Sync>;
 
 /// Fetch unseen emails via raw IMAP over TLS (blocking — run in spawn_blocking).
-fn fetch_unseen_imap(config: &EmailConfig) -> Result<Vec<FetchedEmail>, ImapError> {
+pub(crate) fn fetch_unseen_imap(config: &EmailConfig) -> Result<Vec<FetchedEmail>, ImapError> {
     use std::sync::Arc as StdArc;
 
     // Connect TCP
@@ -685,7 +685,7 @@ fn fetch_unseen_imap(config: &EmailConfig) -> Result<Vec<FetchedEmail>, ImapErro
 }
 
 /// Mark specific UIDs as \Seen on IMAP (blocking — run in spawn_blocking).
-fn mark_seen_imap(config: &EmailConfig, uids: &[String]) -> Result<(), ImapError> {
+pub(crate) fn mark_seen_imap(config: &EmailConfig, uids: &[String]) -> Result<(), ImapError> {
     use std::sync::Arc as StdArc;
 
     if uids.is_empty() {
