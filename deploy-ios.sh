@@ -2,12 +2,13 @@
 # Build and deploy AI Assist iOS app to Ian's iPhone
 set -e
 
+REPO_ROOT="$(cd "$(dirname "$0")" && pwd -P)"
 DEVICE_ID="00008110-000E50611451A01E"
 TEAM_ID="TQBXL45729"
-DERIVED_DATA="$HOME/projects/ai-assist/ios/.build/DerivedData"
+DERIVED_DATA="$REPO_ROOT/ios/.build/DerivedData"
 
 echo "🧹 Cleaning..."
-cd ~/projects/ai-assist/ios/AIAssistApp
+cd "$REPO_ROOT/ios/AIAssistApp"
 xcodebuild clean -scheme AIAssistApp -quiet 2>/dev/null || true
 
 echo "🔨 Building..."
