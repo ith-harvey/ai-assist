@@ -1,18 +1,15 @@
 import SwiftUI
 
-/// Main to-do list view with swipeable rows and inline expanded detail.
+/// Main to-do list view with swipeable rows.
 ///
 /// Swipe right → complete. Swipe left → delete.
-/// Tap a row to expand inline detail with description, metadata, and an input bar.
-/// Sections: Active (sorted by priority), Completed (collapsed by default).
+/// Tap a row → push full-screen `TodoDetailView` via NavigationStack.
+/// Sections: Active (sorted by priority), Snoozed, Completed (collapsed by default).
 /// Approval badge in nav bar shows items needing attention.
-///
-/// No persistent bottom input bar — input lives inside expanded todo rows only.
 public struct TodoListView: View {
     @State private var todoSocket = TodoWebSocket()
     @State private var showCompleted = false
-    @State private var expandedTodoId: UUID?
-    @State private var activityTodo: TodoItem?
+    @State private var selectedTodo: TodoItem?
 
     public init() {}
 
@@ -40,8 +37,8 @@ public struct TodoListView: View {
             }
         }
         #endif
-        .navigationDestination(item: $activityTodo) { todo in
-            TodoActivityView(todo: todo)
+        .navigationDestination(item: $selectedTodo) { todo in
+            TodoDetailView(todo: todo)
         }
         .onAppear {
             todoSocket.connect()
@@ -104,7 +101,6 @@ public struct TodoListView: View {
         #if os(iOS)
         .scrollDismissesKeyboard(.interactively)
         #endif
-        .animation(.spring(response: 0.35, dampingFraction: 0.8), value: expandedTodoId)
     }
 
     // MARK: - Section Headers
@@ -143,52 +139,13 @@ public struct TodoListView: View {
         }
     }
 
-    // MARK: - Todo Card (matches approval card width/style)
+    // MARK: - Todo Card (compact, tappable → pushes detail)
 
     private func todoCard(_ todo: TodoItem) -> some View {
-        let isExpanded = expandedTodoId == todo.id
-
-        return VStack(alignment: .leading, spacing: 0) {
-            TodoRowView(todo: todo, isExpanded: false)
+        VStack(alignment: .leading, spacing: 0) {
+            TodoRowView(todo: todo)
                 .padding(.horizontal, 14)
                 .padding(.vertical, 10)
-
-            if isExpanded {
-                TodoExpandedDetail(todo: todo)
-                    .padding(.horizontal, 14)
-                    .padding(.top, 4)
-                    .padding(.bottom, 4)
-
-                // Activity view link for agent-startable todos
-                if todo.bucket == .agentStartable {
-                    Button {
-                        activityTodo = todo
-                    } label: {
-                        HStack(spacing: 6) {
-                            Image(systemName: "waveform.path.ecg")
-                                .font(.system(size: 13))
-                            Text("View Activity")
-                                .font(.system(size: 13, weight: .medium))
-                        }
-                        .foregroundStyle(.blue)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 8)
-                        #if os(iOS)
-                        .background(Color(uiColor: .systemGray6))
-                        #else
-                        .background(Color.gray.opacity(0.1))
-                        #endif
-                        .clipShape(RoundedRectangle(cornerRadius: 10))
-                    }
-                    .buttonStyle(.plain)
-                    .padding(.horizontal, 14)
-                    .padding(.top, 2)
-                }
-
-                TodoInlineInputBar()
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 8)
-            }
         }
         .background(
             RoundedRectangle(cornerRadius: 20)
@@ -202,13 +159,7 @@ public struct TodoListView: View {
         .shadow(color: .black.opacity(0.1), radius: 12, y: 4)
         .contentShape(Rectangle())
         .onTapGesture {
-            let isCollapsing = expandedTodoId == todo.id
-            withAnimation(isCollapsing
-                ? .easeIn(duration: 0.2)
-                : .spring(response: 0.35, dampingFraction: 0.85)
-            ) {
-                expandedTodoId = isCollapsing ? nil : todo.id
-            }
+            selectedTodo = todo
         }
         // Right swipe — complete
         .swipeActions(edge: .leading) {
@@ -250,182 +201,11 @@ public struct TodoListView: View {
     }
 }
 
-// MARK: - Inline Input Bar (inside expanded todo)
-
-/// Telegram-style text + mic/send input bar shown inside expanded todo rows.
-/// Self-contained state — each expanded todo gets its own input.
-struct TodoInlineInputBar: View {
-    @State private var inputText = ""
-
-    var body: some View {
-        HStack(spacing: 8) {
-            TextField("Add a note...", text: $inputText, axis: .vertical)
-                .textFieldStyle(.plain)
-                .font(.subheadline)
-                .lineLimit(1...3)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 7)
-                #if os(iOS)
-                .background(Color(uiColor: .systemGray6))
-                #else
-                .background(Color.gray.opacity(0.12))
-                #endif
-                .clipShape(RoundedRectangle(cornerRadius: 16))
-                .onSubmit {
-                    submitInput()
-                }
-
-            ZStack {
-                if !inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    Button {
-                        submitInput()
-                    } label: {
-                        Image(systemName: "arrow.up.circle.fill")
-                            .font(.system(size: 28))
-                            .foregroundStyle(.blue)
-                    }
-                    .transition(.scale.combined(with: .opacity))
-                } else {
-                    #if os(iOS)
-                    VoiceMicButton(shouldSuppress: false) { transcript in
-                        inputText = transcript
-                        submitInput()
-                    }
-                    .zIndex(1)
-                    .transition(.scale.combined(with: .opacity))
-                    #else
-                    Button {} label: {
-                        Image(systemName: "arrow.up.circle.fill")
-                            .font(.system(size: 28))
-                            .foregroundStyle(.gray.opacity(0.4))
-                    }
-                    .disabled(true)
-                    #endif
-                }
-            }
-            .animation(.spring(response: 0.3, dampingFraction: 0.7),
-                        value: !inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-        }
-    }
-
-    private func submitInput() {
-        let text = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
-        // TODO: Send note/update to backend via WebSocket
-        inputText = ""
-    }
-}
-
-// MARK: - Expanded Detail (extracted from TodoRowView)
-
-/// The metadata section shown when a todo is expanded.
-struct TodoExpandedDetail: View {
-    let todo: TodoItem
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            // Metadata first — immediately under title
-
-            // Status
-            detailRow(label: "Status", icon: todo.status.iconName) {
-                Text(todo.status.label)
-                    .foregroundStyle(.primary)
-            }
-
-            // Bucket
-            detailRow(
-                label: "Bucket",
-                icon: todo.bucket == .agentStartable ? "cpu" : "person.fill"
-            ) {
-                Text(todo.bucket == .agentStartable ? "🤖 AI can start this" : "👤 Waiting on you")
-                    .foregroundStyle(.primary)
-            }
-
-            // Created
-            detailRow(label: "Created", icon: "clock.arrow.circlepath") {
-                Text(formatCreatedDate(todo.createdAt))
-                    .foregroundStyle(.primary)
-            }
-
-            // Due date (full format)
-            if let due = todo.dueDate {
-                detailRow(label: "Due", icon: "calendar") {
-                    HStack(spacing: 4) {
-                        Text(formatFullDate(due))
-                            .foregroundStyle(.primary)
-                        if todo.isOverdue {
-                            Text("Overdue")
-                                .font(.system(size: 11, weight: .semibold))
-                                .foregroundStyle(.red)
-                        }
-                    }
-                }
-            }
-
-            // Description
-            if let description = todo.description, !description.isEmpty {
-                Text(description)
-                    .font(.subheadline)
-                    .foregroundStyle(.primary)
-                    .padding(.bottom, 2)
-            }
-
-            // Source card
-            if todo.sourceCardId != nil {
-                detailRow(label: "Source", icon: "doc.on.doc") {
-                    Text("From approval card")
-                        .foregroundStyle(.primary)
-                }
-            }
-
-        }
-        .font(.subheadline)
-        .transition(.asymmetric(
-            insertion: .opacity.animation(.easeOut(duration: 0.2)),
-            removal: .opacity.animation(.easeIn(duration: 0.15))
-        ))
-    }
-
-    // MARK: - Detail Row Helper
-
-    private func detailRow<Content: View>(
-        label: String,
-        icon: String,
-        @ViewBuilder content: () -> Content
-    ) -> some View {
-        HStack(spacing: 8) {
-            Label(label, systemImage: icon)
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(.secondary)
-                .frame(width: 90, alignment: .leading)
-
-            content()
-                .font(.subheadline)
-        }
-    }
-
-    // MARK: - Formatting
-
-    private func formatFullDate(_ date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.dateStyle = .medium
-        formatter.timeStyle = .short
-        return formatter.string(from: date)
-    }
-
-    private func formatCreatedDate(_ date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "MMM d, yyyy"
-        return formatter.string(from: date)
-    }
-}
-
-// MARK: - Todo Row (compact only — no longer owns expanded detail)
+// MARK: - Todo Row (compact)
 
 /// A single compact row showing status, title, due date, and type badge.
 struct TodoRowView: View {
     let todo: TodoItem
-    var isExpanded: Bool = false
 
     var body: some View {
         HStack(spacing: 12) {
@@ -485,6 +265,11 @@ struct TodoRowView: View {
                     .font(.system(size: 14))
                     .foregroundStyle(todo.priority == 1 ? .red : .orange)
             }
+
+            // Chevron to indicate pushable
+            Image(systemName: "chevron.right")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(.tertiary)
         }
     }
 
