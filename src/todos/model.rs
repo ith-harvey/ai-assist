@@ -221,6 +221,16 @@ pub enum TodoAction {
         #[serde(default)]
         todo_type: Option<TodoType>,
     },
+    /// Search todos by query string.
+    Search {
+        query: String,
+        #[serde(default = "default_search_limit")]
+        limit: u32,
+    },
+}
+
+fn default_search_limit() -> u32 {
+    20
 }
 
 /// Messages sent over the WebSocket (server → client).
@@ -235,6 +245,11 @@ pub enum TodoWsMessage {
     TodoUpdated { todo: TodoItem },
     /// A todo was deleted.
     TodoDeleted { id: Uuid },
+    /// Search results (directed response, not broadcast).
+    SearchResults {
+        query: String,
+        results: Vec<TodoItem>,
+    },
 }
 
 #[cfg(test)]
@@ -455,5 +470,44 @@ mod tests {
         let msg = TodoWsMessage::TodoDeleted { id };
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains("\"type\":\"todo_deleted\""));
+    }
+
+    #[test]
+    fn search_action_serde() {
+        let json = r#"{"action":"search","query":"milk","limit":10}"#;
+        let action: TodoAction = serde_json::from_str(json).unwrap();
+        match action {
+            TodoAction::Search { query, limit } => {
+                assert_eq!(query, "milk");
+                assert_eq!(limit, 10);
+            }
+            _ => panic!("Expected Search"),
+        }
+    }
+
+    #[test]
+    fn search_action_default_limit() {
+        let json = r#"{"action":"search","query":"test"}"#;
+        let action: TodoAction = serde_json::from_str(json).unwrap();
+        match action {
+            TodoAction::Search { query, limit } => {
+                assert_eq!(query, "test");
+                assert_eq!(limit, 20);
+            }
+            _ => panic!("Expected Search"),
+        }
+    }
+
+    #[test]
+    fn search_results_serde() {
+        let todo = TodoItem::new("u", "Buy milk", TodoType::Errand, TodoBucket::HumanOnly);
+        let msg = TodoWsMessage::SearchResults {
+            query: "milk".into(),
+            results: vec![todo],
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"search_results\""));
+        assert!(json.contains("\"query\":\"milk\""));
+        assert!(json.contains("Buy milk"));
     }
 }

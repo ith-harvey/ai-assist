@@ -407,6 +407,15 @@ pub trait Database: Send + Sync {
     /// Delete a todo. Returns true if a row was deleted.
     async fn delete_todo(&self, id: Uuid) -> Result<bool, DatabaseError>;
 
+    /// Search todos by query string (matches title and description, case-insensitive).
+    /// Excludes agent-internal subtasks. Returns up to `limit` results sorted by relevance.
+    async fn search_todos(
+        &self,
+        user_id: &str,
+        query: &str,
+        limit: u32,
+    ) -> Result<Vec<TodoItem>, DatabaseError>;
+
     // ── Job Actions ─────────────────────────────────────────────────
 
     /// Save a job action record (activity event serialized as JSON).
