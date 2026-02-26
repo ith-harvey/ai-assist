@@ -93,6 +93,19 @@ impl TodoActivityMessage {
     pub fn is_terminal(&self) -> bool {
         matches!(self, Self::Completed { .. } | Self::Failed { .. })
     }
+
+    /// Get the action type name (matches serde tag: "started", "thinking", etc.).
+    pub fn action_type(&self) -> String {
+        match self {
+            Self::Started { .. } => "started".to_string(),
+            Self::Thinking { .. } => "thinking".to_string(),
+            Self::ToolStarted { .. } => "tool_started".to_string(),
+            Self::ToolCompleted { .. } => "tool_completed".to_string(),
+            Self::AgentResponse { .. } => "agent_response".to_string(),
+            Self::Completed { .. } => "completed".to_string(),
+            Self::Failed { .. } => "failed".to_string(),
+        }
+    }
 }
 
 /// Shared state for the activity WebSocket.
@@ -132,7 +145,7 @@ async fn handle_socket(mut socket: WebSocket, todo_id: Uuid, state: ActivityStat
     info!(todo_id = %todo_id, "Activity WebSocket client connected");
 
     // Replay any stored activity history for this todo
-    match state.db.get_job_actions(todo_id).await {
+    match state.db.get_activity_for_todo(todo_id).await {
         Ok(actions) => {
             for action in actions {
                 if let Ok(msg) = serde_json::from_str::<TodoActivityMessage>(&action) {

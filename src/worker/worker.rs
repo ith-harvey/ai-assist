@@ -79,9 +79,27 @@ impl Worker {
         self.deps.use_planning
     }
 
-    /// Send a live activity event (fire-and-forget).
+    /// Send a live activity event and persist to DB (fire-and-forget).
     fn emit_activity(&self, msg: TodoActivityMessage) {
-        let _ = self.deps.activity_tx.send(msg);
+        // Broadcast to live WebSocket subscribers
+        let _ = self.deps.activity_tx.send(msg.clone());
+
+        // Persist to DB for replay on reconnect
+        if let Some(store) = self.store() {
+            let store = store.clone();
+            let job_id = self.job_id;
+            let todo_id = self.deps.todo_id;
+            let action_type = msg.action_type();
+            let action_data = serde_json::to_string(&msg).unwrap_or_default();
+            tokio::spawn(async move {
+                if let Err(e) = store
+                    .save_job_action(job_id, todo_id, &action_type, &action_data)
+                    .await
+                {
+                    tracing::warn!(error = %e, "Failed to persist activity event");
+                }
+            });
+        }
     }
 
     /// Fire-and-forget persistence of job status.
