@@ -39,6 +39,15 @@ impl TodoState {
         let (tx, _) = broadcast::channel(256);
         Self { db, tx, scheduler: Some(scheduler) }
     }
+
+    /// Create with an existing broadcast sender (shared with Worker system).
+    pub fn with_shared_tx(
+        db: Arc<dyn Database>,
+        tx: broadcast::Sender<TodoWsMessage>,
+        scheduler: Arc<crate::worker::Scheduler>,
+    ) -> Self {
+        Self { db, tx, scheduler: Some(scheduler) }
+    }
 }
 
 /// Build the Axum router for `/ws/todos` and `/api/todos/test`.
