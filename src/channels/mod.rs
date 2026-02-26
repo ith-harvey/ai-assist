@@ -11,7 +11,7 @@ pub mod telegram;
 
 pub use channel::*;
 pub use cli::CliChannel;
-pub use email::EmailChannel;
+// EmailChannel removed — email uses standalone pipeline (email_poller + email_processor).
 pub use email_types::EmailMessage;
 pub use ios::IosChannel;
 pub use manager::ChannelManager;

@@ -1,4 +1,5 @@
 use super::*;
+use crate::channels::IncomingMessage;
 use crate::channels::email_types::strip_quoted_text;
 
 // ── Source message quote stripping tests ────────────────────────
@@ -262,42 +263,9 @@ fn config_from_env_returns_none_when_no_host() {
     assert!(EmailConfig::from_env().is_none());
 }
 
-// ── Channel construction tests ──────────────────────────────────
-
-#[test]
-fn email_channel_name() {
-    let config = EmailConfig {
-        imap_host: "imap.test.com".into(),
-        imap_port: 993,
-        smtp_host: "smtp.test.com".into(),
-        smtp_port: 587,
-        username: "user".into(),
-        password: "pass".into(),
-        from_address: "user@test.com".into(),
-        poll_interval_secs: 60,
-        allowed_senders: vec![],
-    };
-    let ch = EmailChannel::new(config, None);
-    assert_eq!(ch.name(), "email");
-}
-
-#[test]
-fn email_channel_sender_check_delegates_to_config() {
-    let config = EmailConfig {
-        imap_host: "imap.test.com".into(),
-        imap_port: 993,
-        smtp_host: "smtp.test.com".into(),
-        smtp_port: 587,
-        username: "user".into(),
-        password: "pass".into(),
-        from_address: "user@test.com".into(),
-        poll_interval_secs: 60,
-        allowed_senders: vec!["@trusted.com".to_string()],
-    };
-    let ch = EmailChannel::new(config, None);
-    assert!(ch.is_sender_allowed("anyone@trusted.com"));
-    assert!(!ch.is_sender_allowed("anyone@evil.com"));
-}
+// ── EmailChannel construction tests removed ─────────────────────
+// EmailChannel struct deleted — email uses standalone pipeline now.
+// Sender allowlist is tested via standalone `is_sender_allowed()` above.
 
 // ── Metadata tests ──────────────────────────────────────────────
 
