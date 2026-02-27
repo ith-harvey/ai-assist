@@ -19,6 +19,7 @@ public enum ActivityMessage: Identifiable, Codable, Sendable {
     case thinking(jobId: UUID, iteration: UInt32)
     case toolStarted(jobId: UUID, toolName: String)
     case toolCompleted(jobId: UUID, toolName: String, success: Bool, summary: String)
+    case reasoning(jobId: UUID, content: String)
     case agentResponse(jobId: UUID, content: String)
     case completed(jobId: UUID, summary: String)
     case failed(jobId: UUID, error: String)
@@ -37,6 +38,8 @@ public enum ActivityMessage: Identifiable, Codable, Sendable {
             return "tool_started-\(jobId.uuidString)-\(toolName)"
         case .toolCompleted(let jobId, let toolName, _, _):
             return "tool_completed-\(jobId.uuidString)-\(toolName)"
+        case .reasoning(let jobId, let content):
+            return "reasoning-\(jobId.uuidString)-\(content.prefix(20).hashValue)"
         case .agentResponse(let jobId, let content):
             return "agent_response-\(jobId.uuidString)-\(content.prefix(20).hashValue)"
         case .completed(let jobId, _):
@@ -55,6 +58,7 @@ public enum ActivityMessage: Identifiable, Codable, Sendable {
              .thinking(let id, _),
              .toolStarted(let id, _),
              .toolCompleted(let id, _, _, _),
+             .reasoning(let id, _),
              .agentResponse(let id, _),
              .completed(let id, _),
              .failed(let id, _):
@@ -111,6 +115,11 @@ public enum ActivityMessage: Identifiable, Codable, Sendable {
             let summary = try container.decode(String.self, forKey: .summary)
             self = .toolCompleted(jobId: jobId, toolName: toolName, success: success, summary: summary)
 
+        case "reasoning":
+            let jobId = try container.decode(UUID.self, forKey: .jobId)
+            let content = try container.decode(String.self, forKey: .content)
+            self = .reasoning(jobId: jobId, content: content)
+
         case "agent_response":
             let jobId = try container.decode(UUID.self, forKey: .jobId)
             let content = try container.decode(String.self, forKey: .content)
@@ -160,6 +169,11 @@ public enum ActivityMessage: Identifiable, Codable, Sendable {
             try container.encode(toolName, forKey: .toolName)
             try container.encode(success, forKey: .success)
             try container.encode(summary, forKey: .summary)
+
+        case .reasoning(let jobId, let content):
+            try container.encode("reasoning", forKey: .type)
+            try container.encode(jobId, forKey: .jobId)
+            try container.encode(content, forKey: .content)
 
         case .agentResponse(let jobId, let content):
             try container.encode("agent_response", forKey: .type)

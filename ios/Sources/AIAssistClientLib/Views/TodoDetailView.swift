@@ -233,6 +233,8 @@ public struct TodoDetailView: View {
             toolStartedRow(toolName: toolName)
         case .toolCompleted(_, let toolName, let success, let summary):
             ToolCompletedRowView(toolName: toolName, success: success, summary: summary)
+        case .reasoning(_, let content):
+            reasoningRow(content: content)
         case .agentResponse(_, let content):
             agentResponseRow(content: content)
         case .completed(_, let summary):
@@ -278,6 +280,20 @@ public struct TodoDetailView: View {
             Text("running...")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
+        }
+        .padding(.vertical, 2)
+    }
+
+    private func reasoningRow(content: String) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "brain.head.profile")
+                .font(.system(size: 14))
+                .foregroundStyle(.purple.opacity(0.7))
+            Text(content)
+                .font(.subheadline)
+                .italic()
+                .foregroundStyle(.secondary)
+                .lineLimit(3)
         }
         .padding(.vertical, 2)
     }
