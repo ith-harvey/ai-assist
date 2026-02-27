@@ -11,6 +11,7 @@ pub mod routine_engine;
 pub mod session;
 pub mod session_manager;
 pub mod submission;
+pub mod todo_agent;
 pub mod tool_executor;
 pub mod undo;
 
