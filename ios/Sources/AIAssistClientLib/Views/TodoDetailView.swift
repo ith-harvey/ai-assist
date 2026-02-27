@@ -201,7 +201,15 @@ public struct TodoDetailView: View {
 
             if let latest = activitySocket.latestActivity {
                 // Show only the latest event — replaces on each update
-                activityRow(latest)
+                // Non-terminal events get a spinner to show the agent is still working
+                HStack(alignment: .top, spacing: 8) {
+                    if !latest.isTerminal {
+                        ProgressView()
+                            .controlSize(.mini)
+                            .padding(.top, 4)
+                    }
+                    activityRow(latest)
+                }
                     .id(latest.id)
                     .padding(.horizontal, 20)
                     .animation(.easeInOut(duration: 0.2), value: latest.id)
@@ -251,8 +259,6 @@ public struct TodoDetailView: View {
 
     private func thinkingRow(iteration: UInt32) -> some View {
         HStack(spacing: 8) {
-            ProgressView()
-                .controlSize(.small)
             Text("Thinking...")
                 .font(.subheadline)
                 .italic()
@@ -268,8 +274,6 @@ public struct TodoDetailView: View {
 
     private func toolStartedRow(toolName: String) -> some View {
         HStack(spacing: 8) {
-            ProgressView()
-                .controlSize(.small)
             toolBadge(toolName)
             Text("running...")
                 .font(.subheadline)
