@@ -1,42 +1,35 @@
-//! Job scheduler for parallel execution.
+//! Job scheduler — tool execution and subtask management.
+//!
+//! Simplified from the original full Worker lifecycle manager. The Scheduler
+//! now provides:
+//! - `execute_tool()` — run a single tool within a job context
+//! - `spawn_subtask()` — background task execution
+//! - `schedule()` — temporary bridge for pickup loop (sets status, no-op execution)
+//! - Job tracking and cancellation
 
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::sync::{broadcast, mpsc, oneshot, RwLock};
+use tokio::sync::{broadcast, oneshot, RwLock};
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 
 use crate::config::AgentConfig;
 use crate::error::{Error, JobError};
-use crate::llm::LlmProvider;
 use crate::safety::SafetyLayer;
 use crate::store::Database;
 use crate::todos::activity::TodoActivityMessage;
 use crate::tools::ToolRegistry;
-use crate::workspace::Workspace;
 use crate::worker::context::ContextManager;
 use crate::worker::state::JobState;
 use crate::worker::task::{Task, TaskContext, TaskOutput};
-use crate::worker::worker::{Worker, WorkerDeps};
+use crate::worker::worker::Worker;
 
-/// Message to send to a worker.
+/// Tracked job handle.
 #[derive(Debug)]
-pub enum WorkerMessage {
-    /// Start working on the job.
-    Start,
-    /// Stop the job.
-    Stop,
-    /// Check health.
-    Ping,
-}
-
-/// Status of a scheduled job.
-#[derive(Debug)]
-pub struct ScheduledJob {
-    pub handle: JoinHandle<()>,
-    pub tx: mpsc::Sender<WorkerMessage>,
+struct TrackedJob {
+    handle: JoinHandle<()>,
 }
 
 /// Status of a scheduled sub-task.
@@ -44,19 +37,17 @@ struct ScheduledSubtask {
     handle: JoinHandle<Result<TaskOutput, Error>>,
 }
 
-/// Schedules and manages parallel job execution.
+/// Schedules tool execution and manages background tasks.
 pub struct Scheduler {
     config: AgentConfig,
     context_manager: Arc<ContextManager>,
-    llm: Arc<dyn LlmProvider>,
     safety: Arc<SafetyLayer>,
     tools: Arc<ToolRegistry>,
     store: Option<Arc<dyn Database>>,
-    workspace: Arc<Workspace>,
     activity_tx: broadcast::Sender<TodoActivityMessage>,
-    /// Running jobs (main LLM-driven jobs).
-    jobs: Arc<RwLock<HashMap<Uuid, ScheduledJob>>>,
-    /// Running sub-tasks (tool executions, background tasks).
+    /// Tracked jobs (for status queries and cancellation).
+    jobs: Arc<RwLock<HashMap<Uuid, TrackedJob>>>,
+    /// Running sub-tasks.
     subtasks: Arc<RwLock<HashMap<Uuid, ScheduledSubtask>>>,
 }
 
@@ -65,110 +56,78 @@ impl Scheduler {
     pub fn new(
         config: AgentConfig,
         context_manager: Arc<ContextManager>,
-        llm: Arc<dyn LlmProvider>,
         safety: Arc<SafetyLayer>,
         tools: Arc<ToolRegistry>,
         store: Option<Arc<dyn Database>>,
-        workspace: Arc<Workspace>,
         activity_tx: broadcast::Sender<TodoActivityMessage>,
     ) -> Self {
         Self {
             config,
             context_manager,
-            llm,
             safety,
             tools,
             store,
-            workspace,
             activity_tx,
             jobs: Arc::new(RwLock::new(HashMap::new())),
             subtasks: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
-    /// Schedule a job for execution, optionally linked to a todo.
+    /// Temporary bridge: "schedule" a job by transitioning to InProgress.
+    ///
+    /// This is a no-op placeholder — it transitions the job state but does NOT
+    /// spawn a Worker. The Agent-per-todo system will replace this entirely.
     pub async fn schedule(
         &self,
         job_id: Uuid,
-        todo_id: Option<Uuid>,
+        _todo_id: Option<Uuid>,
     ) -> Result<(), JobError> {
-        {
-            let mut jobs = self.jobs.write().await;
+        let jobs = self.jobs.read().await;
+        if jobs.contains_key(&job_id) {
+            return Ok(());
+        }
+        if jobs.len() >= self.config.max_parallel_jobs {
+            return Err(JobError::MaxJobsExceeded {
+                max: self.config.max_parallel_jobs,
+            });
+        }
+        drop(jobs);
 
-            if jobs.contains_key(&job_id) {
-                return Ok(());
-            }
+        // Transition job to in_progress
+        self.context_manager
+            .update_context(job_id, |ctx| {
+                ctx.transition_to(
+                    JobState::InProgress,
+                    Some("Scheduled (awaiting agent system)".to_string()),
+                )
+            })
+            .await?
+            .map_err(|s| JobError::ContextError {
+                id: job_id,
+                reason: s,
+            })?;
 
-            if jobs.len() >= self.config.max_parallel_jobs {
-                return Err(JobError::MaxJobsExceeded {
-                    max: self.config.max_parallel_jobs,
-                });
-            }
+        tracing::info!("Job {} marked in_progress (bridge mode)", job_id);
+        Ok(())
+    }
 
-            // Transition job to in_progress
-            self.context_manager
-                .update_context(job_id, |ctx| {
-                    ctx.transition_to(
-                        JobState::InProgress,
-                        Some("Scheduled for execution".to_string()),
-                    )
-                })
-                .await?
-                .map_err(|s| JobError::ContextError {
-                    id: job_id,
-                    reason: s,
-                })?;
-
-            let (tx, rx) = mpsc::channel(16);
-
-            let deps = WorkerDeps {
+    /// Execute a single tool within a job context.
+    pub async fn execute_tool(
+        &self,
+        job_id: Uuid,
+        tool_name: &str,
+        params: &serde_json::Value,
+    ) -> Result<String, Error> {
+        let worker = Worker::new(
+            job_id,
+            crate::worker::worker::WorkerDeps {
                 context_manager: self.context_manager.clone(),
-                llm: self.llm.clone(),
                 safety: self.safety.clone(),
                 tools: self.tools.clone(),
                 store: self.store.clone(),
-                workspace: self.workspace.clone(),
-                activity_tx: self.activity_tx.clone(),
-                timeout: self.config.job_timeout,
-                use_planning: self.config.use_planning,
-                todo_id,
-            };
-            let worker = Worker::new(job_id, deps);
-
-            let handle = tokio::spawn(async move {
-                if let Err(e) = worker.run(rx).await {
-                    tracing::error!("Worker for job {} failed: {}", job_id, e);
-                }
-            });
-
-            let _ = tx.send(WorkerMessage::Start).await;
-
-            jobs.insert(job_id, ScheduledJob { handle, tx });
-        }
-
-        // Cleanup task for this job
-        let jobs = Arc::clone(&self.jobs);
-        tokio::spawn(async move {
-            loop {
-                let finished = {
-                    let jobs_read = jobs.read().await;
-                    match jobs_read.get(&job_id) {
-                        Some(scheduled) => scheduled.handle.is_finished(),
-                        None => true,
-                    }
-                };
-
-                if finished {
-                    jobs.write().await.remove(&job_id);
-                    break;
-                }
-
-                tokio::time::sleep(Duration::from_secs(1)).await;
-            }
-        });
-
-        tracing::info!("Scheduled job {} for execution", job_id);
-        Ok(())
+            },
+        );
+        worker.execute_tool(tool_name, params).await
     }
 
     /// Schedule a sub-task from within a worker.
@@ -296,9 +255,6 @@ impl Scheduler {
 
         let job_ctx = worker_ctx.to_job_context();
 
-        // Note: requires_approval() is NOT checked for Worker tool execution.
-        // The todo approval itself is the human gate. SafetyLayer still applies.
-
         let validation = safety.validator().validate_tool_params(&params);
         if !validation.is_valid {
             let details = validation
@@ -338,13 +294,9 @@ impl Scheduler {
     pub async fn stop(&self, job_id: Uuid) -> Result<(), JobError> {
         let mut jobs = self.jobs.write().await;
 
-        if let Some(scheduled) = jobs.remove(&job_id) {
-            let _ = scheduled.tx.send(WorkerMessage::Stop).await;
-
-            tokio::time::sleep(Duration::from_millis(100)).await;
-
-            if !scheduled.handle.is_finished() {
-                scheduled.handle.abort();
+        if let Some(tracked) = jobs.remove(&job_id) {
+            if !tracked.handle.is_finished() {
+                tracked.handle.abort();
             }
 
             self.context_manager
@@ -361,11 +313,7 @@ impl Scheduler {
                 let store = store.clone();
                 tokio::spawn(async move {
                     if let Err(e) = store
-                        .update_job_status(
-                            job_id,
-                            "cancelled",
-                            Some("Stopped by scheduler"),
-                        )
+                        .update_job_status(job_id, "cancelled", Some("Stopped by scheduler"))
                         .await
                     {
                         tracing::warn!("Failed to persist cancellation for job {}: {}", job_id, e);
