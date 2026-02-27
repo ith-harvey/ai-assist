@@ -180,11 +180,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let scheduler = Arc::new(Scheduler::new(
         agent_config.clone(),
         Arc::clone(&context_manager),
-        llm.clone(),
         Arc::clone(&safety),
         Arc::clone(&tools),
         Some(Arc::clone(&db)),
-        Arc::clone(&workspace),
         activity_tx.clone(),
     ));
     eprintln!(

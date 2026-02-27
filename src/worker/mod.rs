@@ -1,13 +1,12 @@
-//! Worker system — parallel job execution with scheduling.
+//! Worker system — tool execution with scheduling.
 //!
-//! Ported from IronClaw's agent execution system, adapted for AI Assist.
 //! Core components:
 //! - `task` — Task types (Job, ToolExec, Background)
 //! - `state` — Job state machine (Pending → InProgress → Completed/Failed)
 //! - `memory` — Per-job conversation + action history
 //! - `context` — ContextManager for multiple concurrent jobs
-//! - `worker` — Per-job worker execution loop
-//! - `scheduler` — Job scheduling and lifecycle management
+//! - `worker` — Simple tool executor (safety validation, parallel execution)
+//! - `scheduler` — Job scheduling, tool execution, subtask management
 
 pub mod context;
 pub mod memory;
