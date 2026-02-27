@@ -176,6 +176,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ── Worker System (Scheduler + ContextManager) ───────────────────
     let (activity_tx, _activity_rx) = tokio::sync::broadcast::channel::<TodoActivityMessage>(256);
+    // Create todo broadcast channel early so Scheduler can forward status updates to iOS
+    let (todo_tx, _todo_rx) = tokio::sync::broadcast::channel::<ai_assist::todos::model::TodoWsMessage>(256);
     let context_manager = Arc::new(ContextManager::new(agent_config.max_parallel_jobs));
     let scheduler = Arc::new(Scheduler::new(
         agent_config.clone(),
@@ -186,6 +188,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some(Arc::clone(&db)),
         Arc::clone(&workspace),
         activity_tx.clone(),
+        Some(todo_tx.clone()),
     ));
     eprintln!(
         "   Worker: enabled (max {} parallel jobs, {}s timeout)",
@@ -242,7 +245,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     eprintln!("   Tools: {} registered", tools.count());
 
     // ── Todo + Activity WebSocket State ──────────────────────────────
-    let todo_state = TodoState::with_scheduler(Arc::clone(&db), Arc::clone(&scheduler));
+    let todo_state = TodoState::with_shared_tx(Arc::clone(&db), todo_tx.clone(), Arc::clone(&scheduler));
     let activity_state = ActivityState::new(Arc::clone(&db), activity_tx.clone());
 
     // ── Todo Pickup Loop (auto-schedules AgentStartable todos) ──────

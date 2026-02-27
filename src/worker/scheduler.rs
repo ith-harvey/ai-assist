@@ -54,6 +54,8 @@ pub struct Scheduler {
     store: Option<Arc<dyn Database>>,
     workspace: Arc<Workspace>,
     activity_tx: broadcast::Sender<TodoActivityMessage>,
+    /// Broadcast sender for todo WebSocket updates (status changes from Workers).
+    todo_tx: Option<broadcast::Sender<crate::todos::model::TodoWsMessage>>,
     /// Running jobs (main LLM-driven jobs).
     jobs: Arc<RwLock<HashMap<Uuid, ScheduledJob>>>,
     /// Running sub-tasks (tool executions, background tasks).
@@ -71,6 +73,7 @@ impl Scheduler {
         store: Option<Arc<dyn Database>>,
         workspace: Arc<Workspace>,
         activity_tx: broadcast::Sender<TodoActivityMessage>,
+        todo_tx: Option<broadcast::Sender<crate::todos::model::TodoWsMessage>>,
     ) -> Self {
         Self {
             config,
@@ -81,6 +84,7 @@ impl Scheduler {
             store,
             workspace,
             activity_tx,
+            todo_tx,
             jobs: Arc::new(RwLock::new(HashMap::new())),
             subtasks: Arc::new(RwLock::new(HashMap::new())),
         }
@@ -129,6 +133,7 @@ impl Scheduler {
                 store: self.store.clone(),
                 workspace: self.workspace.clone(),
                 activity_tx: self.activity_tx.clone(),
+                todo_tx: self.todo_tx.clone(),
                 timeout: self.config.job_timeout,
                 use_planning: self.config.use_planning,
                 todo_id,

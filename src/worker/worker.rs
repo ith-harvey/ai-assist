@@ -30,6 +30,8 @@ pub struct WorkerDeps {
     pub store: Option<Arc<dyn Database>>,
     pub workspace: Arc<Workspace>,
     pub activity_tx: broadcast::Sender<TodoActivityMessage>,
+    /// Broadcast sender for todo WebSocket updates (status changes).
+    pub todo_tx: Option<broadcast::Sender<crate::todos::model::TodoWsMessage>>,
     pub timeout: Duration,
     pub use_planning: bool,
     /// The todo ID this worker is executing (for activity streaming).
@@ -746,6 +748,27 @@ impl Worker {
         .await
     }
 
+    /// Update the linked todo's status and broadcast the change to iOS.
+    fn update_todo_status(&self, status: crate::todos::model::TodoStatus) {
+        if let (Some(todo_id), Some(store)) = (self.deps.todo_id, self.store()) {
+            let store = store.clone();
+            let todo_tx = self.deps.todo_tx.clone();
+            let status_clone = status.clone();
+            tokio::spawn(async move {
+                if let Err(e) = store.update_todo_status(todo_id, status_clone).await {
+                    tracing::warn!(todo_id = %todo_id, error = %e, "Failed to update todo status");
+                    return;
+                }
+                // Broadcast updated todo to iOS
+                if let Some(tx) = todo_tx {
+                    if let Ok(Some(updated)) = store.get_todo(todo_id).await {
+                        let _ = tx.send(crate::todos::model::TodoWsMessage::TodoUpdated { todo: updated });
+                    }
+                }
+            });
+        }
+    }
+
     async fn mark_completed(&self) -> Result<(), Error> {
         self.context_manager()
             .update_context(self.job_id, |ctx| {
@@ -769,6 +792,10 @@ impl Worker {
             JobState::Completed,
             Some("Job completed successfully".to_string()),
         );
+
+        // Update todo status → ready_for_review
+        self.update_todo_status(crate::todos::model::TodoStatus::ReadyForReview);
+
         Ok(())
     }
 
@@ -789,6 +816,10 @@ impl Worker {
         });
 
         self.persist_status(JobState::Failed, Some(reason.to_string()));
+
+        // Update todo status → created (so it can be retried)
+        self.update_todo_status(crate::todos::model::TodoStatus::Created);
+
         Ok(())
     }
 
@@ -807,6 +838,10 @@ impl Worker {
         });
 
         self.persist_status(JobState::Stuck, Some(reason.to_string()));
+
+        // Update todo status → created (so it can be retried)
+        self.update_todo_status(crate::todos::model::TodoStatus::Created);
+
         Ok(())
     }
 }
