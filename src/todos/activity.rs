@@ -50,6 +50,11 @@ pub enum TodoActivityMessage {
         /// First 200 chars of the output or error.
         summary: String,
     },
+    /// The LLM is reasoning / thinking between tool calls.
+    Reasoning {
+        job_id: Uuid,
+        content: String,
+    },
     /// The LLM produced a text response (not a tool call).
     AgentResponse {
         job_id: Uuid,
@@ -75,6 +80,7 @@ impl TodoActivityMessage {
             | Self::Thinking { job_id, .. }
             | Self::ToolStarted { job_id, .. }
             | Self::ToolCompleted { job_id, .. }
+            | Self::Reasoning { job_id, .. }
             | Self::AgentResponse { job_id, .. }
             | Self::Completed { job_id, .. }
             | Self::Failed { job_id, .. } => *job_id,
@@ -101,6 +107,7 @@ impl TodoActivityMessage {
             Self::Thinking { .. } => "thinking".to_string(),
             Self::ToolStarted { .. } => "tool_started".to_string(),
             Self::ToolCompleted { .. } => "tool_completed".to_string(),
+            Self::Reasoning { .. } => "reasoning".to_string(),
             Self::AgentResponse { .. } => "agent_response".to_string(),
             Self::Completed { .. } => "completed".to_string(),
             Self::Failed { .. } => "failed".to_string(),
@@ -322,6 +329,25 @@ mod tests {
             content: "Hello".to_string(),
         };
         assert_eq!(msg.job_id(), id);
+    }
+
+    #[test]
+    fn activity_message_serde_reasoning() {
+        let id = Uuid::new_v4();
+        let msg = TodoActivityMessage::Reasoning {
+            job_id: id,
+            content: "Analyzing the codebase structure...".to_string(),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"reasoning\""));
+        assert!(json.contains("\"content\":\"Analyzing the codebase structure...\""));
+        assert!(!msg.is_terminal());
+        assert_eq!(msg.action_type(), "reasoning");
+        assert_eq!(msg.job_id(), id);
+
+        let parsed: TodoActivityMessage = serde_json::from_str(&json).unwrap();
+        assert!(matches!(parsed, TodoActivityMessage::Reasoning { .. }));
+        assert_eq!(parsed.job_id(), id);
     }
 
     #[test]
