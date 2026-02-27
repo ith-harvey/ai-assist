@@ -273,13 +273,6 @@ struct TodoRowView: View {
 
             Spacer()
 
-            // Priority indicator
-            if todo.priority <= 2 && todo.status != .completed {
-                Image(systemName: "exclamationmark.circle.fill")
-                    .font(.system(size: 14))
-                    .foregroundStyle(todo.priority == 1 ? .red : .orange)
-            }
-
             // Chevron to indicate pushable
             Image(systemName: "chevron.right")
                 .font(.system(size: 12, weight: .semibold))
