@@ -85,6 +85,44 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     eprintln!("   Database: {}", db_path);
 
+    // ── User Profile + Onboarding ──────────────────────────────────────
+    use ai_assist::onboarding::{OnboardingManager, OnboardingRouteState, UserProfile, onboarding_routes};
+    use tokio::sync::RwLock;
+
+    let user_profile: Arc<RwLock<Option<UserProfile>>> = Arc::new(RwLock::new(
+        db.get_setting("default", "user_profile")
+            .await
+            .ok()
+            .flatten()
+            .and_then(|v| serde_json::from_value(v).ok()),
+    ));
+
+    let onboarding_state: Arc<RwLock<ai_assist::onboarding::OnboardingState>> =
+        Arc::new(RwLock::new(
+            db.get_setting("default", "onboarding_state")
+                .await
+                .ok()
+                .flatten()
+                .and_then(|v| serde_json::from_value(v).ok())
+                .unwrap_or_default(),
+        ));
+
+    let onboarding_active = {
+        let profile = user_profile.read().await;
+        !profile
+            .as_ref()
+            .map(|p| p.onboarding_completed)
+            .unwrap_or(false)
+    };
+    eprintln!(
+        "   Onboarding: {}",
+        if onboarding_active {
+            "pending"
+        } else {
+            "completed"
+        }
+    );
+
     // ── Card System ─────────────────────────────────────────────────────
     let card_queue = CardQueue::with_db(Arc::clone(&db)).await;
 
@@ -137,7 +175,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let email_config_for_cards = EmailConfig::from_env();
 
     // ── Agent Config (created early — Scheduler needs it) ──────────────
-    let agent_config = AgentConfig::from_env();
+    let mut agent_config = AgentConfig::from_env();
 
     tracing::info!(
         max_workers = agent_config.max_parallel_jobs,
@@ -253,6 +291,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         workspace: Arc::clone(&workspace),
         activity_tx: activity_tx.clone(),
         todo_tx: todo_state.tx.clone(),
+        user_profile: Arc::clone(&user_profile),
     };
 
     let todo_state = TodoState::with_agents(
@@ -276,7 +315,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ios_channel = IosChannel::new(Some(Arc::clone(&db)));
     let ios_router = ios_channel.router();
 
-    // Spawn Axum WS/REST server — cards + iOS chat + todos + activity
+    // ── Onboarding Manager ────────────────────────────────────────────
+    let onboarding_manager = Arc::new(OnboardingManager::new(
+        Arc::clone(&db),
+        llm.clone(),
+        Arc::clone(&user_profile),
+        Arc::clone(&onboarding_state),
+    ));
+    let onboarding_route_state = OnboardingRouteState {
+        manager: Arc::clone(&onboarding_manager),
+    };
+
+    // Spawn Axum WS/REST server — cards + iOS chat + todos + activity + onboarding
     let app = card_routes(
         card_queue.clone(),
         email_config_for_cards,
@@ -284,7 +334,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .merge(ios_router)
     .merge(todo_routes(todo_state))
-    .merge(activity_routes(activity_state));
+    .merge(activity_routes(activity_state))
+    .merge(onboarding_routes(onboarding_route_state));
     tokio::spawn(async move {
         let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", ws_port))
             .await
@@ -294,6 +345,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     // ── Agent ───────────────────────────────────────────────────────────
+    // Build system prompt from workspace, injecting user profile if onboarding is complete
+    {
+        let profile_guard = user_profile.read().await;
+        let profile_ref = profile_guard.as_ref();
+        if let Ok(prompt) = workspace
+            .system_prompt_with_profile(profile_ref)
+            .await
+        {
+            if !prompt.is_empty() {
+                agent_config.system_prompt = Some(prompt);
+            }
+        }
+    }
+
     let llm_for_pipeline = llm.clone();
     let deps = AgentDeps {
         store: Some(Arc::clone(&db)),
@@ -304,6 +369,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         extension_manager: None,
         card_generator: Some(card_generator),
         routine_engine,
+        onboarding: Some(onboarding_manager),
     };
 
     // Set up channels
