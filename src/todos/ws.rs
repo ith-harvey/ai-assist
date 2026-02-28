@@ -16,6 +16,7 @@ use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use super::model::{TodoAction, TodoBucket, TodoItem, TodoStatus, TodoType, TodoWsMessage};
+use crate::agent::todo_agent::{ActiveAgentTracker, TodoAgentDeps};
 use crate::store::Database;
 
 /// Shared state for the todo WebSocket.
@@ -24,20 +25,31 @@ pub struct TodoState {
     pub db: Arc<dyn Database>,
     /// Broadcast channel for pushing updates to all connected clients.
     pub tx: broadcast::Sender<TodoWsMessage>,
-    /// Optional scheduler for spawning agent workers on AgentStartable todos.
-    pub scheduler: Option<Arc<crate::worker::Scheduler>>,
+    /// Shared deps for spawning todo agents.
+    pub agent_deps: Option<TodoAgentDeps>,
+    /// Concurrency tracker for active todo agents.
+    pub tracker: Option<Arc<ActiveAgentTracker>>,
 }
 
 impl TodoState {
     pub fn new(db: Arc<dyn Database>) -> Self {
         let (tx, _) = broadcast::channel(256);
-        Self { db, tx, scheduler: None }
+        Self { db, tx, agent_deps: None, tracker: None }
     }
 
-    /// Create with a scheduler attached for agent worker spawning.
-    pub fn with_scheduler(db: Arc<dyn Database>, scheduler: Arc<crate::worker::Scheduler>) -> Self {
+    /// Create with agent deps attached for instant todo pickup.
+    pub fn with_agents(
+        db: Arc<dyn Database>,
+        agent_deps: TodoAgentDeps,
+        tracker: Arc<ActiveAgentTracker>,
+    ) -> Self {
         let (tx, _) = broadcast::channel(256);
-        Self { db, tx, scheduler: Some(scheduler) }
+        Self {
+            db,
+            tx,
+            agent_deps: Some(agent_deps),
+            tracker: Some(tracker),
+        }
     }
 }
 
@@ -198,19 +210,18 @@ async fn handle_client_action(text: &str, state: &TodoState) -> Option<TodoWsMes
                         let todo_for_schedule = todo.clone();
                         let _ = state.tx.send(TodoWsMessage::TodoCreated { todo });
 
-                        // Instant pickup: schedule immediately if agent-startable
+                        // Instant pickup: spawn agent immediately if agent-startable
                         if is_agent_startable {
-                            if let Some(ref sched) = state.scheduler {
-                                let db = state.db.clone();
-                                let sched = Arc::clone(sched);
-                                let tx = state.tx.clone();
+                            if let (Some(deps), Some(tracker)) = (&state.agent_deps, &state.tracker) {
+                                let deps = deps.clone();
+                                let tracker = Arc::clone(tracker);
                                 tokio::spawn(async move {
-                                    if let Err(e) = crate::todos::pickup::try_schedule_todo(
-                                        &db, &sched, &todo_for_schedule,
+                                    if let Err(e) = crate::todos::pickup::try_spawn_agent(
+                                        &deps, &tracker, &todo_for_schedule,
                                     ).await {
                                         warn!(error = %e, "Instant pickup failed for WS-created todo");
-                                    } else if let Ok(Some(updated)) = db.get_todo(todo_for_schedule.id).await {
-                                        let _ = tx.send(TodoWsMessage::TodoUpdated { todo: updated });
+                                    } else if let Ok(Some(updated)) = deps.db.get_todo(todo_for_schedule.id).await {
+                                        let _ = deps.todo_tx.send(TodoWsMessage::TodoUpdated { todo: updated });
                                     }
                                 });
                             }
@@ -277,16 +288,20 @@ async fn handle_client_action(text: &str, state: &TodoState) -> Option<TodoWsMes
                             Ok(()) => {
                                 info!(id = %id, "Todo updated via WS");
 
-                                // Bridge: spawn worker when AgentStartable todo goes to AgentWorking
+                                // Bridge: spawn agent when AgentStartable todo goes to AgentWorking
                                 if todo.status == TodoStatus::AgentWorking
                                     && todo.bucket == TodoBucket::AgentStartable
                                 {
-                                    if let Some(ref scheduler) = state.scheduler {
-                                        spawn_worker_for_todo(
-                                            scheduler.clone(),
-                                            &todo,
-                                        )
-                                        .await;
+                                    if let (Some(deps), Some(tracker)) = (&state.agent_deps, &state.tracker) {
+                                        if let Err(e) = crate::todos::pickup::try_spawn_agent(
+                                            deps, tracker, &todo,
+                                        ).await {
+                                            warn!(
+                                                todo_id = %todo.id,
+                                                error = %e,
+                                                "Failed to spawn agent for todo status update"
+                                            );
+                                        }
                                     }
                                 }
 
@@ -447,20 +462,19 @@ async fn create_test_todo(
             info!(id = %todo_id, title = %todo.title, "Test todo created via REST");
             let _ = state.tx.send(TodoWsMessage::TodoCreated { todo: todo.clone() });
 
-            // Instant pickup: schedule immediately if agent-startable
+            // Instant pickup: spawn agent immediately if agent-startable
             if is_agent_startable {
-                if let Some(ref sched) = state.scheduler {
-                    let db = state.db.clone();
-                    let sched = Arc::clone(sched);
-                    let tx = state.tx.clone();
-                    let todo_for_schedule = todo;
+                if let (Some(deps), Some(tracker)) = (&state.agent_deps, &state.tracker) {
+                    let deps = deps.clone();
+                    let tracker = Arc::clone(tracker);
+                    let todo_for_spawn = todo;
                     tokio::spawn(async move {
-                        if let Err(e) = crate::todos::pickup::try_schedule_todo(
-                            &db, &sched, &todo_for_schedule,
+                        if let Err(e) = crate::todos::pickup::try_spawn_agent(
+                            &deps, &tracker, &todo_for_spawn,
                         ).await {
                             warn!(error = %e, "Instant pickup failed for REST-created todo");
-                        } else if let Ok(Some(updated)) = db.get_todo(todo_for_schedule.id).await {
-                            let _ = tx.send(TodoWsMessage::TodoUpdated { todo: updated });
+                        } else if let Ok(Some(updated)) = deps.db.get_todo(todo_for_spawn.id).await {
+                            let _ = deps.todo_tx.send(TodoWsMessage::TodoUpdated { todo: updated });
                         }
                     });
                 }
@@ -481,55 +495,3 @@ async fn create_test_todo(
     }
 }
 
-// ── Todo → Worker Bridge ────────────────────────────────────────────
-
-/// Spawn an agent worker for an AgentStartable todo.
-///
-/// Creates a job in the ContextManager and schedules it via the Scheduler.
-/// The worker will stream TodoActivityMessage events as it works.
-async fn spawn_worker_for_todo(
-    scheduler: Arc<crate::worker::Scheduler>,
-    todo: &TodoItem,
-) {
-    let description = todo
-        .description
-        .as_deref()
-        .unwrap_or(&todo.title)
-        .to_string();
-
-    // Create job context in the context manager
-    let job_result = scheduler
-        .context_manager()
-        .create_job_for_user(&todo.user_id, &todo.title, description)
-        .await;
-
-    match job_result {
-        Ok(job_id) => {
-            // Schedule the job, linking it to this todo
-            match scheduler.schedule(job_id, Some(todo.id)).await {
-                Ok(()) => {
-                    info!(
-                        todo_id = %todo.id,
-                        job_id = %job_id,
-                        title = %todo.title,
-                        "Spawned agent worker for todo"
-                    );
-                }
-                Err(e) => {
-                    warn!(
-                        todo_id = %todo.id,
-                        error = %e,
-                        "Failed to schedule agent worker"
-                    );
-                }
-            }
-        }
-        Err(e) => {
-            warn!(
-                todo_id = %todo.id,
-                error = %e,
-                "Failed to create job context for todo"
-            );
-        }
-    }
-}
