@@ -239,17 +239,38 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     eprintln!("   Tools: {} registered", tools.count());
 
-    // ── Todo + Activity WebSocket State ──────────────────────────────
-    let todo_state = TodoState::with_scheduler(Arc::clone(&db), Arc::clone(&scheduler));
+    // ── Todo Agent System ──────────────────────────────────────────────
+    let tracker = Arc::new(ai_assist::agent::todo_agent::ActiveAgentTracker::new(
+        agent_config.max_parallel_jobs,
+    ));
+
+    let todo_state = TodoState::new(Arc::clone(&db));
+    let todo_agent_deps = ai_assist::agent::todo_agent::TodoAgentDeps {
+        db: Arc::clone(&db),
+        llm: llm.clone(),
+        safety: Arc::clone(&safety),
+        tools: Arc::clone(&tools),
+        workspace: Arc::clone(&workspace),
+        activity_tx: activity_tx.clone(),
+        todo_tx: todo_state.tx.clone(),
+    };
+
+    let todo_state = TodoState::with_agents(
+        Arc::clone(&db),
+        todo_agent_deps.clone(),
+        Arc::clone(&tracker),
+    );
     let activity_state = ActivityState::new(Arc::clone(&db), activity_tx.clone());
 
-    // ── Todo Pickup Loop (auto-schedules AgentStartable todos) ──────
+    // ── Todo Pickup Loop (auto-spawns agents for AgentStartable todos) ──
     let _pickup_handle = ai_assist::todos::pickup::spawn_todo_pickup_loop(
-        Arc::clone(&db),
-        Arc::clone(&scheduler),
-        todo_state.tx.clone(),
+        todo_agent_deps,
+        Arc::clone(&tracker),
     );
-    eprintln!("   Todo pickup: enabled (every 15m, immediate on create)");
+    eprintln!(
+        "   Todo agents: enabled (max {} parallel, pickup every 15m)",
+        agent_config.max_parallel_jobs,
+    );
 
     // Create iOS channel (needs to exist before router build)
     let ios_channel = IosChannel::new(Some(Arc::clone(&db)));

@@ -1,23 +1,21 @@
-//! Todo pickup loop — auto-schedules AgentStartable todos for execution.
+//! Todo pickup loop — auto-spawns agents for AgentStartable todos.
 //!
 //! Runs on startup and every 15 minutes. Scans for `agent_startable` +
 //! `created` todos and transitions them to `agent_working`, then spawns
-//! a worker via the scheduler.
+//! a todo agent via the agent factory.
 //!
 //! On startup, resets any `agent_working` todos back to `created` (no
-//! jobs survive restart — they'll be re-picked up on the first sweep).
+//! agents survive restart — they'll be re-picked up on the first sweep).
 
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
-use tracing::{debug, error, info, warn};
-use uuid::Uuid;
+use tracing::{debug, info, warn};
 
+use crate::agent::todo_agent::{ActiveAgentTracker, TodoAgentDeps, spawn_todo_agent};
 use crate::store::Database;
 use crate::todos::model::{TodoBucket, TodoItem, TodoStatus, TodoWsMessage};
-use crate::worker::Scheduler;
 
 /// Default pickup interval: 15 minutes.
 const PICKUP_INTERVAL_SECS: u64 = 900;
@@ -26,13 +24,12 @@ const PICKUP_INTERVAL_SECS: u64 = 900;
 ///
 /// On first tick:
 /// 1. Reset stale `agent_working` todos → `created` (crash recovery)
-/// 2. Pick up `agent_startable` + `created` todos → schedule workers
+/// 2. Pick up `agent_startable` + `created` todos → spawn agents
 ///
 /// Then repeats every 15 minutes.
 pub fn spawn_todo_pickup_loop(
-    db: Arc<dyn Database>,
-    scheduler: Arc<Scheduler>,
-    todo_tx: broadcast::Sender<TodoWsMessage>,
+    deps: TodoAgentDeps,
+    tracker: Arc<ActiveAgentTracker>,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         info!("Todo pickup loop started (interval: {}s)", PICKUP_INTERVAL_SECS);
@@ -42,31 +39,30 @@ pub fn spawn_todo_pickup_loop(
         // First tick fires immediately
         loop {
             tick.tick().await;
-            run_pickup_cycle(&db, &scheduler, &todo_tx).await;
+            run_pickup_cycle(&deps, &tracker).await;
         }
     })
 }
 
-/// Single pickup cycle: reset stale → scan → schedule.
+/// Single pickup cycle: reset stale → scan → spawn.
 async fn run_pickup_cycle(
-    db: &Arc<dyn Database>,
-    scheduler: &Arc<Scheduler>,
-    todo_tx: &broadcast::Sender<TodoWsMessage>,
+    deps: &TodoAgentDeps,
+    tracker: &Arc<ActiveAgentTracker>,
 ) {
     // Phase 1: Reset stale agent_working todos (crash recovery)
-    reset_stale_todos(db, todo_tx).await;
+    reset_stale_todos(&deps.db, &deps.todo_tx).await;
 
     // Phase 2: Pick up eligible todos
-    pickup_eligible_todos(db, scheduler, todo_tx).await;
+    pickup_eligible_todos(deps, tracker).await;
 }
 
 /// Reset any `agent_working` todos back to `created`.
 ///
-/// On startup, no jobs survive — these are orphaned from a previous run.
+/// On startup, no agents survive — these are orphaned from a previous run.
 /// After first cycle, this is a no-op unless something crashed mid-execution.
 async fn reset_stale_todos(
     db: &Arc<dyn Database>,
-    todo_tx: &broadcast::Sender<TodoWsMessage>,
+    todo_tx: &tokio::sync::broadcast::Sender<TodoWsMessage>,
 ) {
     let working = match db.list_todos_by_status("default", TodoStatus::AgentWorking).await {
         Ok(todos) => todos,
@@ -94,13 +90,12 @@ async fn reset_stale_todos(
     }
 }
 
-/// Pick up eligible `agent_startable` + `created` todos and schedule them.
+/// Pick up eligible `agent_startable` + `created` todos and spawn agents.
 async fn pickup_eligible_todos(
-    db: &Arc<dyn Database>,
-    scheduler: &Arc<Scheduler>,
-    todo_tx: &broadcast::Sender<TodoWsMessage>,
+    deps: &TodoAgentDeps,
+    tracker: &Arc<ActiveAgentTracker>,
 ) {
-    let created = match db.list_todos_by_status("default", TodoStatus::Created).await {
+    let created = match deps.db.list_todos_by_status("default", TodoStatus::Created).await {
         Ok(todos) => todos,
         Err(e) => {
             warn!(error = %e, "Failed to list created todos for pickup");
@@ -122,64 +117,66 @@ async fn pickup_eligible_todos(
     info!(count = eligible.len(), "Found eligible todos for agent pickup");
 
     for todo in eligible {
-        // Check if scheduler has capacity
-        if let Err(e) = try_schedule_todo(db, scheduler, todo).await {
+        if let Err(e) = try_spawn_agent(deps, tracker, todo).await {
             warn!(
                 todo_id = %todo.id,
                 error = %e,
-                "Failed to schedule todo, will retry next cycle"
+                "Failed to spawn agent for todo, will retry next cycle"
             );
             continue;
         }
 
         // Broadcast the status change
-        if let Ok(Some(updated)) = db.get_todo(todo.id).await {
-            let _ = todo_tx.send(TodoWsMessage::TodoUpdated { todo: updated });
+        if let Ok(Some(updated)) = deps.db.get_todo(todo.id).await {
+            let _ = deps.todo_tx.send(TodoWsMessage::TodoUpdated { todo: updated });
         }
     }
 }
 
-/// Try to schedule a single todo for agent execution.
+/// Try to spawn an agent for a single todo.
 ///
-/// Transitions to `agent_working`, creates job context, and schedules.
-/// Returns Err if any step fails (todo stays as-is for retry).
-pub(crate) async fn try_schedule_todo(
-    db: &Arc<dyn Database>,
-    scheduler: &Arc<Scheduler>,
+/// Checks tracker capacity, transitions to `agent_working`, spawns agent,
+/// and sets up a cleanup task that releases the tracker slot on completion.
+pub(crate) async fn try_spawn_agent(
+    deps: &TodoAgentDeps,
+    tracker: &Arc<ActiveAgentTracker>,
     todo: &TodoItem,
-) -> Result<Uuid, String> {
+) -> Result<(), String> {
+    // Check capacity
+    if !tracker.try_acquire() {
+        return Err(format!(
+            "At agent capacity ({} active)",
+            tracker.active_count()
+        ));
+    }
+
     // Transition to agent_working
-    db.update_todo_status(todo.id, TodoStatus::AgentWorking)
-        .await
-        .map_err(|e| format!("status update failed: {e}"))?;
+    if let Err(e) = deps.db.update_todo_status(todo.id, TodoStatus::AgentWorking).await {
+        tracker.release();
+        return Err(format!("status update failed: {e}"));
+    }
 
-    let description = todo
-        .description
-        .as_deref()
-        .unwrap_or(&todo.title)
-        .to_string();
+    // Spawn the agent
+    let handle = match spawn_todo_agent(todo, deps).await {
+        Ok(h) => h,
+        Err(e) => {
+            tracker.release();
+            // Reset status back to created
+            let _ = deps.db.update_todo_status(todo.id, TodoStatus::Created).await;
+            return Err(format!("spawn failed: {e}"));
+        }
+    };
 
-    // Create job context
-    let job_id = scheduler
-        .context_manager()
-        .create_job_for_user(&todo.user_id, &todo.title, description)
-        .await
-        .map_err(|e| format!("create job failed: {e}"))?;
+    // Cleanup task: release tracker slot when agent finishes
+    let tracker_clone = Arc::clone(tracker);
+    let todo_id = todo.id;
+    tokio::spawn(async move {
+        let _ = handle.await;
+        tracker_clone.release();
+        tracing::info!(todo_id = %todo_id, "Todo agent finished, released tracker slot");
+    });
 
-    // Schedule for execution
-    scheduler
-        .schedule(job_id, Some(todo.id))
-        .await
-        .map_err(|e| format!("schedule failed: {e}"))?;
-
-    info!(
-        todo_id = %todo.id,
-        job_id = %job_id,
-        title = %todo.title,
-        "Scheduled agent worker for todo"
-    );
-
-    Ok(job_id)
+    Ok(())
 }
 
 #[cfg(test)]
