@@ -491,10 +491,6 @@ private struct ToolCompletedRowView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 8) {
-                Image(systemName: success ? "checkmark.circle.fill" : "xmark.circle.fill")
-                    .font(.system(size: 14))
-                    .foregroundStyle(success ? .green : .red)
-
                 Text(toolName)
                     .font(.system(size: 11, weight: .semibold, design: .monospaced))
                     .padding(.horizontal, 8)
