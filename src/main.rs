@@ -173,6 +173,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tools.register_sync(Arc::new(ai_assist::tools::builtin::file::ApplyPatchTool::new()));
     // Memory tools
     tools.register_memory_tools(Arc::clone(&workspace));
+    // Todo proposal tools
+    tools.register_todo_tools(card_queue.clone());
 
     // ── Worker System (Scheduler + ContextManager) ───────────────────
     let (activity_tx, _activity_rx) = tokio::sync::broadcast::channel::<TodoActivityMessage>(256);
@@ -281,6 +283,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         card_queue.clone(),
         email_config_for_cards,
         card_generator.clone(),
+        Some(Arc::clone(&db)),
+        Some(todo_state.tx.clone()),
+        Some(Arc::clone(&scheduler)),
     )
     .merge(ios_router)
     .merge(todo_routes(todo_state))
