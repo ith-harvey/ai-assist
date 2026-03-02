@@ -66,6 +66,7 @@ pub struct AgentDeps {
     pub extension_manager: Option<Arc<ExtensionManager>>,
     pub card_generator: Option<Arc<CardGenerator>>,
     pub routine_engine: Option<Arc<crate::agent::routine_engine::RoutineEngine>>,
+    pub onboarding: Option<Arc<crate::onboarding::OnboardingManager>>,
 }
 
 /// The main agent that coordinates all components.
@@ -563,13 +564,27 @@ impl Agent {
             thread.messages()
         };
 
-        // Prepend system prompt if configured and not already present
-        if let Some(ref prompt) = self.config.system_prompt
-            && !turn_messages
-                .iter()
-                .any(|m| m.role == crate::llm::Role::System)
+        // Prepend system prompt — onboarding overlay takes priority
         {
-            turn_messages.insert(0, ChatMessage::system(prompt));
+            let effective_prompt = if let Some(ref onboarding) = self.deps.onboarding {
+                if onboarding.is_active().await {
+                    // Start onboarding if first message
+                    onboarding.start_if_needed().await;
+                    Some(onboarding.system_prompt().await)
+                } else {
+                    self.config.system_prompt.clone()
+                }
+            } else {
+                self.config.system_prompt.clone()
+            };
+
+            if let Some(ref prompt) = effective_prompt
+                && !turn_messages
+                    .iter()
+                    .any(|m| m.role == crate::llm::Role::System)
+            {
+                turn_messages.insert(0, ChatMessage::system(prompt));
+            }
         }
 
         // Send thinking status

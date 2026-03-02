@@ -303,6 +303,34 @@ impl Workspace {
         }
         Ok(parts.join("\n\n---\n\n"))
     }
+
+    /// Load identity files with an optional UserProfile override.
+    ///
+    /// When the profile is present and onboarding is completed, the USER.md
+    /// section is replaced with the dynamic profile content. All other
+    /// identity files are loaded normally.
+    pub async fn system_prompt_with_profile(
+        &self,
+        profile: Option<&crate::onboarding::UserProfile>,
+    ) -> Result<String, WorkspaceError> {
+        let mut parts = Vec::new();
+        for &file in IDENTITY_FILES {
+            // Replace USER.md with dynamic profile when available
+            if file == paths::USER {
+                if let Some(p) = profile {
+                    if p.onboarding_completed {
+                        parts.push(p.to_system_prompt_section());
+                        continue;
+                    }
+                }
+            }
+            let path = self.resolve_path(file);
+            if path.exists() && let Ok(content) = fs::read_to_string(&path).await && !content.trim().is_empty() {
+                parts.push(format!("# {}\n\n{}", file, content));
+            }
+        }
+        Ok(parts.join("\n\n---\n\n"))
+    }
 }
 
 #[cfg(test)]

@@ -2,9 +2,14 @@ import SwiftUI
 
 /// Root tab bar view with 4 tabs: Home (todos), Messages, Calendar, Brain.
 /// Owns the shared CardWebSocket so silo counts drive live tab badges.
+///
+/// On first launch, checks onboarding status and presents a full-screen
+/// onboarding flow before showing the main tabs.
 public struct MainTabView: View {
     @State private var selectedTab = 0
     @State private var cardSocket = CardWebSocket()
+    @State private var onboardingManager = OnboardingManager()
+    @State private var showOnboarding = false
 
     public init() {}
 
@@ -55,9 +60,20 @@ public struct MainTabView: View {
         .tint(.accentColor)
         .onAppear {
             cardSocket.connect()
+            onboardingManager.checkStatus()
         }
         .onDisappear {
             cardSocket.disconnect()
+        }
+        .onChange(of: onboardingManager.hasCheckedStatus) { _, checked in
+            if checked && !onboardingManager.isOnboardingComplete {
+                showOnboarding = true
+            }
+        }
+        .fullScreenCover(isPresented: $showOnboarding) {
+            OnboardingView(isPresented: $showOnboarding) {
+                onboardingManager.markComplete()
+            }
         }
     }
 }

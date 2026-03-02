@@ -63,6 +63,11 @@ enum ServerMessage {
         content: String,
         thread_id: Option<String>,
     },
+    #[serde(rename = "onboarding_phase")]
+    OnboardingPhase {
+        phase: String,
+        completed: bool,
+    },
 }
 
 // ── History DTOs ────────────────────────────────────────────────────────
@@ -221,6 +226,13 @@ impl Channel for IosChannel {
                 content: text,
                 thread_id: None,
             },
+            StatusUpdate::Status(ref msg) if msg.starts_with("onboarding_phase:") => {
+                // Parse "onboarding_phase:<phase>:<completed>" format
+                let parts: Vec<&str> = msg.splitn(3, ':').collect();
+                let phase = parts.get(1).unwrap_or(&"unknown").to_string();
+                let completed = parts.get(2).map(|s| *s == "true").unwrap_or(false);
+                ServerMessage::OnboardingPhase { phase, completed }
+            }
             StatusUpdate::Status(msg) => ServerMessage::Status { message: msg },
             StatusUpdate::JobStarted { title, .. } => ServerMessage::Status { message: title },
             StatusUpdate::ApprovalNeeded {

@@ -252,6 +252,21 @@ public final class ChatWebSocket: @unchecked Sendable {
                 messages.append(aiMessage)
             }
 
+        // --- Onboarding ---
+
+        case "onboarding_phase":
+            // {"type":"onboarding_phase","phase":"complete","completed":true}
+            let phase = json["phase"] as? String ?? "unknown"
+            let completed = json["completed"] as? Bool ?? false
+            if completed {
+                // Post notification so OnboardingChatView can transition
+                NotificationCenter.default.post(
+                    name: Notification.Name("ai_assist_onboarding_completed"),
+                    object: nil,
+                    userInfo: ["phase": phase]
+                )
+            }
+
         default:
             break
         }

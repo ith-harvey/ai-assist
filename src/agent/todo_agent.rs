@@ -88,6 +88,7 @@ pub struct TodoAgentDeps {
     pub workspace: Arc<Workspace>,
     pub activity_tx: broadcast::Sender<TodoActivityMessage>,
     pub todo_tx: broadcast::Sender<TodoWsMessage>,
+    pub user_profile: Arc<tokio::sync::RwLock<Option<crate::onboarding::UserProfile>>>,
 }
 
 /// Spawn a new Agent wired to a TodoChannel for the given todo.
@@ -103,17 +104,30 @@ pub async fn spawn_todo_agent(
 ) -> Result<JoinHandle<()>, String> {
     let job_id = Uuid::new_v4();
 
-    // Build system prompt from workspace
+    // Build system prompt from workspace + user profile
     let worker_prompt = deps
         .workspace
         .worker_prompt()
         .await
         .unwrap_or_default();
 
-    let system_prompt = if worker_prompt.is_empty() {
+    let profile_section = {
+        let profile = deps.user_profile.read().await;
+        profile
+            .as_ref()
+            .filter(|p| p.onboarding_completed)
+            .map(|p| p.to_system_prompt_section())
+            .unwrap_or_default()
+    };
+
+    let system_prompt = if worker_prompt.is_empty() && profile_section.is_empty() {
         None
-    } else {
+    } else if profile_section.is_empty() {
         Some(worker_prompt)
+    } else if worker_prompt.is_empty() {
+        Some(profile_section)
+    } else {
+        Some(format!("{}\n\n---\n\n{}", worker_prompt, profile_section))
     };
 
     // Create the TodoChannel
@@ -143,7 +157,7 @@ pub async fn spawn_todo_agent(
         ..AgentConfig::default()
     };
 
-    // Build AgentDeps (no card_generator, routine_engine, extension_manager)
+    // Build AgentDeps (no card_generator, routine_engine, extension_manager, onboarding)
     let agent_deps = AgentDeps {
         store: Some(Arc::clone(&deps.db)),
         llm: Arc::clone(&deps.llm),
@@ -153,6 +167,7 @@ pub async fn spawn_todo_agent(
         extension_manager: None,
         card_generator: None,
         routine_engine: None,
+        onboarding: None,
     };
 
     // Emit Started activity

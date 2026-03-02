@@ -33,6 +33,52 @@ impl Agent {
     ) -> Result<SubmissionResult, Error> {
         match result {
             Ok(AgenticLoopResult::Response(response)) => {
+                // Post-process for onboarding (strip markers, extract data, advance phase)
+                let response = if let Some(ref onboarding) = self.deps.onboarding
+                    && onboarding.is_active().await
+                {
+                    let conversation = thread.messages();
+                    let result = onboarding
+                        .process_response(&response, &conversation)
+                        .await;
+
+                    // Notify iOS about phase transitions
+                    if let Some(ref phase) = result.phase_transition {
+                        let _ = self
+                            .channels
+                            .send_status(
+                                channel,
+                                crate::channels::StatusUpdate::Status(format!(
+                                    "onboarding_phase:{}:{}",
+                                    phase, result.onboarding_complete
+                                )),
+                                metadata,
+                            )
+                            .await;
+                    }
+
+                    // Create first todo if provided
+                    if let Some(ref todo_title) = result.todo_title {
+                        if let Some(store) = self.store() {
+                            let todo = crate::todos::model::TodoItem::new(
+                                "default",
+                                todo_title,
+                                crate::todos::model::TodoType::Research,
+                                crate::todos::model::TodoBucket::AgentStartable,
+                            );
+                            if let Err(e) = store.create_todo(&todo).await {
+                                tracing::warn!("Failed to create onboarding todo: {}", e);
+                            } else {
+                                tracing::info!("Created first todo from onboarding: {}", todo_title);
+                            }
+                        }
+                    }
+
+                    result.cleaned_response
+                } else {
+                    response
+                };
+
                 thread.complete_turn(&response);
                 self.persist_response_chain(thread);
                 let _ = self
