@@ -17,9 +17,15 @@ use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use super::generator::CardGenerator;
-use super::model::{ApprovalCard, CardAction, CardPayload, WsMessage};
+use super::model::{ApprovalCard, CardAction, CardPayload, CardSilo, WsMessage};
 use super::queue::CardQueue;
 use crate::channels::email::{EmailConfig, send_reply_email};
+use crate::store::Database;
+use crate::todos::model::{
+    TodoBucket, TodoItem, TodoType, TodoWsMessage,
+};
+use crate::worker::Scheduler;
+use tokio::sync::broadcast;
 
 /// Application state shared across handlers.
 #[derive(Clone)]
@@ -29,6 +35,12 @@ pub struct AppState {
     pub email_config: Option<EmailConfig>,
     /// Card generator for LLM-based refinement.
     pub generator: Arc<CardGenerator>,
+    /// Database for creating todos on card approval.
+    pub db: Option<Arc<dyn Database>>,
+    /// Broadcast sender for todo WebSocket updates.
+    pub todo_tx: Option<broadcast::Sender<TodoWsMessage>>,
+    /// Scheduler for instant pickup of AgentStartable todos.
+    pub scheduler: Option<Arc<Scheduler>>,
 }
 
 /// Build the Axum router with card WebSocket and REST routes.
@@ -36,11 +48,17 @@ pub fn card_routes(
     queue: Arc<CardQueue>,
     email_config: Option<EmailConfig>,
     generator: Arc<CardGenerator>,
+    db: Option<Arc<dyn Database>>,
+    todo_tx: Option<broadcast::Sender<TodoWsMessage>>,
+    scheduler: Option<Arc<Scheduler>>,
 ) -> Router {
     let state = AppState {
         queue,
         email_config,
         generator,
+        db,
+        todo_tx,
+        scheduler,
     };
 
     Router::new()
@@ -68,15 +86,11 @@ async fn health() -> impl IntoResponse {
 
 async fn ws_handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> impl IntoResponse {
     info!("WebSocket client connecting");
-    ws.on_upgrade(|socket| handle_socket(socket, state.queue, state.email_config, state.generator))
+    ws.on_upgrade(|socket| handle_socket(socket, state))
 }
 
-async fn handle_socket(
-    mut socket: WebSocket,
-    queue: Arc<CardQueue>,
-    email_config: Option<EmailConfig>,
-    generator: Arc<CardGenerator>,
-) {
+async fn handle_socket(mut socket: WebSocket, state: AppState) {
+    let queue = &state.queue;
     info!("WebSocket client connected");
 
     // Send all pending cards on connect
@@ -127,7 +141,7 @@ async fn handle_socket(
             result = socket.recv() => {
                 match result {
                     Some(Ok(Message::Text(text))) => {
-                        handle_client_message(&text, &queue, email_config.as_ref(), &generator).await;
+                        handle_client_message(&text, &state).await;
                     }
                     Some(Ok(Message::Ping(data))) => {
                         if socket.send(Message::Pong(data)).await.is_err() {
@@ -151,17 +165,20 @@ async fn handle_socket(
     info!("WebSocket connection closed");
 }
 
-async fn handle_client_message(
-    text: &str,
-    queue: &CardQueue,
-    email_config: Option<&EmailConfig>,
-    generator: &CardGenerator,
-) {
+async fn handle_client_message(text: &str, state: &AppState) {
+    let queue = &state.queue;
+    let email_config = state.email_config.as_ref();
+    let generator = &state.generator;
+
     match serde_json::from_str::<CardAction>(text) {
         Ok(action) => match action {
             CardAction::Approve { card_id } => {
                 if let Some(card) = queue.approve(card_id).await {
                     info!(card_id = %card_id, reply = ?card.payload.suggested_reply(), "Card approved via WS");
+                    // If this is a Todos-silo Action card, create the todo
+                    if card.silo == CardSilo::Todos {
+                        handle_todo_card_approval(&card, state).await;
+                    }
                     send_card_reply(&card, email_config, queue).await;
                 } else {
                     warn!(card_id = %card_id, "Approve failed — card not found or not pending");
@@ -233,6 +250,114 @@ async fn send_card_reply(card: &ApprovalCard, email_config: Option<&EmailConfig>
     }
 }
 
+/// Handle approval of a Todos-silo Action card by creating the proposed todo.
+///
+/// Parses the `action_detail` JSON to extract todo fields, creates the
+/// TodoItem, persists it, broadcasts to the todo WebSocket, and triggers
+/// instant pickup if the todo is AgentStartable.
+async fn handle_todo_card_approval(card: &ApprovalCard, state: &AppState) {
+    let action_detail = match &card.payload {
+        CardPayload::Action {
+            action_detail: Some(detail),
+            ..
+        } => detail.clone(),
+        _ => {
+            info!(card_id = %card.id, "Todos-silo card approved but no action_detail — skipping todo creation");
+            return;
+        }
+    };
+
+    // Parse the todo spec from action_detail
+    let spec: serde_json::Value = match serde_json::from_str(&action_detail) {
+        Ok(v) => v,
+        Err(e) => {
+            warn!(card_id = %card.id, error = %e, "Failed to parse todo spec from action_detail");
+            return;
+        }
+    };
+
+    let title = match spec.get("title").and_then(|v| v.as_str()) {
+        Some(t) => t.to_string(),
+        None => {
+            warn!(card_id = %card.id, "Todo spec missing title");
+            return;
+        }
+    };
+
+    let todo_type: TodoType = spec
+        .get("todo_type")
+        .and_then(|v| v.as_str())
+        .and_then(|s| serde_json::from_value(serde_json::Value::String(s.to_string())).ok())
+        .unwrap_or(TodoType::Deliverable);
+
+    let bucket: TodoBucket = spec
+        .get("bucket")
+        .and_then(|v| v.as_str())
+        .and_then(|s| serde_json::from_value(serde_json::Value::String(s.to_string())).ok())
+        .unwrap_or(TodoBucket::HumanOnly);
+
+    let mut todo = TodoItem::new("default", &title, todo_type, bucket)
+        .with_source_card(card.id);
+
+    if let Some(desc) = spec.get("description").and_then(|v| v.as_str()) {
+        todo = todo.with_description(desc);
+    }
+    if let Some(priority) = spec.get("priority").and_then(|v| v.as_i64()) {
+        todo = todo.with_priority(priority as i32);
+    }
+
+    // Persist to DB
+    let db = match &state.db {
+        Some(db) => db,
+        None => {
+            warn!(card_id = %card.id, "No database configured — cannot create todo from card");
+            return;
+        }
+    };
+
+    if let Err(e) = db.create_todo(&todo).await {
+        tracing::error!(card_id = %card.id, error = %e, "Failed to create todo from approved card");
+        return;
+    }
+
+    info!(
+        card_id = %card.id,
+        todo_id = %todo.id,
+        title = %todo.title,
+        bucket = ?todo.bucket,
+        "Created todo from approved card"
+    );
+
+    // Broadcast to todo WebSocket
+    let is_agent_startable = todo.bucket == TodoBucket::AgentStartable;
+    let todo_for_schedule = todo.clone();
+    if let Some(ref tx) = state.todo_tx {
+        let _ = tx.send(TodoWsMessage::TodoCreated { todo });
+    }
+
+    // Instant pickup if AgentStartable
+    if is_agent_startable {
+        if let Some(ref sched) = state.scheduler {
+            let db = db.clone();
+            let sched = Arc::clone(sched);
+            let tx = state.todo_tx.clone();
+            tokio::spawn(async move {
+                if let Err(e) = crate::todos::pickup::try_schedule_todo(
+                    &db, &sched, &todo_for_schedule,
+                )
+                .await
+                {
+                    warn!(error = %e, "Instant pickup failed for card-created todo");
+                } else if let Some(tx) = tx {
+                    if let Ok(Some(updated)) = db.get_todo(todo_for_schedule.id).await {
+                        let _ = tx.send(TodoWsMessage::TodoUpdated { todo: updated });
+                    }
+                }
+            });
+        }
+    }
+}
+
 // ── REST Endpoints ──────────────────────────────────────────────────────
 
 async fn list_cards(State(state): State<AppState>) -> impl IntoResponse {
@@ -253,6 +378,10 @@ async fn approve_card(State(state): State<AppState>, Path(id): Path<String>) -> 
 
     match state.queue.approve(card_id).await {
         Some(card) => {
+            // If this is a Todos-silo Action card, create the todo
+            if card.silo == CardSilo::Todos {
+                handle_todo_card_approval(&card, &state).await;
+            }
             send_card_reply(&card, state.email_config.as_ref(), &state.queue).await;
             (StatusCode::OK, Json(serde_json::json!(card)))
         }

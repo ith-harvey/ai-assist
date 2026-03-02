@@ -66,7 +66,7 @@ async fn start_server() -> (u16, Arc<CardQueue>) {
         Arc::clone(&queue),
         GeneratorConfig::default(),
     ));
-    let app = card_routes(Arc::clone(&queue), None, generator);
+    let app = card_routes(Arc::clone(&queue), None, generator, None, None, None);
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();

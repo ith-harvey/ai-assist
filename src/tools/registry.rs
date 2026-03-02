@@ -171,6 +171,12 @@ impl ToolRegistry {
         self.register_sync(Arc::new(MemoryReadTool::new(workspace.clone())));
         self.register_sync(Arc::new(MemoryTreeTool::new(workspace)));
     }
+
+    /// Register todo proposal tools.
+    pub fn register_todo_tools(&self, card_queue: Arc<crate::cards::queue::CardQueue>) {
+        use crate::tools::builtin::todo::*;
+        self.register_sync(Arc::new(ProposeTodoTool::new(card_queue)));
+    }
 }
 
 impl Default for ToolRegistry {
