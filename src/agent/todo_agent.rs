@@ -12,59 +12,6 @@ use uuid::Uuid;
 
 use tracing::Instrument;
 
-// ── Log Cleanup ──────────────────────────────────────────────────────
-
-const MAX_LOG_FILES: usize = 100;
-
-/// Delete oldest `.log` files in `data/logs/` when count exceeds MAX_LOG_FILES.
-///
-/// Files are sorted by name (which sorts by timestamp since names start with
-/// `YYYY-MM-DDT...`). Fire-and-forget — errors are logged but not propagated.
-pub fn spawn_log_cleanup() {
-    tokio::spawn(async {
-        if let Err(e) = cleanup_old_logs().await {
-            tracing::debug!(error = %e, "Log cleanup skipped");
-        }
-    });
-}
-
-async fn cleanup_old_logs() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let log_dir = "data/logs";
-    let mut entries = tokio::fs::read_dir(log_dir).await?;
-
-    let mut log_files: Vec<String> = Vec::new();
-    while let Some(entry) = entries.next_entry().await? {
-        let name = entry.file_name().to_string_lossy().to_string();
-        // Only count per-run .log files (timestamp-prefixed), skip rolling appender files
-        if name.ends_with(".log") && name.contains('T') {
-            log_files.push(name);
-        }
-    }
-
-    if log_files.len() <= MAX_LOG_FILES {
-        return Ok(());
-    }
-
-    // Sort ascending by name (oldest first since names start with timestamp)
-    log_files.sort();
-
-    let to_delete = log_files.len() - MAX_LOG_FILES;
-    tracing::info!(
-        total = log_files.len(),
-        deleting = to_delete,
-        "Cleaning up old per-run log files"
-    );
-
-    for name in log_files.iter().take(to_delete) {
-        let path = format!("{}/{}", log_dir, name);
-        if let Err(e) = tokio::fs::remove_file(&path).await {
-            tracing::warn!(path = %path, error = %e, "Failed to delete old log file");
-        }
-    }
-
-    Ok(())
-}
-
 use crate::agent::agent_loop::{Agent, AgentDeps};
 use crate::channels::todo_channel::TodoChannel;
 use crate::channels::ChannelManager;
@@ -209,9 +156,6 @@ pub async fn spawn_todo_agent(
         card_generator: None,
         routine_engine: None,
     };
-
-    // Fire-and-forget: clean up old per-run log files if over limit
-    spawn_log_cleanup();
 
     // Emit Started activity
     let _ = deps.activity_tx.send(TodoActivityMessage::Started {
