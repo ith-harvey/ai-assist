@@ -17,22 +17,30 @@ use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use super::generator::CardGenerator;
-use super::model::{ApprovalCard, CardAction, CardPayload, WsMessage};
+use super::handler::{CardActionContext, handler_for};
+use super::model::{ApprovalCard, CardAction, WsMessage};
 use super::queue::CardQueue;
-use crate::channels::email::{EmailConfig, send_reply_email};
-use crate::channels::IncomingMessage;
+use crate::channels::email::EmailConfig;
 use crate::todos::approval_registry::TodoApprovalRegistry;
 
 /// Application state shared across handlers.
 #[derive(Clone)]
 pub struct AppState {
     pub queue: Arc<CardQueue>,
-    /// Email configuration for sending replies (None if email channel is disabled).
     pub email_config: Option<EmailConfig>,
-    /// Card generator for LLM-based refinement.
     pub generator: Arc<CardGenerator>,
-    /// Registry of pending todo agent tool approvals.
     pub approval_registry: TodoApprovalRegistry,
+}
+
+impl AppState {
+    /// Build a `CardActionContext` from this state (borrows cheaply via Arc/Clone).
+    fn action_context(&self) -> CardActionContext {
+        CardActionContext {
+            queue: Arc::clone(&self.queue),
+            email_config: self.email_config.clone(),
+            approval_registry: self.approval_registry.clone(),
+        }
+    }
 }
 
 /// Build the Axum router with card WebSocket and REST routes.
@@ -74,20 +82,14 @@ async fn health() -> impl IntoResponse {
 
 async fn ws_handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> impl IntoResponse {
     info!("WebSocket client connecting");
-    ws.on_upgrade(|socket| handle_socket(socket, state.queue, state.email_config, state.generator, state.approval_registry))
+    ws.on_upgrade(|socket| handle_socket(socket, state))
 }
 
-async fn handle_socket(
-    mut socket: WebSocket,
-    queue: Arc<CardQueue>,
-    email_config: Option<EmailConfig>,
-    generator: Arc<CardGenerator>,
-    approval_registry: TodoApprovalRegistry,
-) {
+async fn handle_socket(mut socket: WebSocket, state: AppState) {
     info!("WebSocket client connected");
 
     // Send all pending cards on connect
-    let pending = queue.pending().await;
+    let pending = state.queue.pending().await;
     let sync_msg = WsMessage::CardsSync { cards: pending };
     if let Ok(json) = serde_json::to_string(&sync_msg) {
         if socket.send(Message::Text(json.into())).await.is_err() {
@@ -97,7 +99,7 @@ async fn handle_socket(
     }
 
     // Subscribe to broadcast channel for real-time updates
-    let mut rx = queue.subscribe();
+    let mut rx = state.queue.subscribe();
 
     loop {
         tokio::select! {
@@ -114,8 +116,7 @@ async fn handle_socket(
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
                         warn!(missed = n, "WS client lagged behind broadcast");
-                        // Re-sync by sending all pending cards
-                        let pending = queue.pending().await;
+                        let pending = state.queue.pending().await;
                         let sync = WsMessage::CardsSync { cards: pending };
                         if let Ok(json) = serde_json::to_string(&sync) {
                             if socket.send(Message::Text(json.into())).await.is_err() {
@@ -134,7 +135,7 @@ async fn handle_socket(
             result = socket.recv() => {
                 match result {
                     Some(Ok(Message::Text(text))) => {
-                        handle_client_message(&text, &queue, email_config.as_ref(), &generator, &approval_registry).await;
+                        handle_client_message(&text, &state).await;
                     }
                     Some(Ok(Message::Ping(data))) => {
                         if socket.send(Message::Pong(data)).await.is_err() {
@@ -158,38 +159,31 @@ async fn handle_socket(
     info!("WebSocket connection closed");
 }
 
-async fn handle_client_message(
-    text: &str,
-    queue: &CardQueue,
-    email_config: Option<&EmailConfig>,
-    generator: &CardGenerator,
-    approval_registry: &TodoApprovalRegistry,
-) {
+async fn handle_client_message(text: &str, state: &AppState) {
+    let ctx = state.action_context();
+
     match serde_json::from_str::<CardAction>(text) {
         Ok(action) => match action {
             CardAction::Approve { card_id } => {
-                if let Some(card) = queue.approve(card_id).await {
-                    info!(card_id = %card_id, reply = ?card.payload.suggested_reply(), "Card approved via WS");
-                    // Check if this is a todo agent approval card
-                    resolve_todo_approval(card_id, true, approval_registry).await;
-                    send_card_reply(&card, email_config, queue).await;
+                if let Some(card) = state.queue.approve(card_id).await {
+                    info!(card_id = %card_id, "Card approved via WS");
+                    handler_for(&card).on_approve(&card, &ctx).await;
                 } else {
                     warn!(card_id = %card_id, "Approve failed — card not found or not pending");
                 }
             }
             CardAction::Dismiss { card_id } => {
-                if queue.dismiss(card_id).await {
+                if let Some(card) = state.queue.dismiss(card_id).await {
                     info!(card_id = %card_id, "Card dismissed via WS");
-                    // Check if this is a todo agent approval card
-                    resolve_todo_approval(card_id, false, approval_registry).await;
+                    handler_for(&card).on_dismiss(&card, &ctx).await;
                 } else {
                     warn!(card_id = %card_id, "Dismiss failed — card not found or not pending");
                 }
             }
             CardAction::Edit { card_id, new_text } => {
-                if let Some(card) = queue.edit(card_id, new_text).await {
-                    info!(card_id = %card_id, reply = ?card.payload.suggested_reply(), "Card edited and approved via WS");
-                    send_card_reply(&card, email_config, queue).await;
+                if let Some(card) = state.queue.edit(card_id, new_text.clone()).await {
+                    info!(card_id = %card_id, "Card edited and approved via WS");
+                    handler_for(&card).on_edit(&card, &new_text, &ctx).await;
                 } else {
                     warn!(card_id = %card_id, "Edit failed — card not found or not pending");
                 }
@@ -197,7 +191,7 @@ async fn handle_client_message(
             CardAction::Refine {
                 card_id,
                 instruction,
-            } => match queue.refine(card_id, instruction, generator).await {
+            } => match state.queue.refine(card_id, instruction, &state.generator).await {
                 Ok(_card) => info!(card_id = %card_id, "Card refined via WS"),
                 Err(e) => warn!(card_id = %card_id, error = %e, "Refine failed via WS"),
             },
@@ -206,89 +200,6 @@ async fn handle_client_message(
             debug!(error = %e, text = text, "Unrecognized WS message from client");
         }
     }
-}
-
-/// Send the reply for an approved/edited card via the originating channel.
-///
-/// For email cards with reply_metadata, sends a reply-all email with threading headers.
-/// Marks the card as sent on success.
-async fn send_card_reply(card: &ApprovalCard, email_config: Option<&EmailConfig>, queue: &CardQueue) {
-    if let CardPayload::Reply { ref channel, ref reply_metadata, ref suggested_reply, .. } = card.payload {
-        if channel == "email" {
-            if let (Some(config), Some(meta)) = (email_config, reply_metadata) {
-                match send_reply_email(config, meta, suggested_reply) {
-                    Ok(()) => {
-                        queue.mark_sent(card.id).await;
-                        info!(card_id = %card.id, "Reply email sent successfully");
-                    }
-                    Err(e) => {
-                        tracing::error!(card_id = %card.id, error = %e, "Failed to send reply email");
-                    }
-                }
-            } else {
-                warn!(
-                    card_id = %card.id,
-                    "Cannot send email reply — missing email config or reply_metadata"
-                );
-            }
-        } else {
-            // Non-email channels: log for now
-            info!(
-                card_id = %card.id,
-                channel = %channel,
-                "Card approved on non-email channel — reply not sent (not yet wired)"
-            );
-        }
-    } else {
-        // Non-reply card types — approval doesn't trigger sending
-        info!(card_id = %card.id, card_type = card.card_type_str(), "Non-reply card approved");
-    }
-}
-
-// ── Todo Agent Approval Resolution ──────────────────────────────────────
-
-/// Resolve a pending todo agent tool approval by sending a message back into
-/// the agent's mpsc stream. The agent's `process_approval()` handles the rest.
-async fn resolve_todo_approval(
-    card_id: Uuid,
-    approved: bool,
-    registry: &TodoApprovalRegistry,
-) {
-    if let Some(pending) = registry.take(card_id).await {
-        // Build the approval response as the agent expects it
-        let content = if approved {
-            format!(
-                "{{\"ExecApproval\":{{\"request_id\":\"{}\",\"approved\":true,\"always\":false}}}}",
-                pending.request_id
-            )
-        } else {
-            format!(
-                "{{\"ExecApproval\":{{\"request_id\":\"{}\",\"approved\":false,\"always\":false}}}}",
-                pending.request_id
-            )
-        };
-
-        let msg = IncomingMessage::new("todo", "todo-agent", content);
-
-        match pending.tx.send(msg).await {
-            Ok(()) => {
-                info!(
-                    card_id = %card_id,
-                    todo_id = %pending.todo_id,
-                    approved,
-                    "Sent approval response to todo agent"
-                );
-            }
-            Err(e) => {
-                warn!(
-                    card_id = %card_id,
-                    error = %e,
-                    "Failed to send approval response — agent may have exited"
-                );
-            }
-        }
-    }
-    // If not in registry, this wasn't a todo agent card — no-op
 }
 
 // ── REST Endpoints ──────────────────────────────────────────────────────
@@ -311,8 +222,8 @@ async fn approve_card(State(state): State<AppState>, Path(id): Path<String>) -> 
 
     match state.queue.approve(card_id).await {
         Some(card) => {
-            resolve_todo_approval(card_id, true, &state.approval_registry).await;
-            send_card_reply(&card, state.email_config.as_ref(), &state.queue).await;
+            let ctx = state.action_context();
+            handler_for(&card).on_approve(&card, &ctx).await;
             (StatusCode::OK, Json(serde_json::json!(card)))
         }
         None => (
@@ -333,17 +244,19 @@ async fn dismiss_card(State(state): State<AppState>, Path(id): Path<String>) -> 
         }
     };
 
-    if state.queue.dismiss(card_id).await {
-        resolve_todo_approval(card_id, false, &state.approval_registry).await;
-        (
-            StatusCode::OK,
-            Json(serde_json::json!({"status": "dismissed"})),
-        )
-    } else {
-        (
+    match state.queue.dismiss(card_id).await {
+        Some(card) => {
+            let ctx = state.action_context();
+            handler_for(&card).on_dismiss(&card, &ctx).await;
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({"status": "dismissed"})),
+            )
+        }
+        None => (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({"error": "Card not found or not pending"})),
-        )
+        ),
     }
 }
 
@@ -367,9 +280,10 @@ async fn edit_card(
         }
     };
 
-    match state.queue.edit(card_id, body.text).await {
+    match state.queue.edit(card_id, body.text.clone()).await {
         Some(card) => {
-            send_card_reply(&card, state.email_config.as_ref(), &state.queue).await;
+            let ctx = state.action_context();
+            handler_for(&card).on_edit(&card, &body.text, &ctx).await;
             (StatusCode::OK, Json(serde_json::json!(card)))
         }
         None => (

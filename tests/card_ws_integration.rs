@@ -20,6 +20,7 @@ use ai_assist::cards::generator::{CardGenerator, GeneratorConfig};
 use ai_assist::cards::model::{CardAction, ApprovalCard};
 use ai_assist::cards::queue::CardQueue;
 use ai_assist::cards::ws::card_routes;
+use ai_assist::todos::approval_registry::TodoApprovalRegistry;
 use ai_assist::error::LlmError;
 use ai_assist::llm::provider::{
     CompletionRequest, CompletionResponse, FinishReason, LlmProvider, ToolCompletionRequest,
@@ -66,7 +67,7 @@ async fn start_server() -> (u16, Arc<CardQueue>) {
         Arc::clone(&queue),
         GeneratorConfig::default(),
     ));
-    let app = card_routes(Arc::clone(&queue), None, generator);
+    let app = card_routes(Arc::clone(&queue), None, generator, TodoApprovalRegistry::new());
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();

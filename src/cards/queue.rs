@@ -134,13 +134,13 @@ impl CardQueue {
     }
 
     /// Dismiss a card.
-    pub async fn dismiss(&self, card_id: Uuid) -> bool {
+    pub async fn dismiss(&self, card_id: Uuid) -> Option<ApprovalCard> {
         let mut cards = self.cards.write().await;
 
         if let Some(card) = cards.iter_mut().find(|c| c.id == card_id) {
             if card.status != CardStatus::Pending {
                 debug!(card_id = %card_id, status = ?card.status, "Cannot dismiss non-pending card");
-                return false;
+                return None;
             }
 
             // Persist to DB
@@ -161,15 +161,17 @@ impl CardQueue {
 
             info!(card_id = %card_id, "Card dismissed");
 
+            let dismissed = card.clone();
+
             let _ = self.tx.send(WsMessage::CardUpdate {
                 id: card_id,
                 status: CardStatus::Dismissed,
             });
             self.broadcast_silo_counts_from(&cards);
 
-            true
+            Some(dismissed)
         } else {
-            false
+            None
         }
     }
 
@@ -487,7 +489,7 @@ mod tests {
         let card_id = card.id;
         queue.push(card).await;
 
-        assert!(queue.dismiss(card_id).await);
+        assert!(queue.dismiss(card_id).await.is_some());
         assert!(queue.pending().await.is_empty());
     }
 
