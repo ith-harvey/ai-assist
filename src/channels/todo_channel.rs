@@ -235,14 +235,12 @@ impl Channel for TodoChannel {
                 "📝 Dumping agent transcript"
             );
 
-            // Write transcript to disk as human-readable log
-            let log_dir = "data/logs/transcripts";
+            // Write per-run log file to data/logs/
+            let log_dir = "data/logs";
             let _ = tokio::fs::create_dir_all(log_dir).await;
-            let filename = format!("{}/{}-{}.log",
-                log_dir,
-                &self.todo_id.to_string()[..8],
-                &self.job_id.to_string()[..8],
-            );
+            let timestamp = chrono::Utc::now().format("%Y-%m-%dT%H-%M-%SZ");
+            let todo_short = &self.todo_id.to_string()[..8];
+            let filename = format!("{}/{}-{}.log", log_dir, timestamp, todo_short);
 
             let mut content = String::new();
             content.push_str(&format!("Todo: {}\n", self.todo_title));
@@ -260,9 +258,9 @@ impl Channel for TodoChannel {
                 content.push_str(&format!("{}\n\n", msg.content));
             }
             if let Err(e) = tokio::fs::write(&filename, &content).await {
-                tracing::warn!(error = %e, "Failed to write transcript log");
+                tracing::warn!(error = %e, "Failed to write per-run log");
             } else {
-                tracing::info!(path = %filename, "📝 Transcript written to disk");
+                tracing::info!(path = %filename, "📝 Per-run log written to disk");
             }
 
             self.emit(TodoActivityMessage::Transcript {
