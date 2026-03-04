@@ -73,7 +73,7 @@ public final class ChatWebSocket: @unchecked Sendable {
     /// IDs of messages loaded from history, used to dedup live WS messages.
     private var knownMessageIds: Set<UUID> = []
 
-    public init(host: String = "192.168.0.5", port: Int = 8080) {
+    public init(host: String = "localhost", port: Int = 8080) {
         self.host = host
         self.port = port
         self.session = URLSession(configuration: .default)

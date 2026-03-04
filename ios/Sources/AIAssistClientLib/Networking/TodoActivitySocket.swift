@@ -32,7 +32,7 @@ public final class TodoActivitySocket: @unchecked Sendable {
     private let maxReconnectDelay: TimeInterval = 30.0
     private var isIntentionalDisconnect = false
 
-    public init(todoId: UUID, host: String = "192.168.0.5", port: Int = 8080) {
+    public init(todoId: UUID, host: String = "localhost", port: Int = 8080) {
         self.todoId = todoId
         self.host = host
         self.port = port
