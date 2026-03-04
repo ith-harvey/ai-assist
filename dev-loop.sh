@@ -19,7 +19,7 @@ PROJECT_REL="ios/AIAssistApp/AIAssistApp.xcodeproj"
 SCHEME="AIAssistApp"
 CONFIGURATION="Debug"
 BUNDLE_ID="theassist.AIAssistApp"
-POLL_INTERVAL=10
+POLL_INTERVAL=15
 DEVICE_NAME="iPhone 17 Pro"
 ONCE=false
 
@@ -121,6 +121,37 @@ build_app() {
   fi
 }
 
+start_ssh_tunnel() {
+  if lsof -i :8080 -sTCP:LISTEN &>/dev/null; then
+    return 0
+  fi
+  log "Opening SSH tunnel to 100.99.236.80:8080..."
+  ssh -N -o ServerAliveInterval=10 -o ServerAliveCountMax=3 \
+    -o ConnectTimeout=5 -o ExitOnForwardFailure=yes \
+    -L 8080:localhost:8080 onlinegrocery@100.99.236.80 &
+  SSH_TUNNEL_PID=$!
+  sleep 1
+  if kill -0 "$SSH_TUNNEL_PID" 2>/dev/null; then
+    ok "SSH tunnel established (PID $SSH_TUNNEL_PID)"
+  else
+    warn "SSH tunnel failed to start — continuing without it"
+    SSH_TUNNEL_PID=""
+  fi
+}
+
+ensure_ssh_tunnel() {
+  # If we have a PID, check if it's still alive
+  if [[ -n "${SSH_TUNNEL_PID:-}" ]] && kill -0 "$SSH_TUNNEL_PID" 2>/dev/null; then
+    return 0
+  fi
+  # Tunnel died or was never started — try to reconnect
+  if [[ -n "${SSH_TUNNEL_PID:-}" ]]; then
+    warn "SSH tunnel lost — reconnecting..."
+    SSH_TUNNEL_PID=""
+  fi
+  start_ssh_tunnel
+}
+
 install_and_launch() {
   local udid="$1"
   
@@ -169,6 +200,10 @@ main() {
   log "  Interval: ${POLL_INTERVAL}s"
   echo ""
   
+  # Start SSH tunnel for backend access
+  SSH_TUNNEL_PID=""
+  start_ssh_tunnel
+
   # Resolve simulator
   local udid
   udid=$(get_sim_udid)
@@ -207,7 +242,10 @@ main() {
   
   while true; do
     sleep "$POLL_INTERVAL"
-    
+
+    # Reconnect SSH tunnel if it dropped
+    ensure_ssh_tunnel
+
     local remote_head
     remote_head=$(get_remote_head 2>/dev/null) || {
       warn "Failed to fetch remote — retrying..."
@@ -225,5 +263,14 @@ main() {
   done
 }
 
-trap 'echo ""; log "Stopped."; exit 0' INT TERM
+cleanup() {
+  echo ""
+  if [[ -n "${SSH_TUNNEL_PID:-}" ]] && kill -0 "$SSH_TUNNEL_PID" 2>/dev/null; then
+    log "Closing SSH tunnel (PID $SSH_TUNNEL_PID)..."
+    kill "$SSH_TUNNEL_PID" 2>/dev/null || true
+  fi
+  log "Stopped."
+  exit 0
+}
+trap cleanup INT TERM
 main
