@@ -30,6 +30,9 @@ pub struct TranscriptMessage {
     /// For tool calls: the arguments as JSON string
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_args: Option<String>,
+    /// ISO-8601 timestamp of when this message was recorded.
+    #[serde(default)]
+    pub timestamp: String,
 }
 
 /// Activity messages streamed during agent job execution.

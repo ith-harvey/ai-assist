@@ -109,7 +109,18 @@ impl Agent {
                     m
                 });
 
-            let output = reasoning.respond_with_tools(&context).await?;
+            let output = reasoning.respond_with_tools(&context).await;
+            if let Err(ref e) = output {
+                let _ = self
+                    .channels
+                    .send_status(
+                        &message.channel,
+                        StatusUpdate::Thinking(format!("LLM error: {}", e)),
+                        &message.metadata,
+                    )
+                    .await;
+            }
+            let output = output?;
 
             // Track token usage for budget enforcement
             tracing::debug!(
