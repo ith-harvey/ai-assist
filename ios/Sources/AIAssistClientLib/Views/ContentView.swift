@@ -10,7 +10,7 @@ import SwiftUI
 public struct ContentView: View {
     var socket: CardWebSocket
     @State private var showSettings = false
-    @State private var hostInput = "192.168.0.5"
+    @State private var hostInput = "localhost"
     @State private var portInput = "8080"
 
     // Swipe state
