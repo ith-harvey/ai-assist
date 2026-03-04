@@ -19,6 +19,19 @@ use uuid::Uuid;
 
 use crate::store::Database;
 
+/// A single message in an agent transcript dump.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TranscriptMessage {
+    pub role: String,
+    pub content: String,
+    /// For tool calls: the tool name
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_name: Option<String>,
+    /// For tool calls: the arguments as JSON string
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_args: Option<String>,
+}
+
 /// Activity messages streamed during agent job execution.
 ///
 /// These are broadcast from the worker and forwarded to connected
@@ -70,6 +83,13 @@ pub enum TodoActivityMessage {
         job_id: Uuid,
         error: String,
     },
+    /// Full agent transcript dump (for debugging).
+    /// Contains the raw conversation thread: system prompt, user message,
+    /// assistant responses, tool calls, and tool results.
+    Transcript {
+        job_id: Uuid,
+        messages: Vec<TranscriptMessage>,
+    },
 }
 
 impl TodoActivityMessage {
@@ -83,7 +103,8 @@ impl TodoActivityMessage {
             | Self::Reasoning { job_id, .. }
             | Self::AgentResponse { job_id, .. }
             | Self::Completed { job_id, .. }
-            | Self::Failed { job_id, .. } => *job_id,
+            | Self::Failed { job_id, .. }
+            | Self::Transcript { job_id, .. } => *job_id,
         }
     }
 
@@ -97,7 +118,7 @@ impl TodoActivityMessage {
 
     /// Whether this is a terminal event (completed or failed).
     pub fn is_terminal(&self) -> bool {
-        matches!(self, Self::Completed { .. } | Self::Failed { .. })
+        matches!(self, Self::Completed { .. } | Self::Failed { .. } | Self::Transcript { .. })
     }
 
     /// Get the action type name (matches serde tag: "started", "thinking", etc.).
@@ -111,6 +132,7 @@ impl TodoActivityMessage {
             Self::AgentResponse { .. } => "agent_response".to_string(),
             Self::Completed { .. } => "completed".to_string(),
             Self::Failed { .. } => "failed".to_string(),
+            Self::Transcript { .. } => "transcript".to_string(),
         }
     }
 }
@@ -149,46 +171,63 @@ async fn ws_handler(
 }
 
 async fn handle_socket(mut socket: WebSocket, todo_id: Uuid, state: ActivityState) {
-    info!(todo_id = %todo_id, "Activity WebSocket client connected");
+    info!(todo_id = %todo_id, "📡 Activity WS connected");
 
     // Replay any stored activity history for this todo
     match state.db.get_activity_for_todo(todo_id).await {
         Ok(actions) => {
-            for action in actions {
-                if let Ok(msg) = serde_json::from_str::<TodoActivityMessage>(&action) {
-                    if let Ok(json) = serde_json::to_string(&msg) {
-                        if socket.send(Message::Text(json.into())).await.is_err() {
-                            warn!("Failed to send activity history, client disconnected");
-                            return;
+            info!(todo_id = %todo_id, count = actions.len(), "📡 Replaying activity history");
+            for (i, action) in actions.iter().enumerate() {
+                match serde_json::from_str::<TodoActivityMessage>(action) {
+                    Ok(msg) => {
+                        let action_type = msg.action_type();
+                        match serde_json::to_string(&msg) {
+                            Ok(json) => {
+                                info!(todo_id = %todo_id, i, action_type, bytes = json.len(), "📡 Sending history event");
+                                if socket.send(Message::Text(json.into())).await.is_err() {
+                                    warn!(todo_id = %todo_id, i, "📡 Client disconnected during history replay");
+                                    return;
+                                }
+                                info!(todo_id = %todo_id, i, "📡 History event sent OK");
+                            }
+                            Err(e) => {
+                                warn!(todo_id = %todo_id, i, error = %e, "📡 Failed to serialize history event");
+                            }
                         }
+                    }
+                    Err(e) => {
+                        warn!(todo_id = %todo_id, i, error = %e, raw = &action[..action.len().min(100)], "📡 Failed to parse history event");
                     }
                 }
             }
+            info!(todo_id = %todo_id, "📡 History replay complete");
         }
         Err(e) => {
-            warn!(error = %e, "Failed to load activity history");
+            warn!(todo_id = %todo_id, error = %e, "📡 Failed to load activity history from DB");
         }
     }
 
     // Subscribe to live events
     let mut rx = state.activity_tx.subscribe();
+    info!(todo_id = %todo_id, "📡 Subscribed to live activity broadcast, entering main loop");
 
     loop {
         tokio::select! {
             result = rx.recv() => {
                 match result {
                     Ok(msg) => {
+                        let action_type = msg.action_type();
                         // Only forward events related to this todo's job
-                        // (check todo_id on Started, job_id match on others)
                         let relevant = match &msg {
                             TodoActivityMessage::Started { todo_id: tid, .. } => {
-                                *tid == Some(todo_id)
+                                let r = *tid == Some(todo_id);
+                                info!(todo_id = %todo_id, started_todo_id = ?tid, relevant = r, "📡 Live Started event");
+                                r
                             }
-                            _ => true, // For non-Started events, we rely on
-                                       // the client filtering by job_id if needed.
-                                       // A more precise approach would track the
-                                       // job_id from the Started event, but that
-                                       // adds state we may not need yet.
+                            _ => {
+                                info!(todo_id = %todo_id, action_type, "📡 Live event (non-Started, forwarding)");
+                                true
+                            }
                         };
 
                         if !relevant {
@@ -196,17 +235,18 @@ async fn handle_socket(mut socket: WebSocket, todo_id: Uuid, state: ActivityStat
                         }
 
                         if let Ok(json) = serde_json::to_string(&msg) {
+                            info!(todo_id = %todo_id, action_type, bytes = json.len(), "📡 Sending live event to client");
                             if socket.send(Message::Text(json.into())).await.is_err() {
-                                debug!("Activity WS client disconnected during send");
+                                info!(todo_id = %todo_id, "📡 Client disconnected during live send");
                                 break;
                             }
                         }
                     }
                     Err(broadcast::error::RecvError::Lagged(n)) => {
-                        warn!(missed = n, "Activity WS client lagged");
+                        warn!(todo_id = %todo_id, missed = n, "📡 Client lagged behind broadcast");
                     }
                     Err(broadcast::error::RecvError::Closed) => {
-                        debug!("Activity broadcast channel closed");
+                        info!(todo_id = %todo_id, "📡 Broadcast channel closed — no more live events");
                         break;
                     }
                 }
@@ -215,16 +255,21 @@ async fn handle_socket(mut socket: WebSocket, todo_id: Uuid, state: ActivityStat
             result = socket.recv() => {
                 match result {
                     Some(Ok(Message::Ping(data))) => {
+                        debug!(todo_id = %todo_id, "📡 Ping received, sending Pong");
                         if socket.send(Message::Pong(data)).await.is_err() {
                             break;
                         }
                     }
-                    Some(Ok(Message::Close(_))) | None => {
-                        info!(todo_id = %todo_id, "Activity WebSocket client disconnected");
+                    Some(Ok(Message::Close(frame))) => {
+                        info!(todo_id = %todo_id, frame = ?frame, "📡 Client sent Close frame");
+                        break;
+                    }
+                    None => {
+                        info!(todo_id = %todo_id, "📡 Client socket returned None (disconnected)");
                         break;
                     }
                     Some(Err(e)) => {
-                        warn!(error = %e, "Activity WebSocket error");
+                        warn!(todo_id = %todo_id, error = %e, "📡 WebSocket error");
                         break;
                     }
                     _ => {}

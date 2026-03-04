@@ -169,23 +169,6 @@ main() {
   log "  Interval: ${POLL_INTERVAL}s"
   echo ""
   
-  # Start SSH tunnel for backend access
-  SSH_TUNNEL_PID=""
-  if lsof -i :8080 -sTCP:LISTEN &>/dev/null; then
-    warn "Port 8080 already in use — skipping SSH tunnel"
-  else
-    log "Opening SSH tunnel to 100.99.236.80:8080..."
-    ssh -N -L 8080:localhost:8080 onlinegrocery@100.99.236.80 &
-    SSH_TUNNEL_PID=$!
-    sleep 1
-    if kill -0 "$SSH_TUNNEL_PID" 2>/dev/null; then
-      ok "SSH tunnel established (PID $SSH_TUNNEL_PID)"
-    else
-      warn "SSH tunnel failed to start — continuing without it"
-      SSH_TUNNEL_PID=""
-    fi
-  fi
-
   # Resolve simulator
   local udid
   udid=$(get_sim_udid)
@@ -242,14 +225,5 @@ main() {
   done
 }
 
-cleanup() {
-  echo ""
-  if [[ -n "${SSH_TUNNEL_PID:-}" ]] && kill -0 "$SSH_TUNNEL_PID" 2>/dev/null; then
-    log "Closing SSH tunnel (PID $SSH_TUNNEL_PID)..."
-    kill "$SSH_TUNNEL_PID" 2>/dev/null || true
-  fi
-  log "Stopped."
-  exit 0
-}
-trap cleanup INT TERM
+trap 'echo ""; log "Stopped."; exit 0' INT TERM
 main

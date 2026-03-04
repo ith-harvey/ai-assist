@@ -14,6 +14,22 @@ import Foundation
 /// ```json
 /// {"type": "tool_completed", "job_id": "...", "tool_name": "shell", "success": true, "summary": "..."}
 /// ```
+/// A single message in an agent transcript dump.
+public struct TranscriptMessage: Codable, Sendable, Identifiable {
+    public let role: String
+    public let content: String
+    public let toolName: String?
+    public let toolArgs: String?
+
+    public var id: String { "\(role)-\(content.prefix(30).hashValue)" }
+
+    private enum CodingKeys: String, CodingKey {
+        case role, content
+        case toolName = "tool_name"
+        case toolArgs = "tool_args"
+    }
+}
+
 public enum ActivityMessage: Identifiable, Codable, Sendable {
     case started(jobId: UUID, todoId: UUID?)
     case thinking(jobId: UUID, iteration: UInt32)
@@ -23,6 +39,7 @@ public enum ActivityMessage: Identifiable, Codable, Sendable {
     case agentResponse(jobId: UUID, content: String)
     case completed(jobId: UUID, summary: String)
     case failed(jobId: UUID, error: String)
+    case transcript(jobId: UUID, messages: [TranscriptMessage])
 
     // MARK: - Identifiable
 
@@ -46,6 +63,8 @@ public enum ActivityMessage: Identifiable, Codable, Sendable {
             return "completed-\(jobId.uuidString)"
         case .failed(let jobId, _):
             return "failed-\(jobId.uuidString)"
+        case .transcript(let jobId, _):
+            return "transcript-\(jobId.uuidString)"
         }
     }
 
@@ -61,7 +80,8 @@ public enum ActivityMessage: Identifiable, Codable, Sendable {
              .reasoning(let id, _),
              .agentResponse(let id, _),
              .completed(let id, _),
-             .failed(let id, _):
+             .failed(let id, _),
+             .transcript(let id, _):
             return id
         }
     }
@@ -69,7 +89,7 @@ public enum ActivityMessage: Identifiable, Codable, Sendable {
     /// Whether this is a terminal event (completed or failed).
     public var isTerminal: Bool {
         switch self {
-        case .completed, .failed: return true
+        case .completed, .failed, .transcript: return true
         default: return false
         }
     }
@@ -86,6 +106,7 @@ public enum ActivityMessage: Identifiable, Codable, Sendable {
         case summary
         case content
         case error
+        case messages
     }
 
     public init(from decoder: Decoder) throws {
@@ -134,6 +155,11 @@ public enum ActivityMessage: Identifiable, Codable, Sendable {
             let jobId = try container.decode(UUID.self, forKey: .jobId)
             let error = try container.decode(String.self, forKey: .error)
             self = .failed(jobId: jobId, error: error)
+
+        case "transcript":
+            let jobId = try container.decode(UUID.self, forKey: .jobId)
+            let messages = try container.decode([TranscriptMessage].self, forKey: .messages)
+            self = .transcript(jobId: jobId, messages: messages)
 
         default:
             throw DecodingError.dataCorruptedError(
@@ -189,6 +215,11 @@ public enum ActivityMessage: Identifiable, Codable, Sendable {
             try container.encode("failed", forKey: .type)
             try container.encode(jobId, forKey: .jobId)
             try container.encode(error, forKey: .error)
+
+        case .transcript(let jobId, let messages):
+            try container.encode("transcript", forKey: .type)
+            try container.encode(jobId, forKey: .jobId)
+            try container.encode(messages, forKey: .messages)
         }
     }
 

@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use tokio::sync::broadcast;
+use tokio::sync::{Mutex, broadcast};
 use uuid::Uuid;
 
 use crate::channels::channel::{
@@ -17,7 +17,7 @@ use crate::channels::channel::{
 };
 use crate::error::ChannelError;
 use crate::store::Database;
-use crate::todos::activity::TodoActivityMessage;
+use crate::todos::activity::{TodoActivityMessage, TranscriptMessage};
 use crate::todos::model::{TodoStatus, TodoWsMessage};
 
 /// A Channel implementation that bridges todo execution to the activity stream.
@@ -31,6 +31,8 @@ pub struct TodoChannel {
     todo_tx: broadcast::Sender<TodoWsMessage>,
     /// Set to true when respond() is called successfully.
     responded: AtomicBool,
+    /// Accumulated transcript for debugging.
+    transcript: Mutex<Vec<TranscriptMessage>>,
 }
 
 impl TodoChannel {
@@ -53,7 +55,18 @@ impl TodoChannel {
             db,
             todo_tx,
             responded: AtomicBool::new(false),
+            transcript: Mutex::new(Vec::new()),
         }
+    }
+
+    /// Append a message to the running transcript.
+    async fn record(&self, role: &str, content: &str, tool_name: Option<&str>, tool_args: Option<&str>) {
+        self.transcript.lock().await.push(TranscriptMessage {
+            role: role.to_string(),
+            content: content.to_string(),
+            tool_name: tool_name.map(String::from),
+            tool_args: tool_args.map(String::from),
+        });
     }
 
     /// Emit an activity event: broadcast live + persist to DB.
@@ -96,6 +109,9 @@ impl Channel for TodoChannel {
             format!("{}\n\n{}", self.todo_title, self.todo_description)
         };
 
+        // Record the task prompt in transcript
+        self.record("user", &content, None, None).await;
+
         let msg = IncomingMessage::new("todo", "todo-agent", content);
 
         // Create a stream that yields one message then closes
@@ -108,6 +124,9 @@ impl Channel for TodoChannel {
         response: OutgoingResponse,
     ) -> Result<(), ChannelError> {
         self.responded.store(true, Ordering::SeqCst);
+
+        // Record final response in transcript
+        self.record("assistant", &response.content, None, None).await;
 
         // Emit agent response
         self.emit(TodoActivityMessage::AgentResponse {
@@ -142,25 +161,37 @@ impl Channel for TodoChannel {
         _metadata: &serde_json::Value,
     ) -> Result<(), ChannelError> {
         let msg = match status {
-            StatusUpdate::Thinking(content) => TodoActivityMessage::Reasoning {
-                job_id: self.job_id,
-                content,
+            StatusUpdate::Thinking(ref content) => {
+                self.record("system", content, None, None).await;
+                TodoActivityMessage::Reasoning {
+                    job_id: self.job_id,
+                    content: content.clone(),
+                }
             },
-            StatusUpdate::ToolStarted { name } => TodoActivityMessage::ToolStarted {
-                job_id: self.job_id,
-                tool_name: name,
+            StatusUpdate::ToolStarted { ref name } => {
+                self.record("tool_start", name, Some(name), None).await;
+                TodoActivityMessage::ToolStarted {
+                    job_id: self.job_id,
+                    tool_name: name.clone(),
+                }
             },
-            StatusUpdate::ToolCompleted { name, success } => TodoActivityMessage::ToolCompleted {
-                job_id: self.job_id,
-                tool_name: name,
-                success,
-                summary: String::new(),
+            StatusUpdate::ToolCompleted { ref name, success } => {
+                self.record("tool_end", &format!("success={}", success), Some(name), None).await;
+                TodoActivityMessage::ToolCompleted {
+                    job_id: self.job_id,
+                    tool_name: name.clone(),
+                    success,
+                    summary: String::new(),
+                }
             },
-            StatusUpdate::ToolResult { name, preview } => TodoActivityMessage::ToolCompleted {
-                job_id: self.job_id,
-                tool_name: name,
-                success: true,
-                summary: preview,
+            StatusUpdate::ToolResult { ref name, ref preview } => {
+                self.record("tool_result", preview, Some(name), None).await;
+                TodoActivityMessage::ToolCompleted {
+                    job_id: self.job_id,
+                    tool_name: name.clone(),
+                    success: true,
+                    summary: preview.clone(),
+                }
             },
             // StreamChunk and other variants — ignore for now
             _ => return Ok(()),
@@ -192,6 +223,20 @@ impl Channel for TodoChannel {
             }
 
             self.broadcast_todo_update().await;
+        }
+
+        // Always dump the full transcript for debugging
+        let messages = self.transcript.lock().await.clone();
+        if !messages.is_empty() {
+            tracing::info!(
+                todo_id = %self.todo_id,
+                message_count = messages.len(),
+                "📝 Dumping agent transcript"
+            );
+            self.emit(TodoActivityMessage::Transcript {
+                job_id: self.job_id,
+                messages,
+            });
         }
 
         Ok(())

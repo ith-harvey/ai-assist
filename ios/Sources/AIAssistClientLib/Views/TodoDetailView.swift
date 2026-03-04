@@ -199,9 +199,14 @@ public struct TodoDetailView: View {
             .foregroundStyle(.secondary)
             .padding(.horizontal, 20)
 
-            if let latest = activitySocket.latestActivity {
-                // Show only the latest event — replaces on each update
-                // Non-terminal events get a spinner to show the agent is still working
+            if activitySocket.isFinished {
+                // Show all messages when finished (includes failed + transcript)
+                ForEach(activitySocket.messages) { msg in
+                    activityRow(msg)
+                        .padding(.horizontal, 20)
+                }
+            } else if let latest = activitySocket.latestActivity {
+                // Show only the latest event while running
                 HStack(alignment: .top, spacing: 8) {
                     if !latest.isTerminal {
                         ProgressView()
@@ -241,6 +246,8 @@ public struct TodoDetailView: View {
             completedBanner(summary: summary)
         case .failed(_, let error):
             failedBanner(error: error)
+        case .transcript(_, let messages):
+            transcriptView(messages: messages)
         }
     }
 
@@ -382,6 +389,93 @@ public struct TodoDetailView: View {
                 )
         )
         .padding(.top, 4)
+    }
+
+    // MARK: - Transcript View
+
+    private func transcriptView(messages: [TranscriptMessage]) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Image(systemName: "doc.text.magnifyingglass")
+                    .font(.system(size: 16))
+                    .foregroundStyle(.purple)
+                Text("Agent Transcript")
+                    .font(.subheadline)
+                    .fontWeight(.semibold)
+                    .foregroundStyle(.purple)
+                Spacer()
+                Text("\(messages.count) messages")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            ForEach(messages) { msg in
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 4) {
+                        Text(transcriptRoleLabel(msg.role))
+                            .font(.system(size: 10, weight: .bold, design: .monospaced))
+                            .foregroundStyle(transcriptRoleColor(msg.role))
+                        if let tool = msg.toolName {
+                            Text(tool)
+                                .font(.system(size: 10, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    Text(msg.content)
+                        .font(.system(size: 12, design: .monospaced))
+                        .foregroundStyle(.primary)
+                        .lineLimit(10)
+                        .textSelection(.enabled)
+                }
+                .padding(8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(transcriptBgColor(msg.role))
+                )
+            }
+        }
+        .padding(14)
+        .background(
+            RoundedRectangle(cornerRadius: 14)
+                .fill(.purple.opacity(0.05))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14)
+                        .strokeBorder(.purple.opacity(0.2), lineWidth: 1)
+                )
+        )
+        .padding(.top, 4)
+    }
+
+    private func transcriptRoleLabel(_ role: String) -> String {
+        switch role {
+        case "user": return "USER"
+        case "assistant": return "ASSISTANT"
+        case "system": return "SYSTEM"
+        case "tool_start": return "TOOL →"
+        case "tool_end": return "TOOL ←"
+        case "tool_result": return "RESULT"
+        default: return role.uppercased()
+        }
+    }
+
+    private func transcriptRoleColor(_ role: String) -> Color {
+        switch role {
+        case "user": return .blue
+        case "assistant": return .green
+        case "system": return .orange
+        case "tool_start", "tool_end", "tool_result": return .purple
+        default: return .secondary
+        }
+    }
+
+    private func transcriptBgColor(_ role: String) -> Color {
+        switch role {
+        case "user": return .blue.opacity(0.08)
+        case "assistant": return .green.opacity(0.08)
+        case "tool_result": return .purple.opacity(0.08)
+        default: return .gray.opacity(0.06)
+        }
     }
 
     // MARK: - Shared Components
