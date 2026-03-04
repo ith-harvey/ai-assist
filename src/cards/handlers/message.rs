@@ -1,4 +1,4 @@
-//! ReplyHandler — sends approved reply via the originating channel.
+//! MessageHandler — sends approved reply via the originating channel.
 
 use async_trait::async_trait;
 use tracing::{info, warn};
@@ -7,12 +7,14 @@ use crate::cards::handler::{ApprovalHandler, CardActionContext};
 use crate::cards::model::{ApprovalCard, CardPayload};
 use crate::channels::email::{EmailConfig, send_reply_email};
 
-pub struct ReplyHandler;
+pub struct MessageHandler {
+    pub email_config: Option<EmailConfig>,
+}
 
 #[async_trait]
-impl ApprovalHandler for ReplyHandler {
+impl ApprovalHandler for MessageHandler {
     async fn on_approve(&self, card: &ApprovalCard, ctx: &CardActionContext) {
-        send_reply(card, ctx.email_config.as_ref(), ctx).await;
+        send_reply(card, self.email_config.as_ref(), ctx).await;
     }
 
     async fn on_dismiss(&self, _card: &ApprovalCard, _ctx: &CardActionContext) {
@@ -21,7 +23,7 @@ impl ApprovalHandler for ReplyHandler {
 
     async fn on_edit(&self, card: &ApprovalCard, _new_text: &str, ctx: &CardActionContext) {
         // Card already has edited text by the time handler runs
-        send_reply(card, ctx.email_config.as_ref(), ctx).await;
+        send_reply(card, self.email_config.as_ref(), ctx).await;
     }
 }
 

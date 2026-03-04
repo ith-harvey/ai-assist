@@ -17,8 +17,8 @@ use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use super::generator::CardGenerator;
-use super::handler::{CardActionContext, handler_for};
-use super::model::{ApprovalCard, CardAction, WsMessage};
+use super::handler::{ApprovalHandler, CardActionContext};
+use super::model::{ApprovalCard, CardAction, CardPayload, WsMessage};
 use super::queue::CardQueue;
 use crate::channels::email::EmailConfig;
 use crate::todos::approval_registry::TodoApprovalRegistry;
@@ -37,8 +37,24 @@ impl AppState {
     fn action_context(&self) -> CardActionContext {
         CardActionContext {
             queue: Arc::clone(&self.queue),
-            email_config: self.email_config.clone(),
-            approval_registry: self.approval_registry.clone(),
+        }
+    }
+
+    /// Construct the correct handler for a card's payload type, injecting deps.
+    fn handler_for(&self, card: &ApprovalCard) -> Box<dyn ApprovalHandler> {
+        match &card.payload {
+            CardPayload::Reply { .. } => {
+                Box::new(super::handlers::MessageHandler {
+                    email_config: self.email_config.clone(),
+                })
+            }
+            CardPayload::Action { .. } => {
+                Box::new(super::handlers::ActionHandler {
+                    approval_registry: self.approval_registry.clone(),
+                })
+            }
+            CardPayload::Compose { .. } => Box::new(super::handlers::ComposeHandler),
+            CardPayload::Decision { .. } => Box::new(super::handlers::DecisionHandler),
         }
     }
 }
@@ -167,7 +183,7 @@ async fn handle_client_message(text: &str, state: &AppState) {
             CardAction::Approve { card_id } => {
                 if let Some(card) = state.queue.approve(card_id).await {
                     info!(card_id = %card_id, "Card approved via WS");
-                    handler_for(&card).on_approve(&card, &ctx).await;
+                    state.handler_for(&card).on_approve(&card, &ctx).await;
                 } else {
                     warn!(card_id = %card_id, "Approve failed — card not found or not pending");
                 }
@@ -175,7 +191,7 @@ async fn handle_client_message(text: &str, state: &AppState) {
             CardAction::Dismiss { card_id } => {
                 if let Some(card) = state.queue.dismiss(card_id).await {
                     info!(card_id = %card_id, "Card dismissed via WS");
-                    handler_for(&card).on_dismiss(&card, &ctx).await;
+                    state.handler_for(&card).on_dismiss(&card, &ctx).await;
                 } else {
                     warn!(card_id = %card_id, "Dismiss failed — card not found or not pending");
                 }
@@ -183,7 +199,7 @@ async fn handle_client_message(text: &str, state: &AppState) {
             CardAction::Edit { card_id, new_text } => {
                 if let Some(card) = state.queue.edit(card_id, new_text.clone()).await {
                     info!(card_id = %card_id, "Card edited and approved via WS");
-                    handler_for(&card).on_edit(&card, &new_text, &ctx).await;
+                    state.handler_for(&card).on_edit(&card, &new_text, &ctx).await;
                 } else {
                     warn!(card_id = %card_id, "Edit failed — card not found or not pending");
                 }
@@ -223,7 +239,7 @@ async fn approve_card(State(state): State<AppState>, Path(id): Path<String>) -> 
     match state.queue.approve(card_id).await {
         Some(card) => {
             let ctx = state.action_context();
-            handler_for(&card).on_approve(&card, &ctx).await;
+            state.handler_for(&card).on_approve(&card, &ctx).await;
             (StatusCode::OK, Json(serde_json::json!(card)))
         }
         None => (
@@ -247,7 +263,7 @@ async fn dismiss_card(State(state): State<AppState>, Path(id): Path<String>) -> 
     match state.queue.dismiss(card_id).await {
         Some(card) => {
             let ctx = state.action_context();
-            handler_for(&card).on_dismiss(&card, &ctx).await;
+            state.handler_for(&card).on_dismiss(&card, &ctx).await;
             (
                 StatusCode::OK,
                 Json(serde_json::json!({"status": "dismissed"})),
@@ -283,7 +299,7 @@ async fn edit_card(
     match state.queue.edit(card_id, body.text.clone()).await {
         Some(card) => {
             let ctx = state.action_context();
-            handler_for(&card).on_edit(&card, &body.text, &ctx).await;
+            state.handler_for(&card).on_edit(&card, &body.text, &ctx).await;
             (StatusCode::OK, Json(serde_json::json!(card)))
         }
         None => (

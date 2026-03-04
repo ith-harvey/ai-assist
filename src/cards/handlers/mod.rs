@@ -1,9 +1,9 @@
 mod action;
 mod compose;
 mod decision;
-mod reply;
+mod message;
 
 pub use action::ActionHandler;
 pub use compose::ComposeHandler;
 pub use decision::DecisionHandler;
-pub use reply::ReplyHandler;
+pub use message::MessageHandler;
