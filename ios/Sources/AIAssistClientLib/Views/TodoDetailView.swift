@@ -300,7 +300,6 @@ public struct TodoDetailView: View {
                 .font(.subheadline)
                 .italic()
                 .foregroundStyle(.secondary)
-                .lineLimit(3)
         }
         .padding(.vertical, 2)
     }
@@ -424,7 +423,6 @@ public struct TodoDetailView: View {
                     Text(msg.content)
                         .font(.system(size: 12, design: .monospaced))
                         .foregroundStyle(.primary)
-                        .lineLimit(10)
                         .textSelection(.enabled)
                 }
                 .padding(8)
