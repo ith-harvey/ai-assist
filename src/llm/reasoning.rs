@@ -365,16 +365,16 @@ Respond in JSON format:
                 });
             }
 
-            let raw_content = response
+            let content = response
                 .content
                 .unwrap_or_else(|| "I'm not sure how to respond to that.".to_string());
 
             // Some models (e.g. GLM-4.7) emit tool calls as XML tags in content
             // instead of using the structured tool_calls field. Try to recover
             // them before giving up and returning plain text.
-            let recovered = recover_tool_calls_from_content(&raw_content, &context.available_tools);
+            let recovered = recover_tool_calls_from_content(&content, &context.available_tools);
             if !recovered.is_empty() {
-                let cleaned = clean_response(&raw_content);
+                let cleaned = clean_response(&content);
                 return Ok(RespondOutput {
                     result: RespondResult::ToolCalls {
                         tool_calls: recovered,
@@ -388,19 +388,8 @@ Respond in JSON format:
                 });
             }
 
-            let cleaned = clean_response(&raw_content);
-            if cleaned.is_empty() && !raw_content.trim().is_empty() {
-                let raw_len = raw_content.len();
-                let raw_preview: String = raw_content.chars().take(500).collect();
-                tracing::warn!(
-                    raw_len,
-                    raw_preview = %raw_preview,
-                    "clean_response() stripped ALL content from LLM response"
-                );
-            }
-
             Ok(RespondOutput {
-                result: RespondResult::Text(cleaned),
+                result: RespondResult::Text(clean_response(&content)),
                 usage,
             })
         } else {
