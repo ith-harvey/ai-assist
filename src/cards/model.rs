@@ -760,4 +760,214 @@ mod tests {
             .with_silo(CardSilo::Calendar);
         assert_eq!(card.silo, CardSilo::Calendar);
     }
+
+    // ── Zero-minute expiry edge cases ───────────────────────────────
+
+    #[test]
+    fn zero_expire_reply_is_immediately_expired() {
+        let card = ApprovalCard::new_reply("t", "s", "m", "r", 0.9, "c", 0);
+        assert!(card.is_expired());
+    }
+
+    #[test]
+    fn zero_expire_action_is_immediately_expired() {
+        let card = ApprovalCard::new_action("do thing", None, CardSilo::Todos, 0);
+        assert!(card.is_expired());
+    }
+
+    #[test]
+    fn zero_expire_compose_is_immediately_expired() {
+        let card = ApprovalCard::new_compose("email", "bob@x.com", None, "draft", 0.8, 0);
+        assert!(card.is_expired());
+    }
+
+    #[test]
+    fn zero_expire_decision_is_immediately_expired() {
+        let card = ApprovalCard::new_decision("q", "c", vec![], CardSilo::Messages, 0);
+        assert!(card.is_expired());
+    }
+
+    // ── Action card constructors ────────────────────────────────────
+
+    #[test]
+    fn action_card_with_detail() {
+        let card = ApprovalCard::new_action("run deploy", Some("kubectl apply -f".into()), CardSilo::Todos, 60);
+        assert_eq!(card.card_type_str(), "action");
+        assert_eq!(card.silo, CardSilo::Todos);
+        if let CardPayload::Action { description, action_detail } = &card.payload {
+            assert_eq!(description, "run deploy");
+            assert_eq!(action_detail.as_deref(), Some("kubectl apply -f"));
+        } else {
+            panic!("Expected Action payload");
+        }
+    }
+
+    #[test]
+    fn action_card_without_detail() {
+        let card = ApprovalCard::new_action("simple task", None, CardSilo::Calendar, 15);
+        if let CardPayload::Action { action_detail, .. } = &card.payload {
+            assert!(action_detail.is_none());
+        } else {
+            panic!("Expected Action payload");
+        }
+    }
+
+    #[test]
+    fn action_card_has_no_confidence() {
+        let card = ApprovalCard::new_action("task", None, CardSilo::Todos, 15);
+        assert!(card.payload.confidence().is_none());
+    }
+
+    #[test]
+    fn action_card_has_no_channel() {
+        let card = ApprovalCard::new_action("task", None, CardSilo::Todos, 15);
+        assert!(card.payload.channel().is_none());
+    }
+
+    // ── Decision card constructors ──────────────────────────────────
+
+    #[test]
+    fn decision_card_with_options() {
+        let card = ApprovalCard::new_decision(
+            "Which cloud?",
+            "Choosing a provider",
+            vec!["AWS".into(), "GCP".into(), "Azure".into()],
+            CardSilo::Messages,
+            120,
+        );
+        if let CardPayload::Decision { question, context, options } = &card.payload {
+            assert_eq!(question, "Which cloud?");
+            assert_eq!(context, "Choosing a provider");
+            assert_eq!(options.len(), 3);
+        } else {
+            panic!("Expected Decision payload");
+        }
+    }
+
+    #[test]
+    fn decision_card_empty_options() {
+        let card = ApprovalCard::new_decision("Binary?", "yes/no", vec![], CardSilo::Messages, 60);
+        if let CardPayload::Decision { options, .. } = &card.payload {
+            assert!(options.is_empty());
+        } else {
+            panic!("Expected Decision payload");
+        }
+    }
+
+    #[test]
+    fn decision_card_has_no_confidence() {
+        let card = ApprovalCard::new_decision("q", "c", vec![], CardSilo::Messages, 60);
+        assert!(card.payload.confidence().is_none());
+    }
+
+    // ── Compose card constructors ───────────────────────────────────
+
+    #[test]
+    fn compose_card_with_subject() {
+        let card = ApprovalCard::new_compose("email", "alice@x.com", Some("Hello".into()), "Body text", 0.7, 30);
+        if let CardPayload::Compose { channel, recipient, subject, draft_body, confidence } = &card.payload {
+            assert_eq!(channel, "email");
+            assert_eq!(recipient, "alice@x.com");
+            assert_eq!(subject.as_deref(), Some("Hello"));
+            assert_eq!(draft_body, "Body text");
+            assert_eq!(*confidence, 0.7);
+        } else {
+            panic!("Expected Compose payload");
+        }
+    }
+
+    #[test]
+    fn compose_card_without_subject() {
+        let card = ApprovalCard::new_compose("telegram", "bob", None, "Hey!", 0.9, 15);
+        if let CardPayload::Compose { subject, .. } = &card.payload {
+            assert!(subject.is_none());
+        } else {
+            panic!("Expected Compose payload");
+        }
+    }
+
+    #[test]
+    fn compose_confidence_is_clamped() {
+        let card = ApprovalCard::new_compose("t", "r", None, "body", 2.0, 15);
+        assert_eq!(card.payload.confidence().unwrap(), 1.0);
+
+        let card = ApprovalCard::new_compose("t", "r", None, "body", -1.0, 15);
+        assert_eq!(card.payload.confidence().unwrap(), 0.0);
+    }
+
+    // ── CardPayload accessor edge cases ─────────────────────────────
+
+    #[test]
+    fn action_payload_has_no_suggested_reply() {
+        let card = ApprovalCard::new_action("task", None, CardSilo::Todos, 15);
+        assert!(card.payload.suggested_reply().is_none());
+    }
+
+    #[test]
+    fn action_payload_has_no_reply_metadata() {
+        let card = ApprovalCard::new_action("task", None, CardSilo::Todos, 15);
+        assert!(card.payload.reply_metadata().is_none());
+    }
+
+    #[test]
+    fn action_payload_has_no_message_id() {
+        let card = ApprovalCard::new_action("task", None, CardSilo::Todos, 15);
+        assert!(card.payload.message_id().is_none());
+    }
+
+    #[test]
+    fn compose_payload_has_no_suggested_reply() {
+        let card = ApprovalCard::new_compose("t", "r", None, "body", 0.8, 15);
+        assert!(card.payload.suggested_reply().is_none());
+    }
+
+    #[test]
+    fn decision_payload_has_no_channel() {
+        let card = ApprovalCard::new_decision("q", "c", vec![], CardSilo::Messages, 60);
+        assert!(card.payload.channel().is_none());
+    }
+
+    // ── with_message_id builder ─────────────────────────────────────
+
+    #[test]
+    fn with_message_id_sets_id() {
+        let card = ApprovalCard::new_reply("t", "s", "m", "r", 0.9, "c", 15)
+            .with_message_id("msg_123");
+        assert_eq!(card.payload.message_id(), Some("msg_123"));
+    }
+
+    #[test]
+    fn with_message_id_noop_on_action() {
+        // with_message_id on a non-Reply card is a no-op (builder pattern).
+        let card = ApprovalCard::new_action("task", None, CardSilo::Todos, 15)
+            .with_message_id("msg_123");
+        assert!(card.payload.message_id().is_none());
+    }
+
+    // ── SiloCounts edge cases ───────────────────────────────────────
+
+    #[test]
+    fn silo_counts_empty_queue() {
+        let cards = VecDeque::new();
+        let counts = SiloCounts::from_cards(&cards);
+        assert_eq!(counts.total(), 0);
+    }
+
+    #[test]
+    fn silo_counts_ignores_expired() {
+        let mut cards = VecDeque::new();
+        cards.push_back(ApprovalCard::new_reply("t", "s", "m", "r", 0.9, "c", 0));
+        let counts = SiloCounts::from_cards(&cards);
+        assert_eq!(counts.total(), 0);
+    }
+
+    #[test]
+    fn silo_counts_ignores_non_pending() {
+        let mut cards = VecDeque::new();
+        let mut card = ApprovalCard::new_reply("t", "s", "m", "r", 0.9, "c", 15);
+        card.status = CardStatus::Approved;
+        cards.push_back(card);
+        let counts = SiloCounts::from_cards(&cards);
+        assert_eq!(counts.total(), 0);
+    }
 }

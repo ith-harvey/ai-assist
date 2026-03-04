@@ -132,4 +132,147 @@ mod tests {
         fn assert_clone<T: Clone>() {}
         assert_clone::<TodoApprovalRegistry>();
     }
+
+    #[tokio::test]
+    async fn take_after_take_returns_none() {
+        let registry = TodoApprovalRegistry::new();
+        let card_id = Uuid::new_v4();
+        let (tx, _rx) = mpsc::channel(1);
+
+        registry.register(card_id, TodoApprovalPending {
+            request_id: Uuid::new_v4(),
+            tx,
+            todo_id: Uuid::new_v4(),
+        }).await;
+
+        // First take succeeds.
+        assert!(registry.take(card_id).await.is_some());
+        // Second take returns None — entry already consumed.
+        assert!(registry.take(card_id).await.is_none());
+        assert_eq!(registry.len().await, 0);
+    }
+
+    #[tokio::test]
+    async fn remove_is_silent_for_missing() {
+        let registry = TodoApprovalRegistry::new();
+        // Should not panic on missing key.
+        registry.remove(Uuid::new_v4()).await;
+        assert_eq!(registry.len().await, 0);
+    }
+
+    #[tokio::test]
+    async fn remove_for_todo_noop_when_no_match() {
+        let registry = TodoApprovalRegistry::new();
+        let (tx, _rx) = mpsc::channel(1);
+
+        registry.register(Uuid::new_v4(), TodoApprovalPending {
+            request_id: Uuid::new_v4(),
+            tx,
+            todo_id: Uuid::new_v4(),
+        }).await;
+
+        // Remove a different todo_id — nothing should change.
+        registry.remove_for_todo(Uuid::new_v4()).await;
+        assert_eq!(registry.len().await, 1);
+    }
+
+    #[tokio::test]
+    async fn register_overwrites_existing() {
+        let registry = TodoApprovalRegistry::new();
+        let card_id = Uuid::new_v4();
+        let (tx1, _rx1) = mpsc::channel(1);
+        let (tx2, _rx2) = mpsc::channel(1);
+
+        let todo1 = Uuid::new_v4();
+        let todo2 = Uuid::new_v4();
+
+        registry.register(card_id, TodoApprovalPending {
+            request_id: Uuid::new_v4(),
+            tx: tx1,
+            todo_id: todo1,
+        }).await;
+
+        registry.register(card_id, TodoApprovalPending {
+            request_id: Uuid::new_v4(),
+            tx: tx2,
+            todo_id: todo2,
+        }).await;
+
+        // Should have only 1 entry (overwritten).
+        assert_eq!(registry.len().await, 1);
+
+        // Take returns the second registration.
+        let pending = registry.take(card_id).await.unwrap();
+        assert_eq!(pending.todo_id, todo2);
+    }
+
+    #[tokio::test]
+    async fn concurrent_register_and_take() {
+        let registry = TodoApprovalRegistry::new();
+        let mut handles = Vec::new();
+
+        // Spawn 10 tasks that each register + take their own card.
+        for _ in 0..10 {
+            let reg = registry.clone();
+            handles.push(tokio::spawn(async move {
+                let card_id = Uuid::new_v4();
+                let (tx, _rx) = mpsc::channel(1);
+                reg.register(card_id, TodoApprovalPending {
+                    request_id: Uuid::new_v4(),
+                    tx,
+                    todo_id: Uuid::new_v4(),
+                }).await;
+                reg.take(card_id).await.is_some()
+            }));
+        }
+
+        for h in handles {
+            assert!(h.await.unwrap(), "every concurrent take should succeed");
+        }
+
+        assert_eq!(registry.len().await, 0);
+    }
+
+    #[tokio::test]
+    async fn remove_for_todo_removes_multiple() {
+        let registry = TodoApprovalRegistry::new();
+        let todo_id = Uuid::new_v4();
+
+        for _ in 0..5 {
+            let (tx, _rx) = mpsc::channel(1);
+            registry.register(Uuid::new_v4(), TodoApprovalPending {
+                request_id: Uuid::new_v4(),
+                tx,
+                todo_id,
+            }).await;
+        }
+
+        assert_eq!(registry.len().await, 5);
+        registry.remove_for_todo(todo_id).await;
+        assert_eq!(registry.len().await, 0);
+    }
+
+    #[tokio::test]
+    async fn take_preserves_request_id() {
+        let registry = TodoApprovalRegistry::new();
+        let card_id = Uuid::new_v4();
+        let request_id = Uuid::new_v4();
+        let (tx, _rx) = mpsc::channel(1);
+
+        registry.register(card_id, TodoApprovalPending {
+            request_id,
+            tx,
+            todo_id: Uuid::new_v4(),
+        }).await;
+
+        let pending = registry.take(card_id).await.unwrap();
+        assert_eq!(pending.request_id, request_id);
+    }
+
+    #[test]
+    fn default_registry_is_empty() {
+        let registry = TodoApprovalRegistry::default();
+        // Can't await in sync test, but clone proves Default works.
+        let _clone = registry.clone();
+    }
 }

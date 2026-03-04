@@ -428,7 +428,7 @@ pub fn spawn_expiry_task(queue: Arc<CardQueue>) -> tokio::task::JoinHandle<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cards::model::ApprovalCard;
+    use crate::cards::model::{ApprovalCard, CardSilo};
     use crate::store::LibSqlBackend;
     use tokio::sync::broadcast;
 
@@ -649,5 +649,152 @@ mod tests {
 
         let db_card = db.get_card(card_id).await.unwrap().unwrap();
         assert_eq!(db_card.status, CardStatus::Sent);
+    }
+
+    // ── SiloCounts broadcast tests ──────────────────────────────────
+
+    #[tokio::test]
+    async fn push_broadcasts_silo_counts() {
+        let queue = CardQueue::new();
+        let mut rx = queue.subscribe();
+
+        queue.push(make_card(15)).await;
+
+        // Find the SiloCounts message.
+        let msg = recv_until(&mut rx, |m| matches!(m, WsMessage::SiloCounts { .. })).await;
+        match msg {
+            WsMessage::SiloCounts { counts } => {
+                assert_eq!(counts.messages, 1);
+                assert_eq!(counts.todos, 0);
+                assert_eq!(counts.calendar, 0);
+            }
+            _ => panic!("Expected SiloCounts"),
+        }
+    }
+
+    #[tokio::test]
+    async fn approve_broadcasts_silo_counts() {
+        let queue = CardQueue::new();
+        let card = make_card(15);
+        let card_id = card.id;
+        queue.push(card).await;
+
+        let mut rx = queue.subscribe();
+        queue.approve(card_id).await;
+
+        let msg = recv_until(&mut rx, |m| matches!(m, WsMessage::SiloCounts { .. })).await;
+        match msg {
+            WsMessage::SiloCounts { counts } => {
+                assert_eq!(counts.messages, 0, "approved card should not count");
+            }
+            _ => panic!("Expected SiloCounts"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dismiss_broadcasts_silo_counts() {
+        let queue = CardQueue::new();
+        let card = make_card(15);
+        let card_id = card.id;
+        queue.push(card).await;
+
+        let mut rx = queue.subscribe();
+        queue.dismiss(card_id).await;
+
+        let msg = recv_until(&mut rx, |m| matches!(m, WsMessage::SiloCounts { .. })).await;
+        match msg {
+            WsMessage::SiloCounts { counts } => {
+                assert_eq!(counts.messages, 0, "dismissed card should not count");
+            }
+            _ => panic!("Expected SiloCounts"),
+        }
+    }
+
+    #[tokio::test]
+    async fn edit_broadcasts_silo_counts() {
+        let queue = CardQueue::new();
+        let card = make_card(15);
+        let card_id = card.id;
+        queue.push(card).await;
+
+        let mut rx = queue.subscribe();
+        queue.edit(card_id, "new text".into()).await;
+
+        let msg = recv_until(&mut rx, |m| matches!(m, WsMessage::SiloCounts { .. })).await;
+        match msg {
+            WsMessage::SiloCounts { counts } => {
+                // Edit auto-approves, so pending count should be 0.
+                assert_eq!(counts.messages, 0);
+            }
+            _ => panic!("Expected SiloCounts"),
+        }
+    }
+
+    #[tokio::test]
+    async fn mark_sent_broadcasts_silo_counts() {
+        let queue = CardQueue::new();
+        let card = make_card(15);
+        let card_id = card.id;
+        queue.push(card).await;
+        queue.approve(card_id).await;
+
+        let mut rx = queue.subscribe();
+        queue.mark_sent(card_id).await;
+
+        let msg = recv_until(&mut rx, |m| matches!(m, WsMessage::SiloCounts { .. })).await;
+        match msg {
+            WsMessage::SiloCounts { counts } => {
+                assert_eq!(counts.messages, 0);
+            }
+            _ => panic!("Expected SiloCounts"),
+        }
+    }
+
+    #[tokio::test]
+    async fn silo_counts_reflects_multiple_silos() {
+        let queue = CardQueue::new();
+
+        // Reply → Messages silo.
+        queue.push(make_card(15)).await;
+        // Action → Todos silo.
+        let action = ApprovalCard::new_action("task", None, CardSilo::Todos, 15);
+        queue.push(action).await;
+        // Another action → Calendar silo.
+        let cal = ApprovalCard::new_action("event", None, CardSilo::Calendar, 15);
+        queue.push(cal).await;
+
+        let mut rx = queue.subscribe();
+
+        // Push one more to get a fresh SiloCounts broadcast.
+        queue.push(make_card(15)).await;
+
+        let msg = recv_until(&mut rx, |m| matches!(m, WsMessage::SiloCounts { .. })).await;
+        match msg {
+            WsMessage::SiloCounts { counts } => {
+                assert_eq!(counts.messages, 2); // 2 reply cards
+                assert_eq!(counts.todos, 1);
+                assert_eq!(counts.calendar, 1);
+            }
+            _ => panic!("Expected SiloCounts"),
+        }
+    }
+
+    #[tokio::test]
+    async fn expire_broadcasts_silo_counts() {
+        let queue = CardQueue::new();
+        // Create an already-expired card.
+        let card = ApprovalCard::new_reply("t", "s", "m", "r", 0.9, "c", 0);
+        queue.push(card).await;
+
+        let mut rx = queue.subscribe();
+        queue.expire_old().await;
+
+        let msg = recv_until(&mut rx, |m| matches!(m, WsMessage::SiloCounts { .. })).await;
+        match msg {
+            WsMessage::SiloCounts { counts } => {
+                assert_eq!(counts.total(), 0);
+            }
+            _ => panic!("Expected SiloCounts"),
+        }
     }
 }
