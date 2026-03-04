@@ -1284,3 +1284,76 @@ async fn ws_sync_includes_all_pending_card_types() {
     .await
     .expect("test timed out");
 }
+
+// ── Without-expiry card tests ───────────────────────────────────────
+
+#[tokio::test]
+async fn no_expiry_action_card_stays_pending() {
+    timeout(TEST_TIMEOUT, async {
+        let queue = CardQueue::new();
+
+        let card = ApprovalCard::new_action("never expires", None, CardSilo::Todos, 0)
+            .without_expiry();
+        queue.push(card).await;
+
+        // Even though expire_minutes was 0, without_expiry means it's still pending.
+        assert_eq!(queue.pending().await.len(), 1);
+
+        // expire_old should NOT expire it.
+        let expired = queue.expire_old().await;
+        assert_eq!(expired, 0);
+        assert_eq!(queue.pending().await.len(), 1);
+    })
+    .await
+    .expect("test timed out");
+}
+
+#[tokio::test]
+async fn no_expiry_card_in_ws_sync() {
+    timeout(TEST_TIMEOUT, async {
+        let (port, queue, _reg) = start_server().await;
+
+        let card = ApprovalCard::new_action("eternal", None, CardSilo::Todos, 0)
+            .without_expiry();
+        let card_id = card.id;
+        queue.push(card).await;
+
+        let (mut ws, _) = connect_async(format!("ws://127.0.0.1:{port}/ws"))
+            .await
+            .unwrap();
+
+        let msg = ws.next().await.unwrap().unwrap();
+        let json = parse_ws_json(&msg);
+        assert_eq!(json["type"], "cards_sync");
+        let cards = json["cards"].as_array().unwrap();
+        assert_eq!(cards.len(), 1);
+        assert_eq!(cards[0]["id"], card_id.to_string());
+    })
+    .await
+    .expect("test timed out");
+}
+
+#[tokio::test]
+async fn no_expiry_card_approve_via_rest() {
+    timeout(TEST_TIMEOUT, async {
+        let (port, queue, _reg) = start_server().await;
+
+        let card = ApprovalCard::new_action("approve me", None, CardSilo::Todos, 0)
+            .without_expiry();
+        let card_id = card.id;
+        queue.push(card).await;
+
+        let client = reqwest::Client::new();
+        let resp = client
+            .post(format!(
+                "http://127.0.0.1:{port}/api/cards/{card_id}/approve"
+            ))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        assert!(queue.pending().await.is_empty());
+    })
+    .await
+    .expect("test timed out");
+}

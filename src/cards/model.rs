@@ -224,8 +224,9 @@ pub struct ApprovalCard {
     pub status: CardStatus,
     /// When the card was created.
     pub created_at: DateTime<Utc>,
-    /// When the card expires (auto-dismiss).
-    pub expires_at: DateTime<Utc>,
+    /// When the card expires (auto-dismiss). `None` means "never expires".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<DateTime<Utc>>,
     /// When the card was last updated.
     pub updated_at: DateTime<Utc>,
 }
@@ -259,7 +260,7 @@ impl ApprovalCard {
             },
             status: CardStatus::Pending,
             created_at: now,
-            expires_at: now + chrono::Duration::minutes(expire_minutes as i64),
+            expires_at: Some(now + chrono::Duration::minutes(expire_minutes as i64)),
             updated_at: now,
         }
     }
@@ -286,7 +287,7 @@ impl ApprovalCard {
             },
             status: CardStatus::Pending,
             created_at: now,
-            expires_at: now + chrono::Duration::minutes(expire_minutes as i64),
+            expires_at: Some(now + chrono::Duration::minutes(expire_minutes as i64)),
             updated_at: now,
         }
     }
@@ -308,7 +309,7 @@ impl ApprovalCard {
             },
             status: CardStatus::Pending,
             created_at: now,
-            expires_at: now + chrono::Duration::minutes(expire_minutes as i64),
+            expires_at: Some(now + chrono::Duration::minutes(expire_minutes as i64)),
             updated_at: now,
         }
     }
@@ -332,7 +333,7 @@ impl ApprovalCard {
             },
             status: CardStatus::Pending,
             created_at: now,
-            expires_at: now + chrono::Duration::minutes(expire_minutes as i64),
+            expires_at: Some(now + chrono::Duration::minutes(expire_minutes as i64)),
             updated_at: now,
         }
     }
@@ -340,6 +341,12 @@ impl ApprovalCard {
     /// Set the silo on this card (builder pattern).
     pub fn with_silo(mut self, silo: CardSilo) -> Self {
         self.silo = silo;
+        self
+    }
+
+    /// Remove expiry — the card will never auto-expire.
+    pub fn without_expiry(mut self) -> Self {
+        self.expires_at = None;
         self
     }
 
@@ -390,9 +397,12 @@ impl ApprovalCard {
         self
     }
 
-    /// Check if this card has expired.
+    /// Check if this card has expired. Cards without an expiry never expire.
     pub fn is_expired(&self) -> bool {
-        Utc::now() > self.expires_at
+        match self.expires_at {
+            Some(t) => Utc::now() > t,
+            None => false,
+        }
     }
 
     /// Convenience: card_type string.
@@ -446,7 +456,7 @@ mod tests {
         let card = ApprovalCard::new_reply("telegram", "Alice", "hey", "hey back!", 0.8, "chat_123", 15);
         assert_eq!(card.status, CardStatus::Pending);
         assert!(!card.is_expired());
-        assert!(card.expires_at > card.created_at);
+        assert!(card.expires_at.unwrap() > card.created_at);
         assert_eq!(card.card_type_str(), "reply");
         assert_eq!(card.silo, CardSilo::Messages);
     }
@@ -942,6 +952,57 @@ mod tests {
         let card = ApprovalCard::new_action("task", None, CardSilo::Todos, 15)
             .with_message_id("msg_123");
         assert!(card.payload.message_id().is_none());
+    }
+
+    // ── without_expiry tests ──────────────────────────────────────
+
+    #[test]
+    fn without_expiry_clears_expires_at() {
+        let card = ApprovalCard::new_reply("t", "s", "m", "r", 0.9, "c", 15)
+            .without_expiry();
+        assert!(card.expires_at.is_none());
+    }
+
+    #[test]
+    fn without_expiry_card_never_expires() {
+        let card = ApprovalCard::new_action("task", None, CardSilo::Todos, 0)
+            .without_expiry();
+        assert!(!card.is_expired(), "without_expiry card should never be expired");
+    }
+
+    #[test]
+    fn without_expiry_serialization_omits_field() {
+        let card = ApprovalCard::new_action("task", None, CardSilo::Todos, 15)
+            .without_expiry();
+        let json = serde_json::to_string(&card).unwrap();
+        assert!(!json.contains("expires_at"), "None expires_at should be omitted from JSON");
+    }
+
+    #[test]
+    fn with_expiry_serialization_includes_field() {
+        let card = ApprovalCard::new_reply("t", "s", "m", "r", 0.9, "c", 15);
+        let json = serde_json::to_string(&card).unwrap();
+        assert!(json.contains("expires_at"), "Some expires_at should be in JSON");
+    }
+
+    #[test]
+    fn without_expiry_serde_roundtrip() {
+        let card = ApprovalCard::new_action("task", None, CardSilo::Todos, 15)
+            .without_expiry();
+        let json = serde_json::to_string(&card).unwrap();
+        let parsed: ApprovalCard = serde_json::from_str(&json).unwrap();
+        assert!(parsed.expires_at.is_none());
+        assert!(!parsed.is_expired());
+    }
+
+    #[test]
+    fn silo_counts_includes_no_expiry_cards() {
+        let mut cards = VecDeque::new();
+        cards.push_back(
+            ApprovalCard::new_action("no expiry", None, CardSilo::Todos, 15).without_expiry()
+        );
+        let counts = SiloCounts::from_cards(&cards);
+        assert_eq!(counts.todos, 1, "card without expiry should count as pending");
     }
 
     // ── SiloCounts edge cases ───────────────────────────────────────

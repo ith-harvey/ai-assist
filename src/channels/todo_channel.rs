@@ -254,8 +254,9 @@ impl Channel for TodoChannel {
                     format!("Tool approval: {} — {}", tool_name, description),
                     action_detail,
                     CardSilo::Todos,
-                    60, // 60 min expiry
-                );
+                    60, // fallback expiry (overridden by without_expiry)
+                )
+                .without_expiry();
                 let card_id = card.id;
 
                 // Push to card queue
