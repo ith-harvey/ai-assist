@@ -19,7 +19,7 @@ const SCHEMA: &str = r#"
         status TEXT NOT NULL DEFAULT 'pending',
         channel TEXT NOT NULL,
         created_at TEXT NOT NULL,
-        expires_at TEXT NOT NULL,
+        expires_at TEXT,
         updated_at TEXT NOT NULL,
         message_id TEXT,
         reply_metadata TEXT,

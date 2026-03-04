@@ -50,6 +50,7 @@ public enum TodoBucket: String, Codable, Sendable {
 public enum TodoStatus: String, Codable, Sendable {
     case created
     case agentWorking = "agent_working"
+    case awaitingApproval = "awaiting_approval"
     case readyForReview = "ready_for_review"
     case waitingOnYou = "waiting_on_you"
     case snoozed
@@ -60,6 +61,7 @@ public enum TodoStatus: String, Codable, Sendable {
         switch self {
         case .created: "doc.text"
         case .agentWorking: "gearshape.2"
+        case .awaitingApproval: "hand.raised.fill"
         case .readyForReview: "checkmark.circle"
         case .waitingOnYou: "person.fill"
         case .snoozed: "moon.zzz"
@@ -72,6 +74,7 @@ public enum TodoStatus: String, Codable, Sendable {
         switch self {
         case .created: "Created"
         case .agentWorking: "Agent working"
+        case .awaitingApproval: "Awaiting approval"
         case .readyForReview: "Ready for review"
         case .waitingOnYou: "Waiting on you"
         case .snoozed: "Snoozed"
@@ -84,6 +87,7 @@ public enum TodoStatus: String, Codable, Sendable {
         switch self {
         case .created: .blue
         case .agentWorking: .orange
+        case .awaitingApproval: .orange
         case .readyForReview: .green
         case .waitingOnYou: .purple
         case .snoozed: .gray

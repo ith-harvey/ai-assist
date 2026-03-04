@@ -162,7 +162,15 @@ public struct TodoListView: View {
                 #endif
         )
         .clipShape(RoundedRectangle(cornerRadius: 20))
-        .shadow(color: .black.opacity(0.1), radius: 12, y: 4)
+        .overlay(
+            RoundedRectangle(cornerRadius: 20)
+                .strokeBorder(.orange.opacity(todo.status == .awaitingApproval ? 0.6 : 0), lineWidth: 1.5)
+        )
+        .shadow(
+            color: todo.status == .awaitingApproval ? .orange.opacity(0.25) : .black.opacity(0.1),
+            radius: todo.status == .awaitingApproval ? 8 : 12,
+            y: todo.status == .awaitingApproval ? 0 : 4
+        )
         .contentShape(Rectangle())
         .onTapGesture {
             selectedTodo = todo

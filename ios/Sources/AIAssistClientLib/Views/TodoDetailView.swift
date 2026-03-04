@@ -535,6 +535,7 @@ public struct TodoDetailView: View {
         switch todo.status {
         case .created: .blue
         case .agentWorking: .orange
+        case .awaitingApproval: .orange
         case .readyForReview: .green
         case .waitingOnYou: .purple
         case .snoozed: .gray

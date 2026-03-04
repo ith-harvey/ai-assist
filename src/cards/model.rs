@@ -224,8 +224,9 @@ pub struct ApprovalCard {
     pub status: CardStatus,
     /// When the card was created.
     pub created_at: DateTime<Utc>,
-    /// When the card expires (auto-dismiss).
-    pub expires_at: DateTime<Utc>,
+    /// When the card expires (auto-dismiss). `None` means "never expires".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<DateTime<Utc>>,
     /// When the card was last updated.
     pub updated_at: DateTime<Utc>,
 }
@@ -259,7 +260,7 @@ impl ApprovalCard {
             },
             status: CardStatus::Pending,
             created_at: now,
-            expires_at: now + chrono::Duration::minutes(expire_minutes as i64),
+            expires_at: Some(now + chrono::Duration::minutes(expire_minutes as i64)),
             updated_at: now,
         }
     }
@@ -286,7 +287,7 @@ impl ApprovalCard {
             },
             status: CardStatus::Pending,
             created_at: now,
-            expires_at: now + chrono::Duration::minutes(expire_minutes as i64),
+            expires_at: Some(now + chrono::Duration::minutes(expire_minutes as i64)),
             updated_at: now,
         }
     }
@@ -308,7 +309,7 @@ impl ApprovalCard {
             },
             status: CardStatus::Pending,
             created_at: now,
-            expires_at: now + chrono::Duration::minutes(expire_minutes as i64),
+            expires_at: Some(now + chrono::Duration::minutes(expire_minutes as i64)),
             updated_at: now,
         }
     }
@@ -332,7 +333,7 @@ impl ApprovalCard {
             },
             status: CardStatus::Pending,
             created_at: now,
-            expires_at: now + chrono::Duration::minutes(expire_minutes as i64),
+            expires_at: Some(now + chrono::Duration::minutes(expire_minutes as i64)),
             updated_at: now,
         }
     }
@@ -340,6 +341,12 @@ impl ApprovalCard {
     /// Set the silo on this card (builder pattern).
     pub fn with_silo(mut self, silo: CardSilo) -> Self {
         self.silo = silo;
+        self
+    }
+
+    /// Remove expiry — the card will never auto-expire.
+    pub fn without_expiry(mut self) -> Self {
+        self.expires_at = None;
         self
     }
 
@@ -390,9 +397,12 @@ impl ApprovalCard {
         self
     }
 
-    /// Check if this card has expired.
+    /// Check if this card has expired. Cards without an expiry never expire.
     pub fn is_expired(&self) -> bool {
-        Utc::now() > self.expires_at
+        match self.expires_at {
+            Some(t) => Utc::now() > t,
+            None => false,
+        }
     }
 
     /// Convenience: card_type string.
@@ -446,7 +456,7 @@ mod tests {
         let card = ApprovalCard::new_reply("telegram", "Alice", "hey", "hey back!", 0.8, "chat_123", 15);
         assert_eq!(card.status, CardStatus::Pending);
         assert!(!card.is_expired());
-        assert!(card.expires_at > card.created_at);
+        assert!(card.expires_at.unwrap() > card.created_at);
         assert_eq!(card.card_type_str(), "reply");
         assert_eq!(card.silo, CardSilo::Messages);
     }
@@ -759,5 +769,266 @@ mod tests {
         let card = ApprovalCard::new_reply("t", "s", "m", "r", 0.9, "c", 15)
             .with_silo(CardSilo::Calendar);
         assert_eq!(card.silo, CardSilo::Calendar);
+    }
+
+    // ── Zero-minute expiry edge cases ───────────────────────────────
+
+    #[test]
+    fn zero_expire_reply_is_immediately_expired() {
+        let card = ApprovalCard::new_reply("t", "s", "m", "r", 0.9, "c", 0);
+        assert!(card.is_expired());
+    }
+
+    #[test]
+    fn zero_expire_action_is_immediately_expired() {
+        let card = ApprovalCard::new_action("do thing", None, CardSilo::Todos, 0);
+        assert!(card.is_expired());
+    }
+
+    #[test]
+    fn zero_expire_compose_is_immediately_expired() {
+        let card = ApprovalCard::new_compose("email", "bob@x.com", None, "draft", 0.8, 0);
+        assert!(card.is_expired());
+    }
+
+    #[test]
+    fn zero_expire_decision_is_immediately_expired() {
+        let card = ApprovalCard::new_decision("q", "c", vec![], CardSilo::Messages, 0);
+        assert!(card.is_expired());
+    }
+
+    // ── Action card constructors ────────────────────────────────────
+
+    #[test]
+    fn action_card_with_detail() {
+        let card = ApprovalCard::new_action("run deploy", Some("kubectl apply -f".into()), CardSilo::Todos, 60);
+        assert_eq!(card.card_type_str(), "action");
+        assert_eq!(card.silo, CardSilo::Todos);
+        if let CardPayload::Action { description, action_detail } = &card.payload {
+            assert_eq!(description, "run deploy");
+            assert_eq!(action_detail.as_deref(), Some("kubectl apply -f"));
+        } else {
+            panic!("Expected Action payload");
+        }
+    }
+
+    #[test]
+    fn action_card_without_detail() {
+        let card = ApprovalCard::new_action("simple task", None, CardSilo::Calendar, 15);
+        if let CardPayload::Action { action_detail, .. } = &card.payload {
+            assert!(action_detail.is_none());
+        } else {
+            panic!("Expected Action payload");
+        }
+    }
+
+    #[test]
+    fn action_card_has_no_confidence() {
+        let card = ApprovalCard::new_action("task", None, CardSilo::Todos, 15);
+        assert!(card.payload.confidence().is_none());
+    }
+
+    #[test]
+    fn action_card_has_no_channel() {
+        let card = ApprovalCard::new_action("task", None, CardSilo::Todos, 15);
+        assert!(card.payload.channel().is_none());
+    }
+
+    // ── Decision card constructors ──────────────────────────────────
+
+    #[test]
+    fn decision_card_with_options() {
+        let card = ApprovalCard::new_decision(
+            "Which cloud?",
+            "Choosing a provider",
+            vec!["AWS".into(), "GCP".into(), "Azure".into()],
+            CardSilo::Messages,
+            120,
+        );
+        if let CardPayload::Decision { question, context, options } = &card.payload {
+            assert_eq!(question, "Which cloud?");
+            assert_eq!(context, "Choosing a provider");
+            assert_eq!(options.len(), 3);
+        } else {
+            panic!("Expected Decision payload");
+        }
+    }
+
+    #[test]
+    fn decision_card_empty_options() {
+        let card = ApprovalCard::new_decision("Binary?", "yes/no", vec![], CardSilo::Messages, 60);
+        if let CardPayload::Decision { options, .. } = &card.payload {
+            assert!(options.is_empty());
+        } else {
+            panic!("Expected Decision payload");
+        }
+    }
+
+    #[test]
+    fn decision_card_has_no_confidence() {
+        let card = ApprovalCard::new_decision("q", "c", vec![], CardSilo::Messages, 60);
+        assert!(card.payload.confidence().is_none());
+    }
+
+    // ── Compose card constructors ───────────────────────────────────
+
+    #[test]
+    fn compose_card_with_subject() {
+        let card = ApprovalCard::new_compose("email", "alice@x.com", Some("Hello".into()), "Body text", 0.7, 30);
+        if let CardPayload::Compose { channel, recipient, subject, draft_body, confidence } = &card.payload {
+            assert_eq!(channel, "email");
+            assert_eq!(recipient, "alice@x.com");
+            assert_eq!(subject.as_deref(), Some("Hello"));
+            assert_eq!(draft_body, "Body text");
+            assert_eq!(*confidence, 0.7);
+        } else {
+            panic!("Expected Compose payload");
+        }
+    }
+
+    #[test]
+    fn compose_card_without_subject() {
+        let card = ApprovalCard::new_compose("telegram", "bob", None, "Hey!", 0.9, 15);
+        if let CardPayload::Compose { subject, .. } = &card.payload {
+            assert!(subject.is_none());
+        } else {
+            panic!("Expected Compose payload");
+        }
+    }
+
+    #[test]
+    fn compose_confidence_is_clamped() {
+        let card = ApprovalCard::new_compose("t", "r", None, "body", 2.0, 15);
+        assert_eq!(card.payload.confidence().unwrap(), 1.0);
+
+        let card = ApprovalCard::new_compose("t", "r", None, "body", -1.0, 15);
+        assert_eq!(card.payload.confidence().unwrap(), 0.0);
+    }
+
+    // ── CardPayload accessor edge cases ─────────────────────────────
+
+    #[test]
+    fn action_payload_has_no_suggested_reply() {
+        let card = ApprovalCard::new_action("task", None, CardSilo::Todos, 15);
+        assert!(card.payload.suggested_reply().is_none());
+    }
+
+    #[test]
+    fn action_payload_has_no_reply_metadata() {
+        let card = ApprovalCard::new_action("task", None, CardSilo::Todos, 15);
+        assert!(card.payload.reply_metadata().is_none());
+    }
+
+    #[test]
+    fn action_payload_has_no_message_id() {
+        let card = ApprovalCard::new_action("task", None, CardSilo::Todos, 15);
+        assert!(card.payload.message_id().is_none());
+    }
+
+    #[test]
+    fn compose_payload_has_no_suggested_reply() {
+        let card = ApprovalCard::new_compose("t", "r", None, "body", 0.8, 15);
+        assert!(card.payload.suggested_reply().is_none());
+    }
+
+    #[test]
+    fn decision_payload_has_no_channel() {
+        let card = ApprovalCard::new_decision("q", "c", vec![], CardSilo::Messages, 60);
+        assert!(card.payload.channel().is_none());
+    }
+
+    // ── with_message_id builder ─────────────────────────────────────
+
+    #[test]
+    fn with_message_id_sets_id() {
+        let card = ApprovalCard::new_reply("t", "s", "m", "r", 0.9, "c", 15)
+            .with_message_id("msg_123");
+        assert_eq!(card.payload.message_id(), Some("msg_123"));
+    }
+
+    #[test]
+    fn with_message_id_noop_on_action() {
+        // with_message_id on a non-Reply card is a no-op (builder pattern).
+        let card = ApprovalCard::new_action("task", None, CardSilo::Todos, 15)
+            .with_message_id("msg_123");
+        assert!(card.payload.message_id().is_none());
+    }
+
+    // ── without_expiry tests ──────────────────────────────────────
+
+    #[test]
+    fn without_expiry_clears_expires_at() {
+        let card = ApprovalCard::new_reply("t", "s", "m", "r", 0.9, "c", 15)
+            .without_expiry();
+        assert!(card.expires_at.is_none());
+    }
+
+    #[test]
+    fn without_expiry_card_never_expires() {
+        let card = ApprovalCard::new_action("task", None, CardSilo::Todos, 0)
+            .without_expiry();
+        assert!(!card.is_expired(), "without_expiry card should never be expired");
+    }
+
+    #[test]
+    fn without_expiry_serialization_omits_field() {
+        let card = ApprovalCard::new_action("task", None, CardSilo::Todos, 15)
+            .without_expiry();
+        let json = serde_json::to_string(&card).unwrap();
+        assert!(!json.contains("expires_at"), "None expires_at should be omitted from JSON");
+    }
+
+    #[test]
+    fn with_expiry_serialization_includes_field() {
+        let card = ApprovalCard::new_reply("t", "s", "m", "r", 0.9, "c", 15);
+        let json = serde_json::to_string(&card).unwrap();
+        assert!(json.contains("expires_at"), "Some expires_at should be in JSON");
+    }
+
+    #[test]
+    fn without_expiry_serde_roundtrip() {
+        let card = ApprovalCard::new_action("task", None, CardSilo::Todos, 15)
+            .without_expiry();
+        let json = serde_json::to_string(&card).unwrap();
+        let parsed: ApprovalCard = serde_json::from_str(&json).unwrap();
+        assert!(parsed.expires_at.is_none());
+        assert!(!parsed.is_expired());
+    }
+
+    #[test]
+    fn silo_counts_includes_no_expiry_cards() {
+        let mut cards = VecDeque::new();
+        cards.push_back(
+            ApprovalCard::new_action("no expiry", None, CardSilo::Todos, 15).without_expiry()
+        );
+        let counts = SiloCounts::from_cards(&cards);
+        assert_eq!(counts.todos, 1, "card without expiry should count as pending");
+    }
+
+    // ── SiloCounts edge cases ───────────────────────────────────────
+
+    #[test]
+    fn silo_counts_empty_queue() {
+        let cards = VecDeque::new();
+        let counts = SiloCounts::from_cards(&cards);
+        assert_eq!(counts.total(), 0);
+    }
+
+    #[test]
+    fn silo_counts_ignores_expired() {
+        let mut cards = VecDeque::new();
+        cards.push_back(ApprovalCard::new_reply("t", "s", "m", "r", 0.9, "c", 0));
+        let counts = SiloCounts::from_cards(&cards);
+        assert_eq!(counts.total(), 0);
+    }
+
+    #[test]
+    fn silo_counts_ignores_non_pending() {
+        let mut cards = VecDeque::new();
+        let mut card = ApprovalCard::new_reply("t", "s", "m", "r", 0.9, "c", 15);
+        card.status = CardStatus::Approved;
+        cards.push_back(card);
+        let counts = SiloCounts::from_cards(&cards);
+        assert_eq!(counts.total(), 0);
     }
 }

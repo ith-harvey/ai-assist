@@ -75,7 +75,7 @@ public struct AnyCodableSendable: @unchecked Sendable {
 ///   "payload": { ... },
 ///   "status": "pending",
 ///   "created_at": "...",
-///   "expires_at": "...",
+///   "expires_at": "..." | null,    // optional; null = never expires
 ///   "updated_at": "..."
 /// }
 /// ```
@@ -86,7 +86,7 @@ public struct ApprovalCard: Identifiable, Sendable {
     public let payload: CardPayload
     public var status: CardStatus
     public let createdAt: String
-    public let expiresAt: String
+    public let expiresAt: String?
     public let updatedAt: String
 }
 
@@ -178,7 +178,7 @@ extension ApprovalCard: Codable {
         silo = try container.decodeIfPresent(CardSilo.self, forKey: .silo) ?? .messages
         status = try container.decode(CardStatus.self, forKey: .status)
         createdAt = try container.decode(String.self, forKey: .createdAt)
-        expiresAt = try container.decode(String.self, forKey: .expiresAt)
+        expiresAt = try container.decodeIfPresent(String.self, forKey: .expiresAt)
         updatedAt = try container.decode(String.self, forKey: .updatedAt)
 
         let type = try container.decodeIfPresent(CardType.self, forKey: .cardType) ?? .reply
@@ -232,7 +232,7 @@ extension ApprovalCard: Codable {
         try container.encode(cardType, forKey: .cardType)
         try container.encode(status, forKey: .status)
         try container.encode(createdAt, forKey: .createdAt)
-        try container.encode(expiresAt, forKey: .expiresAt)
+        try container.encodeIfPresent(expiresAt, forKey: .expiresAt)
         try container.encode(updatedAt, forKey: .updatedAt)
         // payload encoding omitted — not needed
     }
