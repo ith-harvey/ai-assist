@@ -157,7 +157,7 @@ impl Agent {
                     match msg {
                         Some(m) => m,
                         None => {
-                            tracing::info!("All channel streams ended, shutting down...");
+                            tracing::info!(agent = %self.config.name, "All channel streams ended, shutting down...");
                             break;
                         }
                     }
@@ -173,6 +173,7 @@ impl Agent {
                 }
                 Ok(Some(_)) => {
                     // Empty response, nothing to send
+                    tracing::warn!(agent = %self.config.name, "handle_message returned empty response");
                 }
                 Ok(None) => {
                     // Shutdown signal received (/quit, /exit, /shutdown)
@@ -198,7 +199,7 @@ impl Agent {
         }
 
         // Cleanup
-        tracing::info!("Agent shutting down...");
+        tracing::info!(agent = %self.config.name, "Agent shutting down...");
         pruning_handle.abort();
         self.channels.shutdown_all().await?;
 

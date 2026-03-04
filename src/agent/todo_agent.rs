@@ -10,6 +10,8 @@ use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 
+use tracing::Instrument;
+
 use crate::agent::agent_loop::{Agent, AgentDeps};
 use crate::cards::queue::CardQueue;
 use crate::channels::todo_channel::TodoChannel;
@@ -171,16 +173,20 @@ pub async fn spawn_todo_agent(
     let agent = Agent::new(config, agent_deps, channel_manager, None);
 
     let todo_id = todo.id;
+    let title = todo.title.clone();
+    let span = tracing::info_span!("todo_agent",
+        todo_id = %todo_id,
+        job_id = %job_id,
+        title = %title,
+    );
     let handle = tokio::spawn(async move {
         if let Err(e) = agent.run().await {
             tracing::error!(
-                todo_id = %todo_id,
-                job_id = %job_id,
                 error = %e,
                 "Todo agent failed"
             );
         }
-    });
+    }.instrument(span));
 
     tracing::info!(
         todo_id = %todo.id,

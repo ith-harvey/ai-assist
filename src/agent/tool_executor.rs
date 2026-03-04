@@ -74,6 +74,7 @@ impl Agent {
         loop {
             iteration += 1;
             if iteration > MAX_TOOL_ITERATIONS {
+                tracing::warn!(iteration, "Exceeded max tool iterations");
                 return Err(crate::error::LlmError::InvalidResponse {
                     provider: "agent".to_string(),
                     reason: format!("Exceeded maximum tool iterations ({})", MAX_TOOL_ITERATIONS),
@@ -99,6 +100,13 @@ impl Agent {
             let tool_defs = self.tools().tool_definitions().await;
             let has_tools = !tool_defs.is_empty();
 
+            tracing::info!(
+                iteration,
+                tools_executed,
+                has_tools,
+                "Agentic loop iteration starting"
+            );
+
             // Call LLM with current context
             let context = ReasoningContext::new()
                 .with_messages(context_messages.clone())
@@ -109,7 +117,18 @@ impl Agent {
                     m
                 });
 
-            let output = reasoning.respond_with_tools(&context).await?;
+            let output = reasoning.respond_with_tools(&context).await;
+            if let Err(ref e) = output {
+                let _ = self
+                    .channels
+                    .send_status(
+                        &message.channel,
+                        StatusUpdate::Thinking(format!("LLM error: {}", e)),
+                        &message.metadata,
+                    )
+                    .await;
+            }
+            let output = output?;
 
             // Track token usage for budget enforcement
             tracing::debug!(
@@ -139,6 +158,34 @@ impl Agent {
                 }
             }
 
+            // Log what the LLM returned before acting on it
+            match &output.result {
+                RespondResult::Text(text) => {
+                    let text_len = text.len();
+                    let preview: String = text.chars().take(200).collect();
+                    tracing::info!(
+                        iteration,
+                        text_len,
+                        preview = %preview,
+                        input_tokens = output.usage.input_tokens,
+                        output_tokens = output.usage.output_tokens,
+                        "LLM returned Text response"
+                    );
+                }
+                RespondResult::ToolCalls { tool_calls, content } => {
+                    let tool_names: Vec<&str> = tool_calls.iter().map(|tc| tc.name.as_str()).collect();
+                    tracing::info!(
+                        iteration,
+                        tool_count = tool_calls.len(),
+                        tool_names = ?tool_names,
+                        has_content = content.is_some(),
+                        input_tokens = output.usage.input_tokens,
+                        output_tokens = output.usage.output_tokens,
+                        "LLM returned ToolCalls"
+                    );
+                }
+            }
+
             match output.result {
                 RespondResult::Text(text) => {
                     // If no tools have been executed yet AND tools are actually
@@ -146,9 +193,9 @@ impl Agent {
                     // where the model explains what it will do instead of calling tools.
                     // When no tools are registered, return the text response immediately.
                     if !tools_executed && iteration < 3 && has_tools {
-                        tracing::debug!(
-                            "No tools executed yet (iteration {}), prompting for tool use",
-                            iteration
+                        tracing::info!(
+                            iteration,
+                            "No tools used yet, prompting LLM to use tools"
                         );
                         context_messages.push(ChatMessage::assistant(&text));
                         context_messages.push(ChatMessage::user(
@@ -159,6 +206,12 @@ impl Agent {
 
                     // Tools have been executed, no tools available, or we've tried
                     // multiple times — return the response.
+                    let text_len = text.len();
+                    tracing::info!(
+                        iteration,
+                        text_len,
+                        "Returning text response (post-tool)"
+                    );
                     return Ok(AgenticLoopResult::Response(text));
                 }
                 RespondResult::ToolCalls {
