@@ -11,6 +11,7 @@ use tokio::task::JoinHandle;
 use uuid::Uuid;
 
 use crate::agent::agent_loop::{Agent, AgentDeps};
+use crate::cards::queue::CardQueue;
 use crate::channels::todo_channel::TodoChannel;
 use crate::channels::ChannelManager;
 use crate::config::AgentConfig;
@@ -18,6 +19,7 @@ use crate::llm::LlmProvider;
 use crate::safety::SafetyLayer;
 use crate::store::Database;
 use crate::todos::activity::TodoActivityMessage;
+use crate::todos::approval_registry::TodoApprovalRegistry;
 use crate::todos::model::{TodoItem, TodoWsMessage};
 use crate::tools::registry::ToolRegistry;
 use crate::workspace::Workspace;
@@ -88,6 +90,8 @@ pub struct TodoAgentDeps {
     pub workspace: Arc<Workspace>,
     pub activity_tx: broadcast::Sender<TodoActivityMessage>,
     pub todo_tx: broadcast::Sender<TodoWsMessage>,
+    pub card_queue: Arc<CardQueue>,
+    pub approval_registry: TodoApprovalRegistry,
 }
 
 /// Spawn a new Agent wired to a TodoChannel for the given todo.
@@ -130,6 +134,8 @@ pub async fn spawn_todo_agent(
         deps.activity_tx.clone(),
         Arc::clone(&deps.db),
         deps.todo_tx.clone(),
+        Arc::clone(&deps.card_queue),
+        deps.approval_registry.clone(),
     );
 
     // Build ChannelManager with just the TodoChannel
