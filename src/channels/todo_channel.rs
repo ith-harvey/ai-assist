@@ -66,6 +66,7 @@ impl TodoChannel {
             content: content.to_string(),
             tool_name: tool_name.map(String::from),
             tool_args: tool_args.map(String::from),
+            timestamp: chrono::Utc::now().to_rfc3339(),
         });
     }
 
@@ -233,6 +234,37 @@ impl Channel for TodoChannel {
                 message_count = messages.len(),
                 "📝 Dumping agent transcript"
             );
+
+            // Write transcript to disk as human-readable log
+            let log_dir = "data/logs/transcripts";
+            let _ = tokio::fs::create_dir_all(log_dir).await;
+            let filename = format!("{}/{}-{}.log",
+                log_dir,
+                &self.todo_id.to_string()[..8],
+                &self.job_id.to_string()[..8],
+            );
+
+            let mut content = String::new();
+            content.push_str(&format!("Todo: {}\n", self.todo_title));
+            content.push_str(&format!("Todo ID: {}\n", self.todo_id));
+            content.push_str(&format!("Job ID: {}\n", self.job_id));
+            content.push_str(&format!("Result: {}\n", if self.responded.load(Ordering::SeqCst) { "SUCCESS" } else { "FAILED" }));
+            content.push_str("---\n");
+            for msg in &messages {
+                let tool_info = if let Some(ref tool) = msg.tool_name {
+                    format!(" → {}", tool)
+                } else {
+                    String::new()
+                };
+                content.push_str(&format!("[{}] [{}]{}\n", msg.timestamp, msg.role.to_uppercase(), tool_info));
+                content.push_str(&format!("{}\n\n", msg.content));
+            }
+            if let Err(e) = tokio::fs::write(&filename, &content).await {
+                tracing::warn!(error = %e, "Failed to write transcript log");
+            } else {
+                tracing::info!(path = %filename, "📝 Transcript written to disk");
+            }
+
             self.emit(TodoActivityMessage::Transcript {
                 job_id: self.job_id,
                 messages,

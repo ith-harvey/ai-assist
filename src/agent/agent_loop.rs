@@ -173,6 +173,7 @@ impl Agent {
                 }
                 Ok(Some(_)) => {
                     // Empty response, nothing to send
+                    tracing::warn!(agent = %self.config.name, "handle_message returned empty response");
                 }
                 Ok(None) => {
                     // Shutdown signal received (/quit, /exit, /shutdown)

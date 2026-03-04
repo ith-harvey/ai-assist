@@ -24,13 +24,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .install_default()
         .expect("Failed to install rustls crypto provider");
 
-    // Initialize tracing
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
+    // Initialize tracing — layered subscriber: stderr + daily rolling file
+    use tracing_subscriber::prelude::*;
+    use tracing_appender::rolling;
+
+    let file_appender = rolling::daily("data/logs", "ai-assist.log");
+    let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
+
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+
+    let stderr_layer = tracing_subscriber::fmt::layer()
+        .with_target(false);
+
+    let file_layer = tracing_subscriber::fmt::layer()
         .with_target(false)
+        .with_ansi(false)
+        .with_writer(non_blocking);
+
+    tracing_subscriber::registry()
+        .with(env_filter)
+        .with(stderr_layer)
+        .with(file_layer)
         .init();
 
     // Read API key from environment
