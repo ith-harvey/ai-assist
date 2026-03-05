@@ -25,54 +25,66 @@ public struct TodoDetailView: View {
     }
 
     public var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
-                // ── Header ──────────────────────────────────────
-                headerSection
-                    .padding(.horizontal, 20)
-                    .padding(.top, 16)
-                    .padding(.bottom, isHeaderCollapsed ? 8 : 12)
-
-                // ── Metadata (hidden when collapsed) ────────────
-                if !isHeaderCollapsed {
-                    metadataSection
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    // ── Header ──────────────────────────────────────
+                    headerSection
                         .padding(.horizontal, 20)
-                        .padding(.bottom, 12)
-                        .transition(.opacity.combined(with: .move(edge: .top)))
-                }
+                        .padding(.top, 16)
+                        .padding(.bottom, isHeaderCollapsed ? 8 : 12)
 
-                // ── Description (hidden when collapsed) ─────────
-                if !isHeaderCollapsed, let description = todo.description, !description.isEmpty {
-                    descriptionSection(description)
-                        .padding(.horizontal, 20)
-                        .padding(.bottom, 16)
-                        .transition(.opacity.combined(with: .move(edge: .top)))
-                }
+                    // ── Metadata (hidden when collapsed) ────────────
+                    if !isHeaderCollapsed {
+                        metadataSection
+                            .padding(.horizontal, 20)
+                            .padding(.bottom, 12)
+                            .transition(.opacity.combined(with: .move(edge: .top)))
+                    }
 
-                // ── Divider ─────────────────────────────────────
-                if todo.bucket == .agentStartable {
-                    Rectangle()
-                        .fill(Color.gray.opacity(0.2))
+                    // ── Description (hidden when collapsed) ─────────
+                    if !isHeaderCollapsed, let description = todo.description, !description.isEmpty {
+                        descriptionSection(description)
+                            .padding(.horizontal, 20)
+                            .padding(.bottom, 16)
+                            .transition(.opacity.combined(with: .move(edge: .top)))
+                    }
+
+                    // ── Divider ─────────────────────────────────────
+                    if todo.bucket == .agentStartable {
+                        Rectangle()
+                            .fill(Color.gray.opacity(0.2))
+                            .frame(height: 1)
+                            .padding(.horizontal, 20)
+
+                        // ── Activity Feed ───────────────────────────────
+                        activitySection
+                            .padding(.top, 12)
+                    }
+
+                    // Invisible bottom anchor for scroll-to-bottom
+                    Color.clear
                         .frame(height: 1)
-                        .padding(.horizontal, 20)
-
-                    // ── Activity Feed ───────────────────────────────
-                    activitySection
-                        .padding(.top, 12)
+                        .id("activityBottom")
+                }
+                .padding(.bottom, 20)
+                .background(
+                    GeometryReader { geo in
+                        Color.clear.preference(
+                            key: ScrollOffsetKey.self,
+                            value: geo.frame(in: .named("detailScroll")).origin.y
+                        )
+                    }
+                )
+            }
+            .coordinateSpace(name: "detailScroll")
+            .onAppear {
+                // Scroll to bottom after a brief delay to let content render
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                    proxy.scrollTo("activityBottom", anchor: .bottom)
                 }
             }
-            .padding(.bottom, 20)
-            .background(
-                GeometryReader { geo in
-                    Color.clear.preference(
-                        key: ScrollOffsetKey.self,
-                        value: geo.frame(in: .named("detailScroll")).origin.y
-                    )
-                }
-            )
         }
-        .coordinateSpace(name: "detailScroll")
-        .defaultScrollAnchor(.bottom)
         .onPreferenceChange(ScrollOffsetKey.self) { offset in
             // Collapse header when user scrolls up (content moves up, offset becomes negative)
             let shouldCollapse = offset < -80
