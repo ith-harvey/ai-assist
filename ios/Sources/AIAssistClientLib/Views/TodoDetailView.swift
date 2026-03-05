@@ -5,9 +5,19 @@ import SwiftUI
 /// Layout: header → metadata → description → divider → embedded agent activity feed.
 /// The activity feed reuses rendering logic from the old `TodoActivityView`.
 /// Connection badge shows live/disconnected status in the toolbar.
+/// Preference key for tracking scroll offset within the detail view.
+private struct ScrollOffsetKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
 public struct TodoDetailView: View {
     let todo: TodoItem
     @State private var activitySocket: TodoActivitySocket
+    @State private var isDescriptionExpanded = false
+    @State private var isHeaderCollapsed = false
 
     public init(todo: TodoItem) {
         self.todo = todo
@@ -21,20 +31,22 @@ public struct TodoDetailView: View {
                 headerSection
                     .padding(.horizontal, 20)
                     .padding(.top, 16)
-                    .padding(.bottom, 12)
+                    .padding(.bottom, isHeaderCollapsed ? 8 : 12)
 
-                // ── Metadata ────────────────────────────────────
-                metadataSection
-                    .padding(.horizontal, 20)
-                    .padding(.bottom, 12)
+                // ── Metadata (hidden when collapsed) ────────────
+                if !isHeaderCollapsed {
+                    metadataSection
+                        .padding(.horizontal, 20)
+                        .padding(.bottom, 12)
+                        .transition(.opacity.combined(with: .move(edge: .top)))
+                }
 
-                // ── Description ─────────────────────────────────
-                if let description = todo.description, !description.isEmpty {
-                    Text(description)
-                        .font(.subheadline)
-                        .foregroundStyle(.primary)
+                // ── Description (hidden when collapsed) ─────────
+                if !isHeaderCollapsed, let description = todo.description, !description.isEmpty {
+                    descriptionSection(description)
                         .padding(.horizontal, 20)
                         .padding(.bottom, 16)
+                        .transition(.opacity.combined(with: .move(edge: .top)))
                 }
 
                 // ── Divider ─────────────────────────────────────
@@ -50,6 +62,31 @@ public struct TodoDetailView: View {
                 }
             }
             .padding(.bottom, 20)
+            .background(
+                GeometryReader { geo in
+                    Color.clear.preference(
+                        key: ScrollOffsetKey.self,
+                        value: geo.frame(in: .named("detailScroll")).origin.y
+                    )
+                }
+            )
+        }
+        .coordinateSpace(name: "detailScroll")
+        .defaultScrollAnchor(.bottom)
+        .onPreferenceChange(ScrollOffsetKey.self) { offset in
+            // Collapse header when user scrolls up (content moves up, offset becomes negative)
+            let shouldCollapse = offset < -80
+            let shouldExpand = offset >= -40
+            if shouldCollapse && !isHeaderCollapsed {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    isHeaderCollapsed = true
+                    isDescriptionExpanded = false
+                }
+            } else if shouldExpand && isHeaderCollapsed {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    isHeaderCollapsed = false
+                }
+            }
         }
         #if os(iOS)
         .scrollDismissesKeyboard(.interactively)
@@ -78,52 +115,103 @@ public struct TodoDetailView: View {
         }
     }
 
+    // MARK: - Collapsible Description
+
+    private func descriptionSection(_ description: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            if isDescriptionExpanded {
+                Text(description)
+                    .font(.subheadline)
+                    .foregroundStyle(.primary)
+
+                Text("See less")
+                    .font(.subheadline)
+                    .foregroundStyle(.blue)
+                    .onTapGesture {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            isDescriptionExpanded = false
+                        }
+                    }
+            } else {
+                // Truncated description with inline "… See more"
+                HStack(alignment: .lastTextBaseline, spacing: 0) {
+                    Text(description)
+                        .font(.subheadline)
+                        .foregroundStyle(.primary)
+                        .lineLimit(3)
+
+                    // Only show "See more" if there's likely more text
+                    // (we always show it — lineLimit handles the truncation)
+                }
+
+                Text("… See more")
+                    .font(.subheadline)
+                    .foregroundStyle(.blue)
+                    .onTapGesture {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            isDescriptionExpanded = true
+                        }
+                    }
+            }
+        }
+    }
+
     // MARK: - Header
 
     private var headerSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 10) {
-                // Status icon
-                Image(systemName: todo.status.iconName)
-                    .font(.system(size: 24))
-                    .foregroundStyle(statusColor)
+            if isHeaderCollapsed {
+                // Compact: title only
+                Text(todo.title)
+                    .font(.title3)
+                    .fontWeight(.semibold)
+                    .foregroundStyle(.primary)
+                    .lineLimit(2)
+            } else {
+                // Full header with icon, badges
+                HStack(spacing: 10) {
+                    // Status icon
+                    Image(systemName: todo.status.iconName)
+                        .font(.system(size: 24))
+                        .foregroundStyle(statusColor)
 
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(todo.title)
-                        .font(.title3)
-                        .fontWeight(.semibold)
-                        .foregroundStyle(.primary)
-                        .lineLimit(3)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(todo.title)
+                            .font(.title3)
+                            .fontWeight(.semibold)
+                            .foregroundStyle(.primary)
+                            .lineLimit(3)
 
-                    HStack(spacing: 8) {
-                        // Type badge
-                        Text(todo.todoType.label)
-                            .font(.system(size: 11, weight: .medium))
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 3)
-                            .background(badgeColor.opacity(0.15))
-                            .foregroundStyle(badgeColor)
-                            .clipShape(Capsule())
+                        HStack(spacing: 8) {
+                            // Type badge
+                            Text(todo.todoType.label)
+                                .font(.system(size: 11, weight: .medium))
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 3)
+                                .background(badgeColor.opacity(0.15))
+                                .foregroundStyle(badgeColor)
+                                .clipShape(Capsule())
 
-                        // Priority
-                        if todo.priority <= 2 {
-                            HStack(spacing: 2) {
-                                Image(systemName: "exclamationmark.circle.fill")
-                                    .font(.system(size: 11))
-                                Text(todo.priority == 1 ? "High" : "Medium")
+                            // Priority
+                            if todo.priority <= 2 {
+                                HStack(spacing: 2) {
+                                    Image(systemName: "exclamationmark.circle.fill")
+                                        .font(.system(size: 11))
+                                    Text(todo.priority == 1 ? "High" : "Medium")
+                                        .font(.system(size: 11, weight: .medium))
+                                }
+                                .foregroundStyle(todo.priority == 1 ? .red : .orange)
+                            }
+
+                            // Bucket
+                            HStack(spacing: 3) {
+                                Image(systemName: todo.bucket == .agentStartable ? "cpu" : "person.fill")
+                                    .font(.system(size: 10))
+                                Text(todo.bucket == .agentStartable ? "Agent" : "Human")
                                     .font(.system(size: 11, weight: .medium))
                             }
-                            .foregroundStyle(todo.priority == 1 ? .red : .orange)
+                            .foregroundStyle(todo.bucket == .agentStartable ? .blue : .purple)
                         }
-
-                        // Bucket
-                        HStack(spacing: 3) {
-                            Image(systemName: todo.bucket == .agentStartable ? "cpu" : "person.fill")
-                                .font(.system(size: 10))
-                            Text(todo.bucket == .agentStartable ? "Agent" : "Human")
-                                .font(.system(size: 11, weight: .medium))
-                        }
-                        .foregroundStyle(todo.bucket == .agentStartable ? .blue : .purple)
                     }
                 }
             }
