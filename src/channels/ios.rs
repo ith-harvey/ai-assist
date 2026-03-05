@@ -226,9 +226,13 @@ impl Channel for IosChannel {
             StatusUpdate::ApprovalNeeded {
                 tool_name,
                 description,
+                summary,
                 ..
             } => ServerMessage::Status {
-                message: format!("{}: {}", tool_name, description),
+                message: summary
+                    .as_ref()
+                    .map(|s| s.headline.clone())
+                    .unwrap_or_else(|| format!("{}: {}", tool_name, description)),
             },
             StatusUpdate::AuthRequired { extension_name, .. } => ServerMessage::Status {
                 message: extension_name,

@@ -231,6 +231,12 @@ impl Tool for ReadFileTool {
         true
     }
 
+    fn summarize(&self, params: &serde_json::Value) -> crate::tools::summary::ToolSummary {
+        let raw = serde_json::to_string_pretty(params).unwrap_or_default();
+        let path = params.get("path").and_then(|v| v.as_str()).unwrap_or("file");
+        crate::tools::summary::ToolSummary::new("Read", path, format!("Read {}", path), raw)
+    }
+
     fn domain(&self) -> ToolDomain {
         ToolDomain::Container
     }
@@ -328,6 +334,12 @@ impl Tool for WriteFileTool {
 
     fn requires_sanitization(&self) -> bool {
         false
+    }
+
+    fn summarize(&self, params: &serde_json::Value) -> crate::tools::summary::ToolSummary {
+        let raw = serde_json::to_string_pretty(params).unwrap_or_default();
+        let path = params.get("path").and_then(|v| v.as_str()).unwrap_or("file");
+        crate::tools::summary::ToolSummary::new("Write", path, format!("Write to {}", path), raw)
     }
 
     fn domain(&self) -> ToolDomain {
@@ -437,6 +449,12 @@ impl Tool for ListDirTool {
 
     fn requires_approval(&self) -> bool {
         true
+    }
+
+    fn summarize(&self, params: &serde_json::Value) -> crate::tools::summary::ToolSummary {
+        let raw = serde_json::to_string_pretty(params).unwrap_or_default();
+        let path = params.get("path").and_then(|v| v.as_str()).unwrap_or(".");
+        crate::tools::summary::ToolSummary::new("List", path, format!("List files in {}", path), raw)
     }
 
     fn domain(&self) -> ToolDomain {
@@ -642,6 +660,12 @@ impl Tool for ApplyPatchTool {
 
     fn requires_sanitization(&self) -> bool {
         false
+    }
+
+    fn summarize(&self, params: &serde_json::Value) -> crate::tools::summary::ToolSummary {
+        let raw = serde_json::to_string_pretty(params).unwrap_or_default();
+        let path = params.get("path").and_then(|v| v.as_str()).unwrap_or("file");
+        crate::tools::summary::ToolSummary::new("Patch", path, format!("Edit {}", path), raw)
     }
 
     fn domain(&self) -> ToolDomain {
@@ -931,5 +955,38 @@ mod tests {
         assert_eq!(format_size(1536), "1.5KB");
         assert_eq!(format_size(1024 * 1024), "1.0MB");
         assert_eq!(format_size(1024 * 1024 * 1024), "1.0GB");
+    }
+
+    #[test]
+    fn summarize_read_file() {
+        let tool = ReadFileTool::new();
+        let s = tool.summarize(&serde_json::json!({"path": "/src/main.rs"}));
+        assert_eq!(s.verb, "Read");
+        assert_eq!(s.target, "/src/main.rs");
+        assert_eq!(s.headline, "Read /src/main.rs");
+    }
+
+    #[test]
+    fn summarize_write_file() {
+        let tool = WriteFileTool::new();
+        let s = tool.summarize(&serde_json::json!({"path": "/tmp/out.txt", "content": "data"}));
+        assert_eq!(s.verb, "Write");
+        assert_eq!(s.headline, "Write to /tmp/out.txt");
+    }
+
+    #[test]
+    fn summarize_list_dir() {
+        let tool = ListDirTool::new();
+        let s = tool.summarize(&serde_json::json!({"path": "/src"}));
+        assert_eq!(s.verb, "List");
+        assert_eq!(s.headline, "List files in /src");
+    }
+
+    #[test]
+    fn summarize_apply_patch() {
+        let tool = ApplyPatchTool::new();
+        let s = tool.summarize(&serde_json::json!({"path": "lib.rs", "old_string": "x", "new_string": "y"}));
+        assert_eq!(s.verb, "Patch");
+        assert_eq!(s.headline, "Edit lib.rs");
     }
 }

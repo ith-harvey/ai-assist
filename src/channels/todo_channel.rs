@@ -240,18 +240,25 @@ impl Channel for TodoChannel {
                 ref tool_name,
                 ref description,
                 ref parameters,
+                ref summary,
             } => {
+                let headline = summary
+                    .as_ref()
+                    .map(|s| s.headline.clone())
+                    .unwrap_or_else(|| format!("{}: {}", tool_name, description));
+
                 self.logger
-                    .system(&format!(
-                        "⚠️ Tool '{}' requires approval: {}",
-                        tool_name, description
-                    ))
+                    .system(&format!("⚠️ Approval needed: {}", headline))
                     .await;
 
-                // Create an Action card for the user to approve/dismiss
-                let action_detail = serde_json::to_string_pretty(parameters).ok();
+                // Use summary.raw_params for action_detail when available, else format params
+                let action_detail = summary
+                    .as_ref()
+                    .map(|s| s.raw_params.clone())
+                    .or_else(|| serde_json::to_string_pretty(parameters).ok());
+
                 let card = ApprovalCard::new_action(
-                    format!("Tool approval: {} — {}", tool_name, description),
+                    headline.clone(),
                     action_detail,
                     CardSilo::Todos,
                     60, // fallback expiry (overridden by without_expiry)
@@ -300,7 +307,7 @@ impl Channel for TodoChannel {
                     job_id: self.job_id,
                     card_id,
                     tool_name: tool_name.clone(),
-                    description: description.clone(),
+                    description: headline,
                 }
             }
             // StreamChunk and other variants — ignore for now

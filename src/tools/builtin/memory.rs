@@ -96,6 +96,18 @@ impl Tool for MemorySearchTool {
     fn requires_sanitization(&self) -> bool {
         false
     }
+
+    fn summarize(&self, params: &serde_json::Value) -> crate::tools::summary::ToolSummary {
+        let raw = serde_json::to_string_pretty(params).unwrap_or_default();
+        let query = params.get("query").and_then(|v| v.as_str()).unwrap_or("...");
+        let short_q: String = query.chars().take(60).collect();
+        crate::tools::summary::ToolSummary::new(
+            "Search",
+            "memory",
+            format!("Search memory for '{}'", short_q),
+            raw,
+        )
+    }
 }
 
 // ── memory_write ────────────────────────────────────────────────────
@@ -230,6 +242,12 @@ impl Tool for MemoryWriteTool {
     fn requires_sanitization(&self) -> bool {
         false
     }
+
+    fn summarize(&self, params: &serde_json::Value) -> crate::tools::summary::ToolSummary {
+        let raw = serde_json::to_string_pretty(params).unwrap_or_default();
+        let path = params.get("path").and_then(|v| v.as_str()).unwrap_or("memory");
+        crate::tools::summary::ToolSummary::new("Write", path, format!("Write to {}", path), raw)
+    }
 }
 
 // ── memory_read ─────────────────────────────────────────────────────
@@ -320,6 +338,12 @@ impl Tool for MemoryReadTool {
     fn requires_sanitization(&self) -> bool {
         false
     }
+
+    fn summarize(&self, params: &serde_json::Value) -> crate::tools::summary::ToolSummary {
+        let raw = serde_json::to_string_pretty(params).unwrap_or_default();
+        let path = params.get("path").and_then(|v| v.as_str()).unwrap_or("file");
+        crate::tools::summary::ToolSummary::new("Read", path, format!("Read {}", path), raw)
+    }
 }
 
 // ── memory_tree ─────────────────────────────────────────────────────
@@ -395,6 +419,12 @@ impl Tool for MemoryTreeTool {
 
     fn requires_sanitization(&self) -> bool {
         false
+    }
+
+    fn summarize(&self, params: &serde_json::Value) -> crate::tools::summary::ToolSummary {
+        let raw = serde_json::to_string_pretty(params).unwrap_or_default();
+        let path = params.get("path").and_then(|v| v.as_str()).unwrap_or(".");
+        crate::tools::summary::ToolSummary::new("List", path, format!("List files in {}", path), raw)
     }
 }
 
@@ -532,5 +562,42 @@ mod tests {
 
         let count = result.result["count"].as_i64().unwrap();
         assert!(count > 0);
+    }
+
+    #[test]
+    fn summarize_search() {
+        let (ws, _dir) = test_workspace();
+        let tool = MemorySearchTool::new(ws);
+        let s = tool.summarize(&serde_json::json!({"query": "Rust concurrency patterns"}));
+        assert_eq!(s.verb, "Search");
+        assert_eq!(s.target, "memory");
+        assert!(s.headline.contains("Rust concurrency"));
+    }
+
+    #[test]
+    fn summarize_write() {
+        let (ws, _dir) = test_workspace();
+        let tool = MemoryWriteTool::new(ws);
+        let s = tool.summarize(&serde_json::json!({"path": "notes/arch.md", "content": "..."}));
+        assert_eq!(s.verb, "Write");
+        assert_eq!(s.target, "notes/arch.md");
+    }
+
+    #[test]
+    fn summarize_read() {
+        let (ws, _dir) = test_workspace();
+        let tool = MemoryReadTool::new(ws);
+        let s = tool.summarize(&serde_json::json!({"path": "DECISIONS.md"}));
+        assert_eq!(s.verb, "Read");
+        assert_eq!(s.target, "DECISIONS.md");
+    }
+
+    #[test]
+    fn summarize_tree() {
+        let (ws, _dir) = test_workspace();
+        let tool = MemoryTreeTool::new(ws);
+        let s = tool.summarize(&serde_json::json!({"path": "notes"}));
+        assert_eq!(s.verb, "List");
+        assert_eq!(s.target, "notes");
     }
 }

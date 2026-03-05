@@ -294,13 +294,15 @@ impl Agent {
 
                             if !is_auto_approved {
                                 // Need approval - store pending request and return
+                                let tool_summary = tool.summarize(&tc.arguments);
                                 let pending = PendingApproval {
                                     request_id: Uuid::new_v4(),
                                     tool_name: tc.name.clone(),
                                     parameters: tc.arguments.clone(),
-                                    description: tool.description().to_string(),
+                                    description: tool_summary.headline.clone(),
                                     tool_call_id: tc.id.clone(),
                                     context_messages: context_messages.clone(),
+                                    summary: Some(tool_summary),
                                 };
 
                                 return Ok(AgenticLoopResult::NeedApproval { pending });

@@ -291,6 +291,7 @@ impl Agent {
                 tool_name,
                 description,
                 parameters,
+                summary,
             } => {
                 // Each channel renders the approval prompt via send_status.
                 let _ = self
@@ -302,6 +303,7 @@ impl Agent {
                             tool_name,
                             description,
                             parameters,
+                            summary,
                         },
                         &message.metadata,
                     )

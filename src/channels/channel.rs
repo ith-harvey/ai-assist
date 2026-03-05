@@ -126,6 +126,8 @@ pub enum StatusUpdate {
         tool_name: String,
         description: String,
         parameters: serde_json::Value,
+        /// Human-readable summary (when available).
+        summary: Option<crate::tools::summary::ToolSummary>,
     },
     /// Extension needs user authentication.
     AuthRequired {

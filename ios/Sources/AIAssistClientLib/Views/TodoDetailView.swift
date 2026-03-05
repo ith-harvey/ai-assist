@@ -68,6 +68,11 @@ public struct TodoDetailView: View {
                             .transition(.opacity.combined(with: .move(edge: .top)))
                     }
 
+                    // ── Documents ────────────────────────────────────
+                    DocumentListSection(todoId: todo.id)
+                        .padding(.horizontal, 20)
+                        .padding(.bottom, 8)
+
                     // ── Divider ─────────────────────────────────────
                     if todo.bucket == .agentStartable {
                         Rectangle()
@@ -372,25 +377,22 @@ public struct TodoDetailView: View {
             .foregroundStyle(.secondary)
             .padding(.horizontal, 20)
 
-            if activitySocket.isFinished {
-                // Show all messages when finished (includes failed + transcript)
+            if !activitySocket.messages.isEmpty {
+                // Always show full activity history
                 ForEach(activitySocket.messages) { msg in
-                    activityRow(msg)
-                        .padding(.horizontal, 20)
-                }
-            } else if let latest = activitySocket.latestActivity {
-                // Show only the latest event while running
-                HStack(alignment: .top, spacing: 8) {
-                    if !latest.isTerminal {
-                        ProgressView()
-                            .controlSize(.mini)
-                            .padding(.top, 4)
+                    let isLast = msg.id == activitySocket.messages.last?.id
+                    let showSpinner = isLast && !activitySocket.isFinished && !msg.isTerminal
+
+                    HStack(alignment: .top, spacing: 8) {
+                        if showSpinner {
+                            ProgressView()
+                                .controlSize(.mini)
+                                .padding(.top, 4)
+                        }
+                        activityRow(msg)
                     }
-                    activityRow(latest)
-                }
-                    .id(latest.id)
                     .padding(.horizontal, 20)
-                    .animation(.easeInOut(duration: 0.2), value: latest.id)
+                }
             } else {
                 activityEmptyState
                     .padding(.horizontal, 20)
