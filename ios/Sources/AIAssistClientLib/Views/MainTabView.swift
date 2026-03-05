@@ -12,7 +12,7 @@ public struct MainTabView: View {
         TabView(selection: $selectedTab) {
             // Home — to-do list
             NavigationStack {
-                TodoListView()
+                TodoListView(cardSocket: cardSocket)
             }
             .tabItem {
                 Image(systemName: "house.fill")

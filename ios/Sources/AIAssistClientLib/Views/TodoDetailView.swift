@@ -30,12 +30,15 @@ private struct TruncatedTextHeightKey: PreferenceKey {
 
 public struct TodoDetailView: View {
     let todo: TodoItem
+    let cardSocket: CardWebSocket
     @State private var activitySocket: TodoActivitySocket
     @State private var isDescriptionExpanded = false
     @State private var isHeaderCollapsed = false
+    @State private var approvalCard: ApprovalCard?
 
-    public init(todo: TodoItem) {
+    public init(todo: TodoItem, cardSocket: CardWebSocket) {
         self.todo = todo
+        self.cardSocket = cardSocket
         self._activitySocket = State(initialValue: TodoActivitySocket(todoId: todo.id))
     }
 
@@ -139,6 +142,21 @@ public struct TodoDetailView: View {
         }
         .onDisappear {
             activitySocket.disconnect()
+        }
+        .sheet(item: $approvalCard) { card in
+            SwipeCardContainer(
+                onApprove: {
+                    cardSocket.approve(cardId: card.id)
+                    approvalCard = nil
+                },
+                onReject: {
+                    cardSocket.dismiss(cardId: card.id)
+                    approvalCard = nil
+                }
+            ) {
+                CardBodyView(card: card)
+            }
+            .presentationDetents([.medium, .large])
         }
     }
 
@@ -403,6 +421,10 @@ public struct TodoDetailView: View {
             failedBanner(error: error)
         case .transcript(_, let messages):
             transcriptView(messages: messages)
+        case .approvalNeeded(_, let cardId, let toolName, let description):
+            approvalPendingRow(cardId: cardId, toolName: toolName, description: description)
+        case .approvalResolved(_, _, let approved):
+            approvalResolvedRow(approved: approved)
         }
     }
 
@@ -629,6 +651,69 @@ public struct TodoDetailView: View {
         case "tool_result": return .purple.opacity(0.08)
         default: return .gray.opacity(0.06)
         }
+    }
+
+    // MARK: - Approval Rows
+
+    private func approvalPendingRow(cardId: UUID, toolName: String, description: String) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: "bolt.circle.fill")
+                .font(.system(size: 20))
+                .foregroundStyle(.orange)
+                .symbolEffect(.pulse, isActive: true)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(toolName)
+                    .font(.subheadline)
+                    .fontWeight(.semibold)
+                    .foregroundStyle(.primary)
+
+                Text(description)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+
+                Text("Tap to review")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+            }
+
+            Spacer()
+
+            Image(systemName: "chevron.right")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(.orange.opacity(0.6))
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                #if os(iOS)
+                .fill(Color(uiColor: .systemBackground))
+                #else
+                .fill(Color.white)
+                #endif
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .strokeBorder(.orange.opacity(0.5), lineWidth: 1.5)
+        )
+        .contentShape(Rectangle())
+        .onTapGesture {
+            approvalCard = cardSocket.cards.first(where: { $0.id == cardId })
+        }
+        .padding(.vertical, 2)
+    }
+
+    private func approvalResolvedRow(approved: Bool) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: approved ? "checkmark.circle.fill" : "xmark.circle.fill")
+                .font(.system(size: 16))
+                .foregroundStyle(approved ? .green : .red)
+            Text(approved ? "Tool approved" : "Tool rejected")
+                .font(.subheadline)
+                .foregroundStyle(approved ? .green : .red)
+        }
+        .padding(.vertical, 4)
     }
 
     // MARK: - Shared Components
