@@ -285,6 +285,11 @@ impl CardQueue {
         Ok(updated)
     }
 
+    /// Get all cards in the queue (all statuses).
+    pub async fn all_cards(&self) -> Vec<ApprovalCard> {
+        self.cards.read().await.iter().cloned().collect()
+    }
+
     /// Get all pending (non-expired) cards.
     pub async fn pending(&self) -> Vec<ApprovalCard> {
         let cards = self.cards.read().await;

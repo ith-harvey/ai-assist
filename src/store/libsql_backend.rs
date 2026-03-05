@@ -146,7 +146,7 @@ fn str_to_msg_status(s: &str) -> MessageStatus {
 /// Map a libsql Row to an ApprovalCard.
 ///
 /// Column order matches CARD_COLUMNS:
-/// 0:id, 1:card_type, 2:silo, 3:payload, 4:status, 5:created_at, 6:expires_at, 7:updated_at
+/// 0:id, 1:card_type, 2:silo, 3:payload, 4:status, 5:created_at, 6:expires_at, 7:updated_at, 8:todo_id
 ///
 /// For legacy rows (before V6), card_type/silo/payload may be NULL.
 /// We fall back to reading the old flat columns in that case.
@@ -159,6 +159,7 @@ fn row_to_card(row: &libsql::Row) -> Result<ApprovalCard, libsql::Error> {
     let created_str: String = row.get(5)?;
     let expires_str: Option<String> = row.get(6).ok();
     let updated_str: String = row.get(7)?;
+    let todo_id_str: Option<String> = row.get(8).ok().and_then(|s: String| if s.is_empty() { None } else { Some(s) });
 
     let silo: CardSilo = silo_str.parse().unwrap_or_default();
 
@@ -208,6 +209,7 @@ fn row_to_card(row: &libsql::Row) -> Result<ApprovalCard, libsql::Error> {
         created_at: parse_datetime(&created_str),
         expires_at: expires_str.as_deref().map(parse_datetime),
         updated_at: parse_datetime(&updated_str),
+        todo_id: todo_id_str.and_then(|s| Uuid::parse_str(&s).ok()),
     })
 }
 
@@ -349,7 +351,7 @@ fn opt_text_owned(s: Option<String>) -> libsql::Value {
 
 // ── Trait implementation ────────────────────────────────────────────
 
-const CARD_COLUMNS: &str = "id, card_type, silo, payload, status, created_at, expires_at, updated_at";
+const CARD_COLUMNS: &str = "id, card_type, silo, payload, status, created_at, expires_at, updated_at, todo_id";
 
 const MESSAGE_COLUMNS: &str = "id, external_id, channel, sender, subject, content, received_at, status, replied_at, metadata, created_at, updated_at";
 
@@ -404,7 +406,7 @@ impl Database for LibSqlBackend {
             };
 
         conn.execute(
-            "INSERT INTO cards (id, conversation_id, source_message, source_sender, suggested_reply, confidence, status, channel, created_at, expires_at, updated_at, message_id, reply_metadata, email_thread, card_type, silo, payload) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+            "INSERT INTO cards (id, conversation_id, source_message, source_sender, suggested_reply, confidence, status, channel, created_at, expires_at, updated_at, message_id, reply_metadata, email_thread, card_type, silo, payload, todo_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
             params![
                 card.id.to_string(),
                 conversation_id,
@@ -423,6 +425,7 @@ impl Database for LibSqlBackend {
                 card.payload.card_type_str(),
                 card.silo.to_string(),
                 payload_json,
+                card.todo_id.map(|id| id.to_string()),
             ],
         )
         .await

@@ -21,6 +21,7 @@ use super::handler::{ApprovalHandler, CardActionContext};
 use super::model::{ApprovalCard, CardAction, CardPayload, WsMessage};
 use super::queue::CardQueue;
 use crate::channels::email::EmailConfig;
+use crate::todos::activity::TodoActivityMessage;
 use crate::todos::approval_registry::TodoApprovalRegistry;
 
 /// Application state shared across handlers.
@@ -30,6 +31,7 @@ pub struct AppState {
     pub email_config: Option<EmailConfig>,
     pub generator: Arc<CardGenerator>,
     pub approval_registry: TodoApprovalRegistry,
+    pub activity_tx: tokio::sync::broadcast::Sender<TodoActivityMessage>,
 }
 
 impl AppState {
@@ -51,6 +53,7 @@ impl AppState {
             CardPayload::Action { .. } => {
                 Box::new(super::handlers::ActionHandler {
                     approval_registry: self.approval_registry.clone(),
+                    activity_tx: self.activity_tx.clone(),
                 })
             }
             CardPayload::Compose { .. } => Box::new(super::handlers::ComposeHandler),
@@ -65,18 +68,21 @@ pub fn card_routes(
     email_config: Option<EmailConfig>,
     generator: Arc<CardGenerator>,
     approval_registry: TodoApprovalRegistry,
+    activity_tx: tokio::sync::broadcast::Sender<TodoActivityMessage>,
 ) -> Router {
     let state = AppState {
         queue,
         email_config,
         generator,
         approval_registry,
+        activity_tx,
     };
 
     Router::new()
         .route("/ws", get(ws_handler))
         .route("/health", get(health))
         .route("/api/cards", get(list_cards))
+        .route("/api/cards/{id}", get(get_card))
         .route("/api/cards/{id}/approve", post(approve_card))
         .route("/api/cards/{id}/dismiss", post(dismiss_card))
         .route("/api/cards/{id}/edit", post(edit_card))
@@ -223,6 +229,28 @@ async fn handle_client_message(text: &str, state: &AppState) {
 async fn list_cards(State(state): State<AppState>) -> impl IntoResponse {
     let cards = state.queue.pending().await;
     Json(cards)
+}
+
+async fn get_card(State(state): State<AppState>, Path(id): Path<String>) -> impl IntoResponse {
+    let card_id = match Uuid::parse_str(&id) {
+        Ok(id) => id,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "Invalid card ID"})),
+            );
+        }
+    };
+
+    // Look up in the in-memory queue first (covers all statuses).
+    let cards = state.queue.all_cards().await;
+    match cards.into_iter().find(|c| c.id == card_id) {
+        Some(card) => (StatusCode::OK, Json(serde_json::json!(card))),
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "Card not found"})),
+        ),
+    }
 }
 
 async fn approve_card(State(state): State<AppState>, Path(id): Path<String>) -> impl IntoResponse {

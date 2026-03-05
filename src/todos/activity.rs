@@ -93,6 +93,19 @@ pub enum TodoActivityMessage {
         job_id: Uuid,
         messages: Vec<TranscriptMessage>,
     },
+    /// A tool requires human approval before execution.
+    ApprovalNeeded {
+        job_id: Uuid,
+        card_id: Uuid,
+        tool_name: String,
+        description: String,
+    },
+    /// An approval request was resolved (approved or dismissed).
+    ApprovalResolved {
+        job_id: Uuid,
+        card_id: Uuid,
+        approved: bool,
+    },
 }
 
 impl TodoActivityMessage {
@@ -107,7 +120,9 @@ impl TodoActivityMessage {
             | Self::AgentResponse { job_id, .. }
             | Self::Completed { job_id, .. }
             | Self::Failed { job_id, .. }
-            | Self::Transcript { job_id, .. } => *job_id,
+            | Self::Transcript { job_id, .. }
+            | Self::ApprovalNeeded { job_id, .. }
+            | Self::ApprovalResolved { job_id, .. } => *job_id,
         }
     }
 
@@ -136,6 +151,8 @@ impl TodoActivityMessage {
             Self::Completed { .. } => "completed".to_string(),
             Self::Failed { .. } => "failed".to_string(),
             Self::Transcript { .. } => "transcript".to_string(),
+            Self::ApprovalNeeded { .. } => "approval_needed".to_string(),
+            Self::ApprovalResolved { .. } => "approval_resolved".to_string(),
         }
     }
 }
@@ -409,5 +426,58 @@ mod tests {
         let json = serde_json::to_string(&msg).unwrap();
         let parsed: TodoActivityMessage = serde_json::from_str(&json).unwrap();
         assert_eq!(msg.job_id(), parsed.job_id());
+    }
+
+    #[test]
+    fn activity_message_serde_approval_needed() {
+        let job_id = Uuid::new_v4();
+        let card_id = Uuid::new_v4();
+        let msg = TodoActivityMessage::ApprovalNeeded {
+            job_id,
+            card_id,
+            tool_name: "shell".to_string(),
+            description: "rm -rf /tmp/test".to_string(),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"approval_needed\""));
+        assert!(json.contains("\"tool_name\":\"shell\""));
+        assert!(json.contains(&card_id.to_string()));
+        assert!(!msg.is_terminal());
+        assert_eq!(msg.action_type(), "approval_needed");
+        assert_eq!(msg.job_id(), job_id);
+
+        let parsed: TodoActivityMessage = serde_json::from_str(&json).unwrap();
+        assert!(matches!(parsed, TodoActivityMessage::ApprovalNeeded { .. }));
+    }
+
+    #[test]
+    fn activity_message_serde_approval_resolved() {
+        let job_id = Uuid::new_v4();
+        let card_id = Uuid::new_v4();
+        let msg = TodoActivityMessage::ApprovalResolved {
+            job_id,
+            card_id,
+            approved: true,
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"approval_resolved\""));
+        assert!(json.contains("\"approved\":true"));
+        assert!(json.contains(&card_id.to_string()));
+        assert!(!msg.is_terminal());
+        assert_eq!(msg.action_type(), "approval_resolved");
+
+        let parsed: TodoActivityMessage = serde_json::from_str(&json).unwrap();
+        assert!(matches!(parsed, TodoActivityMessage::ApprovalResolved { .. }));
+    }
+
+    #[test]
+    fn activity_approval_resolved_dismissed() {
+        let msg = TodoActivityMessage::ApprovalResolved {
+            job_id: Uuid::new_v4(),
+            card_id: Uuid::new_v4(),
+            approved: false,
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"approved\":false"));
     }
 }
