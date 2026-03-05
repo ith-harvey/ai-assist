@@ -256,7 +256,8 @@ impl Channel for TodoChannel {
                     CardSilo::Todos,
                     60, // fallback expiry (overridden by without_expiry)
                 )
-                .without_expiry();
+                .without_expiry()
+                .with_todo_id(self.todo_id);
                 let card_id = card.id;
 
                 // Push to card queue
@@ -294,10 +295,12 @@ impl Channel for TodoChannel {
                     "Created approval card for todo agent tool"
                 );
 
-                // Emit activity event for iOS
-                TodoActivityMessage::Reasoning {
+                // Emit structured activity event for iOS
+                TodoActivityMessage::ApprovalNeeded {
                     job_id: self.job_id,
-                    content: format!("⚠️ Waiting for approval: {} — {}", tool_name, description),
+                    card_id,
+                    tool_name: tool_name.clone(),
+                    description: description.clone(),
                 }
             }
             // StreamChunk and other variants — ignore for now

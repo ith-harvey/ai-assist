@@ -25,6 +25,7 @@ use ai_assist::llm::provider::{
     CompletionRequest, CompletionResponse, FinishReason, LlmProvider, ToolCompletionRequest,
     ToolCompletionResponse,
 };
+use ai_assist::todos::activity::TodoActivityMessage;
 use ai_assist::todos::approval_registry::TodoApprovalRegistry;
 
 /// Maximum time any test is allowed to run before we consider it hung.
@@ -68,11 +69,13 @@ async fn start_server() -> (u16, Arc<CardQueue>, TodoApprovalRegistry) {
         Arc::clone(&queue),
         GeneratorConfig::default(),
     ));
+    let (activity_tx, _activity_rx) = tokio::sync::broadcast::channel::<TodoActivityMessage>(16);
     let app = card_routes(
         Arc::clone(&queue),
         None,
         generator,
         registry.clone(),
+        activity_tx,
     );
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1353,6 +1356,104 @@ async fn no_expiry_card_approve_via_rest() {
             .unwrap();
         assert_eq!(resp.status(), 200);
         assert!(queue.pending().await.is_empty());
+    })
+    .await
+    .expect("test timed out");
+}
+
+// ── GET /api/cards/:id ──────────────────────────────────────────────
+
+#[tokio::test]
+async fn rest_get_card_by_id() {
+    timeout(TEST_TIMEOUT, async {
+        let (port, queue, _reg) = start_server().await;
+
+        let card = make_card("test reply");
+        let card_id = card.id;
+        queue.push(card).await;
+
+        let resp = reqwest::get(format!("http://127.0.0.1:{port}/api/cards/{card_id}"))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+
+        let body: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(body["id"], card_id.to_string());
+        assert_eq!(body["status"], "pending");
+    })
+    .await
+    .expect("test timed out");
+}
+
+#[tokio::test]
+async fn rest_get_card_returns_approved() {
+    timeout(TEST_TIMEOUT, async {
+        let (port, queue, _reg) = start_server().await;
+
+        let card = make_card("approved reply");
+        let card_id = card.id;
+        queue.push(card).await;
+        queue.approve(card_id).await;
+
+        let resp = reqwest::get(format!("http://127.0.0.1:{port}/api/cards/{card_id}"))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+
+        let body: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(body["status"], "approved");
+    })
+    .await
+    .expect("test timed out");
+}
+
+#[tokio::test]
+async fn rest_get_card_not_found() {
+    timeout(TEST_TIMEOUT, async {
+        let (port, _queue, _reg) = start_server().await;
+
+        let fake_id = uuid::Uuid::new_v4();
+        let resp = reqwest::get(format!("http://127.0.0.1:{port}/api/cards/{fake_id}"))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 404);
+    })
+    .await
+    .expect("test timed out");
+}
+
+#[tokio::test]
+async fn rest_get_card_invalid_id() {
+    timeout(TEST_TIMEOUT, async {
+        let (port, _queue, _reg) = start_server().await;
+
+        let resp = reqwest::get(format!("http://127.0.0.1:{port}/api/cards/not-a-uuid"))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 400);
+    })
+    .await
+    .expect("test timed out");
+}
+
+#[tokio::test]
+async fn rest_get_action_card_with_todo_id() {
+    timeout(TEST_TIMEOUT, async {
+        let (port, queue, _reg) = start_server().await;
+
+        let todo_id = uuid::Uuid::new_v4();
+        let card = make_action_card("deploy")
+            .with_todo_id(todo_id);
+        let card_id = card.id;
+        queue.push(card).await;
+
+        let resp = reqwest::get(format!("http://127.0.0.1:{port}/api/cards/{card_id}"))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+
+        let body: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(body["todo_id"], todo_id.to_string());
     })
     .await
     .expect("test timed out");

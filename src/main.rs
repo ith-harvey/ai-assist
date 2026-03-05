@@ -301,6 +301,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         email_config_for_cards,
         card_generator.clone(),
         approval_registry,
+        activity_tx.clone(),
     )
     .merge(ios_router)
     .merge(todo_routes(todo_state))
