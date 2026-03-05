@@ -256,7 +256,8 @@ impl Channel for TodoChannel {
                     CardSilo::Todos,
                     60, // fallback expiry (overridden by without_expiry)
                 )
-                .without_expiry();
+                .without_expiry()
+                .with_todo_id(self.todo_id);
                 let card_id = card.id;
 
                 // Push to card queue
@@ -294,10 +295,12 @@ impl Channel for TodoChannel {
                     "Created approval card for todo agent tool"
                 );
 
-                // Emit activity event for iOS
-                TodoActivityMessage::Reasoning {
+                // Emit structured activity event for iOS
+                TodoActivityMessage::ApprovalNeeded {
                     job_id: self.job_id,
-                    content: format!("⚠️ Waiting for approval: {} — {}", tool_name, description),
+                    card_id,
+                    tool_name: tool_name.clone(),
+                    description: description.clone(),
                 }
             }
             // StreamChunk and other variants — ignore for now
@@ -342,13 +345,17 @@ impl Channel for TodoChannel {
         let succeeded = self.responded.load(Ordering::SeqCst);
         self.logger.flush(succeeded).await;
 
-        // Emit transcript to WebSocket for iOS activity stream
-        let messages = self.logger.transcript_messages().await;
-        if !messages.is_empty() {
-            self.emit(TodoActivityMessage::Transcript {
-                job_id: self.job_id,
-                messages,
-            });
+        // Emit transcript to WebSocket for iOS activity stream (failures only —
+        // on success the activity feed already has all events, and a transcript
+        // after "Completed" looks like the work is still going).
+        if !succeeded {
+            let messages = self.logger.transcript_messages().await;
+            if !messages.is_empty() {
+                self.emit(TodoActivityMessage::Transcript {
+                    job_id: self.job_id,
+                    messages,
+                });
+            }
         }
 
         Ok(())

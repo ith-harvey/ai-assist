@@ -13,14 +13,32 @@ private struct ScrollOffsetKey: PreferenceKey {
     }
 }
 
+/// Preference keys for detecting description text truncation.
+private struct FullTextHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
+private struct TruncatedTextHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
 public struct TodoDetailView: View {
     let todo: TodoItem
+    let cardSocket: CardWebSocket
     @State private var activitySocket: TodoActivitySocket
     @State private var isDescriptionExpanded = false
     @State private var isHeaderCollapsed = false
+    @State private var approvalCard: ApprovalCard?
 
-    public init(todo: TodoItem) {
+    public init(todo: TodoItem, cardSocket: CardWebSocket) {
         self.todo = todo
+        self.cardSocket = cardSocket
         self._activitySocket = State(initialValue: TodoActivitySocket(todoId: todo.id))
     }
 
@@ -125,9 +143,28 @@ public struct TodoDetailView: View {
         .onDisappear {
             activitySocket.disconnect()
         }
+        .sheet(item: $approvalCard) { card in
+            SwipeCardContainer(
+                onApprove: {
+                    cardSocket.approve(cardId: card.id)
+                    approvalCard = nil
+                },
+                onReject: {
+                    cardSocket.dismiss(cardId: card.id)
+                    approvalCard = nil
+                }
+            ) {
+                CardBodyView(card: card)
+            }
+            .presentationDetents([.medium, .large])
+        }
     }
 
     // MARK: - Collapsible Description
+
+    @State private var descriptionIsTruncated = false
+    @State private var fullDescriptionHeight: CGFloat = 0
+    @State private var truncatedDescriptionHeight: CGFloat = 0
 
     private func descriptionSection(_ description: String) -> some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -145,27 +182,63 @@ public struct TodoDetailView: View {
                         }
                     }
             } else {
-                // Truncated description with inline "… See more"
-                HStack(alignment: .lastTextBaseline, spacing: 0) {
-                    Text(description)
-                        .font(.subheadline)
-                        .foregroundStyle(.primary)
-                        .lineLimit(3)
-
-                    // Only show "See more" if there's likely more text
-                    // (we always show it — lineLimit handles the truncation)
-                }
-
-                Text("… See more")
+                Text(description)
                     .font(.subheadline)
-                    .foregroundStyle(.blue)
-                    .onTapGesture {
-                        withAnimation(.easeInOut(duration: 0.2)) {
-                            isDescriptionExpanded = true
+                    .foregroundStyle(.primary)
+                    .lineLimit(3)
+                    .background(
+                        // Measure full-height text vs truncated to detect truncation
+                        Text(description)
+                            .font(.subheadline)
+                            .lineLimit(nil)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .hidden()
+                            .background(
+                                GeometryReader { fullSize in
+                                    Color.clear.preference(
+                                        key: FullTextHeightKey.self,
+                                        value: fullSize.size.height
+                                    )
+                                }
+                            )
+                    )
+                    .overlay(
+                        GeometryReader { truncatedSize in
+                            Color.clear.preference(
+                                key: TruncatedTextHeightKey.self,
+                                value: truncatedSize.size.height
+                            )
                         }
+                    )
+                    .onPreferenceChange(FullTextHeightKey.self) { fullHeight in
+                        fullDescriptionHeight = fullHeight
+                        updateTruncationState()
                     }
+                    .onPreferenceChange(TruncatedTextHeightKey.self) { truncatedHeight in
+                        truncatedDescriptionHeight = truncatedHeight
+                        updateTruncationState()
+                    }
+
+                if descriptionIsTruncated {
+                    Text("… See more")
+                        .font(.subheadline)
+                        .foregroundStyle(.blue)
+                        .onTapGesture {
+                            withAnimation(.easeInOut(duration: 0.2)) {
+                                isDescriptionExpanded = true
+                            }
+                        }
+                }
             }
         }
+    }
+
+    /// Compare full vs truncated text height to determine if "See more" is needed.
+    /// Called whenever either height preference changes.
+    private func updateTruncationState() {
+        // Both heights must be measured before comparing
+        guard fullDescriptionHeight > 0, truncatedDescriptionHeight > 0 else { return }
+        descriptionIsTruncated = fullDescriptionHeight > truncatedDescriptionHeight + 1
     }
 
     // MARK: - Header
@@ -348,6 +421,10 @@ public struct TodoDetailView: View {
             failedBanner(error: error)
         case .transcript(_, let messages):
             transcriptView(messages: messages)
+        case .approvalNeeded(_, let cardId, let toolName, let description):
+            approvalPendingRow(cardId: cardId, toolName: toolName, description: description)
+        case .approvalResolved(_, _, let approved):
+            approvalResolvedRow(approved: approved)
         }
     }
 
@@ -576,6 +653,69 @@ public struct TodoDetailView: View {
         }
     }
 
+    // MARK: - Approval Rows
+
+    private func approvalPendingRow(cardId: UUID, toolName: String, description: String) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: "bolt.circle.fill")
+                .font(.system(size: 20))
+                .foregroundStyle(.orange)
+                .symbolEffect(.pulse, isActive: true)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(toolName)
+                    .font(.subheadline)
+                    .fontWeight(.semibold)
+                    .foregroundStyle(.primary)
+
+                Text(description)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+
+                Text("Tap to review")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+            }
+
+            Spacer()
+
+            Image(systemName: "chevron.right")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(.orange.opacity(0.6))
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                #if os(iOS)
+                .fill(Color(uiColor: .systemBackground))
+                #else
+                .fill(Color.white)
+                #endif
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .strokeBorder(.orange.opacity(0.5), lineWidth: 1.5)
+        )
+        .contentShape(Rectangle())
+        .onTapGesture {
+            approvalCard = cardSocket.cards.first(where: { $0.id == cardId })
+        }
+        .padding(.vertical, 2)
+    }
+
+    private func approvalResolvedRow(approved: Bool) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: approved ? "checkmark.circle.fill" : "xmark.circle.fill")
+                .font(.system(size: 16))
+                .foregroundStyle(approved ? .green : .red)
+            Text(approved ? "Tool approved" : "Tool rejected")
+                .font(.subheadline)
+                .foregroundStyle(approved ? .green : .red)
+        }
+        .padding(.vertical, 4)
+    }
+
     // MARK: - Shared Components
 
     private func toolBadge(_ name: String) -> some View {
@@ -596,11 +736,11 @@ public struct TodoDetailView: View {
     private var connectionBadge: some View {
         HStack(spacing: 4) {
             Circle()
-                .fill(activitySocket.isConnected ? .green : .red)
+                .fill(activitySocket.isFinished ? .green
+                    : activitySocket.isConnected ? .green : .red)
                 .frame(width: 6, height: 6)
-            Text(activitySocket.isConnected
-                 ? (activitySocket.isFinished ? "Finished" : "Live")
-                 : "Disconnected")
+            Text(activitySocket.isFinished ? "Finished"
+                : activitySocket.isConnected ? "Live" : "Disconnected")
                 .font(.system(size: 10))
                 .foregroundStyle(.secondary)
         }

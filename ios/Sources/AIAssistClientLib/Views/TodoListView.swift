@@ -10,8 +10,12 @@ public struct TodoListView: View {
     @State private var todoSocket = TodoWebSocket()
     @State private var showCompleted = false
     @State private var selectedTodo: TodoItem?
+    @State private var approvalCard: ApprovalCard?
+    let cardSocket: CardWebSocket
 
-    public init() {}
+    public init(cardSocket: CardWebSocket) {
+        self.cardSocket = cardSocket
+    }
 
     public var body: some View {
         ZStack {
@@ -38,7 +42,22 @@ public struct TodoListView: View {
         }
         #endif
         .navigationDestination(item: $selectedTodo) { todo in
-            TodoDetailView(todo: todo)
+            TodoDetailView(todo: todo, cardSocket: cardSocket)
+        }
+        .sheet(item: $approvalCard) { card in
+            SwipeCardContainer(
+                onApprove: {
+                    cardSocket.approve(cardId: card.id)
+                    approvalCard = nil
+                },
+                onReject: {
+                    cardSocket.dismiss(cardId: card.id)
+                    approvalCard = nil
+                }
+            ) {
+                CardBodyView(card: card)
+            }
+            .presentationDetents([.medium, .large])
         }
         .onAppear {
             todoSocket.connect()
@@ -172,7 +191,12 @@ public struct TodoListView: View {
             y: todo.status == .awaitingApproval ? 0 : 4
         )
         .contentShape(Rectangle())
-        .onTapGesture {
+        .onTapGesture(count: 2) {
+            if todo.status == .awaitingApproval {
+                approvalCard = cardSocket.cards.first(where: { $0.todoId == todo.id })
+            }
+        }
+        .onTapGesture(count: 1) {
             selectedTodo = todo
         }
         // Right swipe — complete (hide on already-completed todos)

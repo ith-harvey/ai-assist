@@ -1,36 +1,44 @@
 //! ActionHandler — dispatches tool approval responses to todo agents.
 
 use async_trait::async_trait;
+use tokio::sync::broadcast;
 use tracing::{info, warn};
 
 use crate::cards::handler::{ApprovalHandler, CardActionContext};
 use crate::cards::model::ApprovalCard;
 use crate::channels::IncomingMessage;
+use crate::todos::activity::TodoActivityMessage;
 use crate::todos::approval_registry::TodoApprovalRegistry;
 
 pub struct ActionHandler {
     pub approval_registry: TodoApprovalRegistry,
+    pub activity_tx: broadcast::Sender<TodoActivityMessage>,
 }
 
 #[async_trait]
 impl ApprovalHandler for ActionHandler {
     async fn on_approve(&self, card: &ApprovalCard, _ctx: &CardActionContext) {
-        resolve_approval(card, true, &self.approval_registry).await;
+        resolve_approval(card, true, &self.approval_registry, &self.activity_tx).await;
     }
 
     async fn on_dismiss(&self, card: &ApprovalCard, _ctx: &CardActionContext) {
-        resolve_approval(card, false, &self.approval_registry).await;
+        resolve_approval(card, false, &self.approval_registry, &self.activity_tx).await;
     }
 
     async fn on_edit(&self, card: &ApprovalCard, _new_text: &str, _ctx: &CardActionContext) {
         // Edit on an Action card = approve with (potentially modified) details
-        resolve_approval(card, true, &self.approval_registry).await;
+        resolve_approval(card, true, &self.approval_registry, &self.activity_tx).await;
     }
 }
 
 /// Resolve a pending todo agent tool approval by sending a message back into
 /// the agent's mpsc stream. The agent's `process_approval()` handles the rest.
-async fn resolve_approval(card: &ApprovalCard, approved: bool, registry: &TodoApprovalRegistry) {
+async fn resolve_approval(
+    card: &ApprovalCard,
+    approved: bool,
+    registry: &TodoApprovalRegistry,
+    activity_tx: &broadcast::Sender<TodoActivityMessage>,
+) {
     if let Some(pending) = registry.take(card.id).await {
         let content = format!(
             "{{\"ExecApproval\":{{\"request_id\":\"{}\",\"approved\":{},\"always\":false}}}}",
@@ -47,6 +55,13 @@ async fn resolve_approval(card: &ApprovalCard, approved: bool, registry: &TodoAp
                     approved,
                     "Sent approval response to todo agent"
                 );
+
+                // Broadcast ApprovalResolved to activity stream
+                let _ = activity_tx.send(TodoActivityMessage::ApprovalResolved {
+                    job_id: pending.todo_id, // Use todo_id as job_id proxy for routing
+                    card_id: card.id,
+                    approved,
+                });
             }
             Err(e) => {
                 warn!(
@@ -79,6 +94,11 @@ mod tests {
         }
     }
 
+    fn make_activity_tx() -> broadcast::Sender<TodoActivityMessage> {
+        let (tx, _rx) = broadcast::channel(16);
+        tx
+    }
+
     #[tokio::test]
     async fn approve_sends_exec_approval_true() {
         let registry = TodoApprovalRegistry::new();
@@ -93,7 +113,10 @@ mod tests {
             todo_id,
         }).await;
 
-        let handler = ActionHandler { approval_registry: registry };
+        let handler = ActionHandler {
+            approval_registry: registry,
+            activity_tx: make_activity_tx(),
+        };
         let ctx = make_ctx();
         handler.on_approve(&card, &ctx).await;
 
@@ -117,7 +140,10 @@ mod tests {
             todo_id: uuid::Uuid::new_v4(),
         }).await;
 
-        let handler = ActionHandler { approval_registry: registry };
+        let handler = ActionHandler {
+            approval_registry: registry,
+            activity_tx: make_activity_tx(),
+        };
         let ctx = make_ctx();
         handler.on_dismiss(&card, &ctx).await;
 
@@ -138,7 +164,10 @@ mod tests {
             todo_id: uuid::Uuid::new_v4(),
         }).await;
 
-        let handler = ActionHandler { approval_registry: registry };
+        let handler = ActionHandler {
+            approval_registry: registry,
+            activity_tx: make_activity_tx(),
+        };
         let ctx = make_ctx();
         handler.on_edit(&card, "modified command", &ctx).await;
 
@@ -151,9 +180,11 @@ mod tests {
         let registry = TodoApprovalRegistry::new();
         let card = make_action_card();
 
-        let handler = ActionHandler { approval_registry: registry };
+        let handler = ActionHandler {
+            approval_registry: registry,
+            activity_tx: make_activity_tx(),
+        };
         let ctx = make_ctx();
-        // Should not panic — no-op when card isn't in registry.
         handler.on_approve(&card, &ctx).await;
     }
 
@@ -169,12 +200,13 @@ mod tests {
             todo_id: uuid::Uuid::new_v4(),
         }).await;
 
-        // Drop the receiver to simulate agent death.
         drop(rx);
 
-        let handler = ActionHandler { approval_registry: registry };
+        let handler = ActionHandler {
+            approval_registry: registry,
+            activity_tx: make_activity_tx(),
+        };
         let ctx = make_ctx();
-        // Should not panic — logs a warning.
         handler.on_approve(&card, &ctx).await;
     }
 
@@ -191,7 +223,10 @@ mod tests {
             todo_id: uuid::Uuid::new_v4(),
         }).await;
 
-        let handler = ActionHandler { approval_registry: registry };
+        let handler = ActionHandler {
+            approval_registry: registry,
+            activity_tx: make_activity_tx(),
+        };
         let ctx = make_ctx();
         handler.on_approve(&card, &ctx).await;
 
@@ -217,10 +252,75 @@ mod tests {
 
         assert_eq!(registry.len().await, 1);
 
-        let handler = ActionHandler { approval_registry: registry.clone() };
+        let handler = ActionHandler {
+            approval_registry: registry.clone(),
+            activity_tx: make_activity_tx(),
+        };
         let ctx = make_ctx();
         handler.on_approve(&card, &ctx).await;
 
         assert_eq!(registry.len().await, 0);
+    }
+
+    #[tokio::test]
+    async fn approve_broadcasts_approval_resolved() {
+        let registry = TodoApprovalRegistry::new();
+        let card = make_action_card();
+        let todo_id = uuid::Uuid::new_v4();
+        let (tx, _rx) = mpsc::channel(8);
+        let activity_tx = make_activity_tx();
+        let mut activity_rx = activity_tx.subscribe();
+
+        registry.register(card.id, TodoApprovalPending {
+            request_id: uuid::Uuid::new_v4(),
+            tx,
+            todo_id,
+        }).await;
+
+        let handler = ActionHandler {
+            approval_registry: registry,
+            activity_tx: activity_tx.clone(),
+        };
+        let ctx = make_ctx();
+        handler.on_approve(&card, &ctx).await;
+
+        let msg = activity_rx.recv().await.expect("should receive activity");
+        match msg {
+            TodoActivityMessage::ApprovalResolved { card_id, approved, .. } => {
+                assert_eq!(card_id, card.id);
+                assert!(approved);
+            }
+            _ => panic!("Expected ApprovalResolved, got {:?}", msg),
+        }
+    }
+
+    #[tokio::test]
+    async fn dismiss_broadcasts_approval_resolved_false() {
+        let registry = TodoApprovalRegistry::new();
+        let card = make_action_card();
+        let (tx, _rx) = mpsc::channel(8);
+        let activity_tx = make_activity_tx();
+        let mut activity_rx = activity_tx.subscribe();
+
+        registry.register(card.id, TodoApprovalPending {
+            request_id: uuid::Uuid::new_v4(),
+            tx,
+            todo_id: uuid::Uuid::new_v4(),
+        }).await;
+
+        let handler = ActionHandler {
+            approval_registry: registry,
+            activity_tx: activity_tx.clone(),
+        };
+        let ctx = make_ctx();
+        handler.on_dismiss(&card, &ctx).await;
+
+        let msg = activity_rx.recv().await.expect("should receive activity");
+        match msg {
+            TodoActivityMessage::ApprovalResolved { approved, .. } => {
+                assert!(!approved);
+            }
+            _ => panic!("Expected ApprovalResolved"),
+        }
     }
 }

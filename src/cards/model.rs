@@ -229,6 +229,9 @@ pub struct ApprovalCard {
     pub expires_at: Option<DateTime<Utc>>,
     /// When the card was last updated.
     pub updated_at: DateTime<Utc>,
+    /// Associated todo ID (for Action cards created by todo agents).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub todo_id: Option<Uuid>,
 }
 
 impl ApprovalCard {
@@ -262,6 +265,7 @@ impl ApprovalCard {
             created_at: now,
             expires_at: Some(now + chrono::Duration::minutes(expire_minutes as i64)),
             updated_at: now,
+            todo_id: None,
         }
     }
 
@@ -289,6 +293,7 @@ impl ApprovalCard {
             created_at: now,
             expires_at: Some(now + chrono::Duration::minutes(expire_minutes as i64)),
             updated_at: now,
+            todo_id: None,
         }
     }
 
@@ -311,6 +316,7 @@ impl ApprovalCard {
             created_at: now,
             expires_at: Some(now + chrono::Duration::minutes(expire_minutes as i64)),
             updated_at: now,
+            todo_id: None,
         }
     }
 
@@ -335,6 +341,7 @@ impl ApprovalCard {
             created_at: now,
             expires_at: Some(now + chrono::Duration::minutes(expire_minutes as i64)),
             updated_at: now,
+            todo_id: None,
         }
     }
 
@@ -347,6 +354,12 @@ impl ApprovalCard {
     /// Remove expiry — the card will never auto-expire.
     pub fn without_expiry(mut self) -> Self {
         self.expires_at = None;
+        self
+    }
+
+    /// Associate this card with a todo (for Action cards from todo agents).
+    pub fn with_todo_id(mut self, todo_id: Uuid) -> Self {
+        self.todo_id = Some(todo_id);
         self
     }
 
@@ -1003,6 +1016,49 @@ mod tests {
         );
         let counts = SiloCounts::from_cards(&cards);
         assert_eq!(counts.todos, 1, "card without expiry should count as pending");
+    }
+
+    // ── todo_id tests ────────────────────────────────────────────────
+
+    #[test]
+    fn new_card_has_no_todo_id() {
+        let card = ApprovalCard::new_action("task", None, CardSilo::Todos, 15);
+        assert!(card.todo_id.is_none());
+    }
+
+    #[test]
+    fn with_todo_id_sets_id() {
+        let todo_id = Uuid::new_v4();
+        let card = ApprovalCard::new_action("task", None, CardSilo::Todos, 15)
+            .with_todo_id(todo_id);
+        assert_eq!(card.todo_id, Some(todo_id));
+    }
+
+    #[test]
+    fn todo_id_omitted_when_none() {
+        let card = ApprovalCard::new_reply("t", "s", "m", "r", 0.9, "c", 15);
+        let json = serde_json::to_string(&card).unwrap();
+        assert!(!json.contains("todo_id"));
+    }
+
+    #[test]
+    fn todo_id_present_in_json_when_set() {
+        let todo_id = Uuid::new_v4();
+        let card = ApprovalCard::new_action("task", None, CardSilo::Todos, 15)
+            .with_todo_id(todo_id);
+        let json = serde_json::to_string(&card).unwrap();
+        assert!(json.contains("todo_id"));
+        assert!(json.contains(&todo_id.to_string()));
+    }
+
+    #[test]
+    fn todo_id_serde_roundtrip() {
+        let todo_id = Uuid::new_v4();
+        let card = ApprovalCard::new_action("task", None, CardSilo::Todos, 15)
+            .with_todo_id(todo_id);
+        let json = serde_json::to_string(&card).unwrap();
+        let parsed: ApprovalCard = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.todo_id, Some(todo_id));
     }
 
     // ── SiloCounts edge cases ───────────────────────────────────────

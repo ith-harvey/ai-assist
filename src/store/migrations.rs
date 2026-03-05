@@ -26,11 +26,13 @@ const SCHEMA: &str = r#"
         email_thread TEXT,
         card_type TEXT NOT NULL DEFAULT 'reply',
         silo TEXT NOT NULL DEFAULT 'messages',
-        payload TEXT
+        payload TEXT,
+        todo_id TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_cards_status ON cards(status);
     CREATE INDEX IF NOT EXISTS idx_cards_channel ON cards(channel);
     CREATE INDEX IF NOT EXISTS idx_cards_silo ON cards(silo);
+    CREATE INDEX IF NOT EXISTS idx_cards_todo_id ON cards(todo_id);
     CREATE INDEX IF NOT EXISTS idx_cards_card_type ON cards(card_type);
 
     CREATE TABLE IF NOT EXISTS messages (
