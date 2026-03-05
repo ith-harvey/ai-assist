@@ -88,6 +88,7 @@ public struct ApprovalCard: Identifiable, Sendable {
     public let createdAt: String
     public let expiresAt: String?
     public let updatedAt: String
+    public let todoId: UUID?
 }
 
 // MARK: - Convenience Computed Properties (minimize downstream changes)
@@ -153,7 +154,7 @@ extension ApprovalCard {
 
 extension ApprovalCard: Codable {
     enum CodingKeys: String, CodingKey {
-        case id, silo, cardType, payload, status, createdAt, expiresAt, updatedAt
+        case id, silo, cardType, payload, status, createdAt, expiresAt, updatedAt, todoId
     }
 
     // Keys inside the "payload" container, used per card_type
@@ -180,6 +181,7 @@ extension ApprovalCard: Codable {
         createdAt = try container.decode(String.self, forKey: .createdAt)
         expiresAt = try container.decodeIfPresent(String.self, forKey: .expiresAt)
         updatedAt = try container.decode(String.self, forKey: .updatedAt)
+        todoId = try container.decodeIfPresent(UUID.self, forKey: .todoId)
 
         let type = try container.decodeIfPresent(CardType.self, forKey: .cardType) ?? .reply
         cardType = type
@@ -234,6 +236,7 @@ extension ApprovalCard: Codable {
         try container.encode(createdAt, forKey: .createdAt)
         try container.encodeIfPresent(expiresAt, forKey: .expiresAt)
         try container.encode(updatedAt, forKey: .updatedAt)
+        try container.encodeIfPresent(todoId, forKey: .todoId)
         // payload encoding omitted — not needed
     }
 }

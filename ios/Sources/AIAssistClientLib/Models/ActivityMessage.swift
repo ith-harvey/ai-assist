@@ -40,6 +40,8 @@ public enum ActivityMessage: Identifiable, Codable, Sendable {
     case completed(jobId: UUID, summary: String)
     case failed(jobId: UUID, error: String)
     case transcript(jobId: UUID, messages: [TranscriptMessage])
+    case approvalNeeded(jobId: UUID, cardId: UUID, toolName: String, description: String)
+    case approvalResolved(jobId: UUID, cardId: UUID, approved: Bool)
 
     // MARK: - Identifiable
 
@@ -65,6 +67,10 @@ public enum ActivityMessage: Identifiable, Codable, Sendable {
             return "failed-\(jobId.uuidString)"
         case .transcript(let jobId, _):
             return "transcript-\(jobId.uuidString)"
+        case .approvalNeeded(let jobId, let cardId, _, _):
+            return "approval_needed-\(jobId.uuidString)-\(cardId.uuidString)"
+        case .approvalResolved(let jobId, let cardId, _):
+            return "approval_resolved-\(jobId.uuidString)-\(cardId.uuidString)"
         }
     }
 
@@ -81,7 +87,9 @@ public enum ActivityMessage: Identifiable, Codable, Sendable {
              .agentResponse(let id, _),
              .completed(let id, _),
              .failed(let id, _),
-             .transcript(let id, _):
+             .transcript(let id, _),
+             .approvalNeeded(let id, _, _, _),
+             .approvalResolved(let id, _, _):
             return id
         }
     }
@@ -100,13 +108,16 @@ public enum ActivityMessage: Identifiable, Codable, Sendable {
         case type
         case jobId = "job_id"
         case todoId = "todo_id"
+        case cardId = "card_id"
         case iteration
         case toolName = "tool_name"
         case success
         case summary
         case content
+        case description
         case error
         case messages
+        case approved
     }
 
     public init(from decoder: Decoder) throws {
@@ -160,6 +171,19 @@ public enum ActivityMessage: Identifiable, Codable, Sendable {
             let jobId = try container.decode(UUID.self, forKey: .jobId)
             let messages = try container.decode([TranscriptMessage].self, forKey: .messages)
             self = .transcript(jobId: jobId, messages: messages)
+
+        case "approval_needed":
+            let jobId = try container.decode(UUID.self, forKey: .jobId)
+            let cardId = try container.decode(UUID.self, forKey: .cardId)
+            let toolName = try container.decode(String.self, forKey: .toolName)
+            let description = try container.decode(String.self, forKey: .description)
+            self = .approvalNeeded(jobId: jobId, cardId: cardId, toolName: toolName, description: description)
+
+        case "approval_resolved":
+            let jobId = try container.decode(UUID.self, forKey: .jobId)
+            let cardId = try container.decode(UUID.self, forKey: .cardId)
+            let approved = try container.decode(Bool.self, forKey: .approved)
+            self = .approvalResolved(jobId: jobId, cardId: cardId, approved: approved)
 
         default:
             throw DecodingError.dataCorruptedError(
@@ -220,6 +244,19 @@ public enum ActivityMessage: Identifiable, Codable, Sendable {
             try container.encode("transcript", forKey: .type)
             try container.encode(jobId, forKey: .jobId)
             try container.encode(messages, forKey: .messages)
+
+        case .approvalNeeded(let jobId, let cardId, let toolName, let description):
+            try container.encode("approval_needed", forKey: .type)
+            try container.encode(jobId, forKey: .jobId)
+            try container.encode(cardId, forKey: .cardId)
+            try container.encode(toolName, forKey: .toolName)
+            try container.encode(description, forKey: .description)
+
+        case .approvalResolved(let jobId, let cardId, let approved):
+            try container.encode("approval_resolved", forKey: .type)
+            try container.encode(jobId, forKey: .jobId)
+            try container.encode(cardId, forKey: .cardId)
+            try container.encode(approved, forKey: .approved)
         }
     }
 
