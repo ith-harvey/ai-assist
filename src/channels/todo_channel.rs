@@ -345,13 +345,17 @@ impl Channel for TodoChannel {
         let succeeded = self.responded.load(Ordering::SeqCst);
         self.logger.flush(succeeded).await;
 
-        // Emit transcript to WebSocket for iOS activity stream
-        let messages = self.logger.transcript_messages().await;
-        if !messages.is_empty() {
-            self.emit(TodoActivityMessage::Transcript {
-                job_id: self.job_id,
-                messages,
-            });
+        // Emit transcript to WebSocket for iOS activity stream (failures only —
+        // on success the activity feed already has all events, and a transcript
+        // after "Completed" looks like the work is still going).
+        if !succeeded {
+            let messages = self.logger.transcript_messages().await;
+            if !messages.is_empty() {
+                self.emit(TodoActivityMessage::Transcript {
+                    job_id: self.job_id,
+                    messages,
+                });
+            }
         }
 
         Ok(())

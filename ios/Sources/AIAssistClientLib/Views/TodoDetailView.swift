@@ -736,11 +736,11 @@ public struct TodoDetailView: View {
     private var connectionBadge: some View {
         HStack(spacing: 4) {
             Circle()
-                .fill(activitySocket.isConnected ? .green : .red)
+                .fill(activitySocket.isFinished ? .green
+                    : activitySocket.isConnected ? .green : .red)
                 .frame(width: 6, height: 6)
-            Text(activitySocket.isConnected
-                 ? (activitySocket.isFinished ? "Finished" : "Live")
-                 : "Disconnected")
+            Text(activitySocket.isFinished ? "Finished"
+                : activitySocket.isConnected ? "Live" : "Disconnected")
                 .font(.system(size: 10))
                 .foregroundStyle(.secondary)
         }
