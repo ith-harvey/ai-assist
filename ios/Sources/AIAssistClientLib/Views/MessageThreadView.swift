@@ -237,24 +237,4 @@ struct MessageThreadView: View {
         return iso
     }
 
-    private func channelIcon(for channel: String) -> String {
-        switch channel.lowercased() {
-        case "telegram": return "paperplane.fill"
-        case "whatsapp": return "phone.fill"
-        case "slack": return "number"
-        case "email": return "envelope.fill"
-        default: return "bubble.left.fill"
-        }
-    }
-
-    private func channelColor(for channel: String) -> Color {
-        switch channel.lowercased() {
-        case "telegram": return .blue
-        case "whatsapp": return .green
-        case "slack": return .purple
-        case "email": return .gray
-        default: return .secondary
-        }
-    }
-
 }

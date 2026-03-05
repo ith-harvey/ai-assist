@@ -2,31 +2,19 @@ import SwiftUI
 
 /// Root view with full-screen swipe to approve/reject cards.
 ///
-/// Slack Catch-Up style: the entire card is a self-contained rounded rectangle
-/// containing the header banner, message thread, and refine input bar.
-/// Swiping right turns the card green ("Approved"), left turns it red ("Rejected").
-///
-/// Voice/text refine via Telegram-style input bar with mic/send button swap.
+/// Thin host: delegates swipe gesture to SwipeCardContainer,
+/// card rendering to CardBodyView, and channel styling to ChannelStyle.
 public struct ContentView: View {
     var socket: CardWebSocket
     @State private var showSettings = false
     @State private var hostInput = "localhost"
     @State private var portInput = "8080"
 
-    // Swipe state
-    @State private var dragOffset: CGFloat = 0
-    @State private var isDraggingHorizontally = false
-
     // Refine input state
     @State private var refineText = ""
     #if os(iOS)
     @State private var isKeyboardVisible = false
     #endif
-
-    private let swipeThreshold: CGFloat = 100
-    /// Minimum movement before direction is locked. Gives ScrollView
-    /// first crack at vertical gestures.
-    private let directionLockDistance: CGFloat = 20
 
     public init(socket: CardWebSocket) {
         self.socket = socket
@@ -71,7 +59,6 @@ public struct ContentView: View {
                 ToolbarItem(placement: .primaryAction) {
                     HStack(spacing: 12) {
                         ApprovalBellBadge(count: socket.cards.count)
-
                         Button {
                             hostInput = socket.host
                             portInput = String(socket.port)
@@ -88,7 +75,6 @@ public struct ContentView: View {
             .sheet(isPresented: $showSettings) {
                 settingsSheet
             }
-            // Socket lifecycle managed by MainTabView
             #if os(iOS)
             .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
                 isKeyboardVisible = true
@@ -100,184 +86,32 @@ public struct ContentView: View {
         }
     }
 
-    // MARK: - Card Content + Swipe Gesture
+    // MARK: - Card Content
 
     @ViewBuilder
     private func cardContent(for card: ApprovalCard) -> some View {
         VStack(spacing: 0) {
             connectionBanner
 
-            // Self-contained card: header + thread + input bar all inside one rounded rect
-            VStack(spacing: 0) {
-                cardHeader(for: card)
-
-                MessageThreadView(card: card)
+            SwipeCardContainer(
+                onApprove: { socket.approve(cardId: card.id) },
+                onReject: { socket.dismiss(cardId: card.id) }
+            ) {
+                CardBodyView(card: card)
 
                 Divider()
 
                 refineInputBar(for: card)
 
-                // Refining indicator
                 if socket.isRefining {
                     refiningBar
                 }
             }
-            .background(
-                RoundedRectangle(cornerRadius: 20)
-                    #if os(iOS)
-                    .fill(Color(uiColor: .systemBackground))
-                    #else
-                    .fill(Color.white)
-                    #endif
-            )
-            .clipShape(RoundedRectangle(cornerRadius: 20))
-            .shadow(color: .black.opacity(0.1), radius: 12, y: 4)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
-            // Full-card color overlay for swipe feedback
-            .overlay(
-                swipeColorOverlay
-                    .clipShape(RoundedRectangle(cornerRadius: 20))
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 10)
-            )
         }
-        .offset(x: dragOffset)
-        .rotationEffect(.degrees(isDraggingHorizontally ? Double(dragOffset) / 25 : 0))
-        // Horizontal swipe gesture for approve/reject only.
-        .simultaneousGesture(
-            DragGesture(minimumDistance: directionLockDistance)
-                .onChanged { value in
-                    let horizontal = abs(value.translation.width)
-                    let vertical = abs(value.translation.height)
-
-                    if !isDraggingHorizontally {
-                        if horizontal > vertical && horizontal > directionLockDistance {
-                            isDraggingHorizontally = true
-                        }
-                    }
-
-                    if isDraggingHorizontally {
-                        dragOffset = value.translation.width
-                    }
-                }
-                .onEnded { value in
-                    if isDraggingHorizontally {
-                        let width = value.translation.width
-                        let velocityX = value.predictedEndTranslation.width - width
-                        let effectiveWidth = width + velocityX * 0.15
-
-                        if effectiveWidth > swipeThreshold {
-                            // Fly off right — approve
-                            withAnimation(.easeOut(duration: 0.18)) {
-                                dragOffset = 500
-                            }
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) {
-                                socket.approve(cardId: card.id)
-                                dragOffset = 0
-                                isDraggingHorizontally = false
-                            }
-                        } else if effectiveWidth < -swipeThreshold {
-                            // Fly off left — reject
-                            withAnimation(.easeOut(duration: 0.18)) {
-                                dragOffset = -500
-                            }
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) {
-                                socket.dismiss(cardId: card.id)
-                                dragOffset = 0
-                                isDraggingHorizontally = false
-                            }
-                        } else {
-                            // Snap back
-                            withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
-                                dragOffset = 0
-                            }
-                            isDraggingHorizontally = false
-                        }
-                    } else {
-                        isDraggingHorizontally = false
-                    }
-                }
-        )
     }
 
-    // MARK: - Card Header Banner
+    // MARK: - Refine Input Bar
 
-    @ViewBuilder
-    private func cardHeader(for card: ApprovalCard) -> some View {
-        HStack(spacing: 10) {
-            Image(systemName: channelIcon(for: card.channel))
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(.white)
-
-            Text(card.sourceSender)
-                .font(.caption.bold())
-                .foregroundStyle(.white)
-                .lineLimit(1)
-
-            Text("·")
-                .font(.caption)
-                .foregroundStyle(.white.opacity(0.6))
-
-            Text(channelLabel(for: card))
-                .font(.caption)
-                .foregroundStyle(.white.opacity(0.8))
-                .lineLimit(1)
-
-            Spacer()
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 6)
-        .background(channelColor(for: card.channel))
-        // Only top corners rounded to match card shape
-        .clipShape(
-            UnevenRoundedRectangle(
-                topLeadingRadius: 20,
-                bottomLeadingRadius: 0,
-                bottomTrailingRadius: 0,
-                topTrailingRadius: 20
-            )
-        )
-    }
-
-    // MARK: - Full-Card Swipe Color Overlay
-
-    @ViewBuilder
-    private var swipeColorOverlay: some View {
-        let width = dragOffset
-        ZStack {
-            if width > 10 {
-                // Swiping right → green "Approved"
-                let intensity = min(0.85, Double(width - 10) / 200)
-                Color.green.opacity(intensity)
-                VStack(spacing: 8) {
-                    Image(systemName: "checkmark.circle.fill")
-                        .font(.system(size: 48, weight: .bold))
-                    Text("Approved")
-                        .font(.title2.bold())
-                }
-                .foregroundStyle(.white)
-                .opacity(min(1.0, Double(width - 30) / 80))
-            } else if width < -10 {
-                // Swiping left → red "Rejected"
-                let intensity = min(0.85, Double(abs(width) - 10) / 200)
-                Color.red.opacity(intensity)
-                VStack(spacing: 8) {
-                    Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 48, weight: .bold))
-                    Text("Rejected")
-                        .font(.title2.bold())
-                }
-                .foregroundStyle(.white)
-                .opacity(min(1.0, Double(abs(width) - 30) / 80))
-            }
-        }
-        .allowsHitTesting(false)
-    }
-
-    // MARK: - Refine Input Bar (Telegram-style mic/send swap)
-
-    /// Whether the refine text field has sendable content.
     private var canRefine: Bool {
         !refineText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
@@ -301,7 +135,6 @@ public struct ContentView: View {
                     sendRefine(for: card)
                 }
 
-            // Telegram-style swap: send button when text entered, mic when empty
             ZStack {
                 if canRefine {
                     Button {
@@ -397,39 +230,6 @@ public struct ContentView: View {
         Circle()
             .fill(socket.isConnected ? Color.green : Color.red)
             .frame(width: 8, height: 8)
-    }
-
-    // MARK: - Helpers
-
-    private func channelIcon(for channel: String) -> String {
-        switch channel.lowercased() {
-        case "telegram": return "paperplane.fill"
-        case "whatsapp": return "phone.fill"
-        case "slack": return "number"
-        case "email": return "envelope.fill"
-        default: return "bubble.left.fill"
-        }
-    }
-
-    private func channelColor(for channel: String) -> Color {
-        switch channel.lowercased() {
-        case "telegram": return Color(red: 0.35, green: 0.53, blue: 0.87)
-        case "whatsapp": return Color(red: 0.15, green: 0.68, blue: 0.38)
-        case "slack": return Color(red: 0.44, green: 0.19, blue: 0.58)
-        case "email": return Color(red: 0.35, green: 0.35, blue: 0.42)
-        default: return .accentColor
-        }
-    }
-
-    private func channelLabel(for card: ApprovalCard) -> String {
-        let channel = card.channel.lowercased()
-        switch channel {
-        case "email":
-            // Show subject or conversation ID
-            return card.conversationId
-        default:
-            return "via \(card.channel.capitalized)"
-        }
     }
 
     // MARK: - Settings

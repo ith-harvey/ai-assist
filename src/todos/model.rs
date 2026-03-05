@@ -31,6 +31,7 @@ pub enum TodoBucket {
 pub enum TodoStatus {
     Created,
     AgentWorking,
+    AwaitingApproval,
     ReadyForReview,
     WaitingOnYou,
     Snoozed,

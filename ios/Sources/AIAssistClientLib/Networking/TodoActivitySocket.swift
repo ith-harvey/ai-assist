@@ -69,13 +69,16 @@ public final class TodoActivitySocket: @unchecked Sendable {
     private func openConnection() {
         let todoIdStr = todoId.uuidString.lowercased()
         guard let url = URL(string: "ws://\(host):\(port)/ws/todos/\(todoIdStr)/activity") else {
+            print("📡 [ActivitySocket] Invalid URL for todo \(todoIdStr)")
             return
         }
+        print("📡 [ActivitySocket] Connecting to \(url)")
         let task = session.webSocketTask(with: url)
         self.webSocketTask = task
         task.resume()
         isConnected = true
         reconnectAttempt = 0
+        print("📡 [ActivitySocket] Task resumed, starting receive loop")
         receiveMessage()
     }
 
@@ -83,12 +86,24 @@ public final class TodoActivitySocket: @unchecked Sendable {
 
     private func receiveMessage() {
         webSocketTask?.receive { [weak self] result in
-            guard let self else { return }
+            guard let self else {
+                print("📡 [ActivitySocket] self was deallocated in receive callback")
+                return
+            }
             switch result {
             case .success(let message):
+                switch message {
+                case .string(let text):
+                    print("📡 [ActivitySocket] Received text (\(text.count) chars): \(String(text.prefix(150)))")
+                case .data(let data):
+                    print("📡 [ActivitySocket] Received data (\(data.count) bytes)")
+                @unknown default:
+                    print("📡 [ActivitySocket] Received unknown message type")
+                }
                 self.handleMessage(message)
                 self.receiveMessage()
-            case .failure:
+            case .failure(let error):
+                print("📡 [ActivitySocket] Receive FAILED: \(error)")
                 self.handleDisconnect()
             }
         }
@@ -106,31 +121,48 @@ public final class TodoActivitySocket: @unchecked Sendable {
             return
         }
 
-        guard let activityMessage = try? ActivityMessage.decode(from: data) else { return }
-
-        DispatchQueue.main.async { [weak self] in
-            self?.messages.append(activityMessage)
-            self?.latestActivity = activityMessage
+        do {
+            let activityMessage = try ActivityMessage.decode(from: data)
+            print("📡 [ActivitySocket] Decoded: \(activityMessage.id) (terminal: \(activityMessage.isTerminal))")
+            DispatchQueue.main.async { [weak self] in
+                self?.messages.append(activityMessage)
+                self?.latestActivity = activityMessage
+                print("📡 [ActivitySocket] UI updated — messages: \(self?.messages.count ?? 0), isConnected: \(self?.isConnected ?? false)")
+            }
+        } catch {
+            print("📡 [ActivitySocket] DECODE FAILED: \(error)")
+            if let text = String(data: data, encoding: .utf8) {
+                print("📡 [ActivitySocket] Raw JSON: \(String(text.prefix(300)))")
+            }
         }
     }
 
     // MARK: - Reconnection
 
     private func handleDisconnect() {
+        print("📡 [ActivitySocket] handleDisconnect called (intentional: \(isIntentionalDisconnect), finished: \(isFinished), attempt: \(reconnectAttempt))")
         DispatchQueue.main.async { [weak self] in
             self?.isConnected = false
         }
 
-        guard !isIntentionalDisconnect else { return }
+        guard !isIntentionalDisconnect else {
+            print("📡 [ActivitySocket] Intentional disconnect, not reconnecting")
+            return
+        }
 
         // Don't reconnect if stream already finished
-        if isFinished { return }
+        if isFinished {
+            print("📡 [ActivitySocket] Stream finished, not reconnecting")
+            return
+        }
 
         let delay = reconnectDelay()
         reconnectAttempt += 1
+        print("📡 [ActivitySocket] Scheduling reconnect in \(delay)s (attempt \(reconnectAttempt))")
 
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
             guard let self, !self.isIntentionalDisconnect else { return }
+            print("📡 [ActivitySocket] Reconnecting now...")
             self.openConnection()
         }
     }

@@ -12,6 +12,7 @@ use ai_assist::llm::{LlmBackend, LlmConfig, create_provider};
 use ai_assist::safety::SafetyLayer;
 use ai_assist::store::{Database, LibSqlBackend};
 use ai_assist::todos::activity::{ActivityState, TodoActivityMessage, activity_routes};
+use ai_assist::todos::approval_registry::TodoApprovalRegistry;
 use ai_assist::todos::ws::{TodoState, todo_routes};
 use ai_assist::tools::ToolRegistry;
 use ai_assist::worker::{ContextManager, Scheduler};
@@ -24,13 +25,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .install_default()
         .expect("Failed to install rustls crypto provider");
 
-    // Initialize tracing
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
+    // Initialize tracing — layered subscriber: stderr + daily rolling file
+    use tracing_subscriber::prelude::*;
+    use tracing_appender::rolling;
+
+    let file_appender = rolling::daily("data/logs", "ai-assist.log");
+    let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
+
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+
+    let stderr_layer = tracing_subscriber::fmt::layer()
+        .with_target(false);
+
+    let file_layer = tracing_subscriber::fmt::layer()
         .with_target(false)
+        .with_ansi(false)
+        .with_writer(non_blocking);
+
+    tracing_subscriber::registry()
+        .with(env_filter)
+        .with(stderr_layer)
+        .with(file_layer)
         .init();
 
     // Read API key from environment
@@ -243,6 +259,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let tracker = Arc::new(ai_assist::agent::todo_agent::ActiveAgentTracker::new(
         agent_config.max_parallel_jobs,
     ));
+    let approval_registry = TodoApprovalRegistry::new();
 
     let todo_state = TodoState::new(Arc::clone(&db));
     let todo_agent_deps = ai_assist::agent::todo_agent::TodoAgentDeps {
@@ -253,6 +270,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         workspace: Arc::clone(&workspace),
         activity_tx: activity_tx.clone(),
         todo_tx: todo_state.tx.clone(),
+        card_queue: card_queue.clone(),
+        approval_registry: approval_registry.clone(),
     };
 
     let todo_state = TodoState::with_agents(
@@ -281,6 +300,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         card_queue.clone(),
         email_config_for_cards,
         card_generator.clone(),
+        approval_registry,
     )
     .merge(ios_router)
     .merge(todo_routes(todo_state))

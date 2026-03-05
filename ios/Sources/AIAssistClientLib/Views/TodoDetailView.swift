@@ -5,9 +5,19 @@ import SwiftUI
 /// Layout: header → metadata → description → divider → embedded agent activity feed.
 /// The activity feed reuses rendering logic from the old `TodoActivityView`.
 /// Connection badge shows live/disconnected status in the toolbar.
+/// Preference key for tracking scroll offset within the detail view.
+private struct ScrollOffsetKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
 public struct TodoDetailView: View {
     let todo: TodoItem
     @State private var activitySocket: TodoActivitySocket
+    @State private var isDescriptionExpanded = false
+    @State private var isHeaderCollapsed = false
 
     public init(todo: TodoItem) {
         self.todo = todo
@@ -15,41 +25,80 @@ public struct TodoDetailView: View {
     }
 
     public var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
-                // ── Header ──────────────────────────────────────
-                headerSection
-                    .padding(.horizontal, 20)
-                    .padding(.top, 16)
-                    .padding(.bottom, 12)
-
-                // ── Metadata ────────────────────────────────────
-                metadataSection
-                    .padding(.horizontal, 20)
-                    .padding(.bottom, 12)
-
-                // ── Description ─────────────────────────────────
-                if let description = todo.description, !description.isEmpty {
-                    Text(description)
-                        .font(.subheadline)
-                        .foregroundStyle(.primary)
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    // ── Header ──────────────────────────────────────
+                    headerSection
                         .padding(.horizontal, 20)
-                        .padding(.bottom, 16)
-                }
+                        .padding(.top, 16)
+                        .padding(.bottom, isHeaderCollapsed ? 8 : 12)
 
-                // ── Divider ─────────────────────────────────────
-                if todo.bucket == .agentStartable {
-                    Rectangle()
-                        .fill(Color.gray.opacity(0.2))
+                    // ── Metadata (hidden when collapsed) ────────────
+                    if !isHeaderCollapsed {
+                        metadataSection
+                            .padding(.horizontal, 20)
+                            .padding(.bottom, 12)
+                            .transition(.opacity.combined(with: .move(edge: .top)))
+                    }
+
+                    // ── Description (hidden when collapsed) ─────────
+                    if !isHeaderCollapsed, let description = todo.description, !description.isEmpty {
+                        descriptionSection(description)
+                            .padding(.horizontal, 20)
+                            .padding(.bottom, 16)
+                            .transition(.opacity.combined(with: .move(edge: .top)))
+                    }
+
+                    // ── Divider ─────────────────────────────────────
+                    if todo.bucket == .agentStartable {
+                        Rectangle()
+                            .fill(Color.gray.opacity(0.2))
+                            .frame(height: 1)
+                            .padding(.horizontal, 20)
+
+                        // ── Activity Feed ───────────────────────────────
+                        activitySection
+                            .padding(.top, 12)
+                    }
+
+                    // Invisible bottom anchor for scroll-to-bottom
+                    Color.clear
                         .frame(height: 1)
-                        .padding(.horizontal, 20)
-
-                    // ── Activity Feed ───────────────────────────────
-                    activitySection
-                        .padding(.top, 12)
+                        .id("activityBottom")
+                }
+                .padding(.bottom, 20)
+                .background(
+                    GeometryReader { geo in
+                        Color.clear.preference(
+                            key: ScrollOffsetKey.self,
+                            value: geo.frame(in: .named("detailScroll")).origin.y
+                        )
+                    }
+                )
+            }
+            .coordinateSpace(name: "detailScroll")
+            .onAppear {
+                // Scroll to bottom after a brief delay to let content render
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                    proxy.scrollTo("activityBottom", anchor: .bottom)
                 }
             }
-            .padding(.bottom, 20)
+        }
+        .onPreferenceChange(ScrollOffsetKey.self) { offset in
+            // Collapse header when user scrolls up (content moves up, offset becomes negative)
+            let shouldCollapse = offset < -80
+            let shouldExpand = offset >= -40
+            if shouldCollapse && !isHeaderCollapsed {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    isHeaderCollapsed = true
+                    isDescriptionExpanded = false
+                }
+            } else if shouldExpand && isHeaderCollapsed {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    isHeaderCollapsed = false
+                }
+            }
         }
         #if os(iOS)
         .scrollDismissesKeyboard(.interactively)
@@ -78,52 +127,103 @@ public struct TodoDetailView: View {
         }
     }
 
+    // MARK: - Collapsible Description
+
+    private func descriptionSection(_ description: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            if isDescriptionExpanded {
+                Text(description)
+                    .font(.subheadline)
+                    .foregroundStyle(.primary)
+
+                Text("See less")
+                    .font(.subheadline)
+                    .foregroundStyle(.blue)
+                    .onTapGesture {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            isDescriptionExpanded = false
+                        }
+                    }
+            } else {
+                // Truncated description with inline "… See more"
+                HStack(alignment: .lastTextBaseline, spacing: 0) {
+                    Text(description)
+                        .font(.subheadline)
+                        .foregroundStyle(.primary)
+                        .lineLimit(3)
+
+                    // Only show "See more" if there's likely more text
+                    // (we always show it — lineLimit handles the truncation)
+                }
+
+                Text("… See more")
+                    .font(.subheadline)
+                    .foregroundStyle(.blue)
+                    .onTapGesture {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            isDescriptionExpanded = true
+                        }
+                    }
+            }
+        }
+    }
+
     // MARK: - Header
 
     private var headerSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 10) {
-                // Status icon
-                Image(systemName: todo.status.iconName)
-                    .font(.system(size: 24))
-                    .foregroundStyle(statusColor)
+            if isHeaderCollapsed {
+                // Compact: title only
+                Text(todo.title)
+                    .font(.title3)
+                    .fontWeight(.semibold)
+                    .foregroundStyle(.primary)
+                    .lineLimit(2)
+            } else {
+                // Full header with icon, badges
+                HStack(spacing: 10) {
+                    // Status icon
+                    Image(systemName: todo.status.iconName)
+                        .font(.system(size: 24))
+                        .foregroundStyle(statusColor)
 
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(todo.title)
-                        .font(.title3)
-                        .fontWeight(.semibold)
-                        .foregroundStyle(.primary)
-                        .lineLimit(3)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(todo.title)
+                            .font(.title3)
+                            .fontWeight(.semibold)
+                            .foregroundStyle(.primary)
+                            .lineLimit(3)
 
-                    HStack(spacing: 8) {
-                        // Type badge
-                        Text(todo.todoType.label)
-                            .font(.system(size: 11, weight: .medium))
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 3)
-                            .background(badgeColor.opacity(0.15))
-                            .foregroundStyle(badgeColor)
-                            .clipShape(Capsule())
+                        HStack(spacing: 8) {
+                            // Type badge
+                            Text(todo.todoType.label)
+                                .font(.system(size: 11, weight: .medium))
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 3)
+                                .background(badgeColor.opacity(0.15))
+                                .foregroundStyle(badgeColor)
+                                .clipShape(Capsule())
 
-                        // Priority
-                        if todo.priority <= 2 {
-                            HStack(spacing: 2) {
-                                Image(systemName: "exclamationmark.circle.fill")
-                                    .font(.system(size: 11))
-                                Text(todo.priority == 1 ? "High" : "Medium")
+                            // Priority
+                            if todo.priority <= 2 {
+                                HStack(spacing: 2) {
+                                    Image(systemName: "exclamationmark.circle.fill")
+                                        .font(.system(size: 11))
+                                    Text(todo.priority == 1 ? "High" : "Medium")
+                                        .font(.system(size: 11, weight: .medium))
+                                }
+                                .foregroundStyle(todo.priority == 1 ? .red : .orange)
+                            }
+
+                            // Bucket
+                            HStack(spacing: 3) {
+                                Image(systemName: todo.bucket == .agentStartable ? "cpu" : "person.fill")
+                                    .font(.system(size: 10))
+                                Text(todo.bucket == .agentStartable ? "Agent" : "Human")
                                     .font(.system(size: 11, weight: .medium))
                             }
-                            .foregroundStyle(todo.priority == 1 ? .red : .orange)
+                            .foregroundStyle(todo.bucket == .agentStartable ? .blue : .purple)
                         }
-
-                        // Bucket
-                        HStack(spacing: 3) {
-                            Image(systemName: todo.bucket == .agentStartable ? "cpu" : "person.fill")
-                                .font(.system(size: 10))
-                            Text(todo.bucket == .agentStartable ? "Agent" : "Human")
-                                .font(.system(size: 11, weight: .medium))
-                        }
-                        .foregroundStyle(todo.bucket == .agentStartable ? .blue : .purple)
                     }
                 }
             }
@@ -199,9 +299,14 @@ public struct TodoDetailView: View {
             .foregroundStyle(.secondary)
             .padding(.horizontal, 20)
 
-            if let latest = activitySocket.latestActivity {
-                // Show only the latest event — replaces on each update
-                // Non-terminal events get a spinner to show the agent is still working
+            if activitySocket.isFinished {
+                // Show all messages when finished (includes failed + transcript)
+                ForEach(activitySocket.messages) { msg in
+                    activityRow(msg)
+                        .padding(.horizontal, 20)
+                }
+            } else if let latest = activitySocket.latestActivity {
+                // Show only the latest event while running
                 HStack(alignment: .top, spacing: 8) {
                     if !latest.isTerminal {
                         ProgressView()
@@ -241,6 +346,8 @@ public struct TodoDetailView: View {
             completedBanner(summary: summary)
         case .failed(_, let error):
             failedBanner(error: error)
+        case .transcript(_, let messages):
+            transcriptView(messages: messages)
         }
     }
 
@@ -293,7 +400,6 @@ public struct TodoDetailView: View {
                 .font(.subheadline)
                 .italic()
                 .foregroundStyle(.secondary)
-                .lineLimit(3)
         }
         .padding(.vertical, 2)
     }
@@ -384,6 +490,92 @@ public struct TodoDetailView: View {
         .padding(.top, 4)
     }
 
+    // MARK: - Transcript View
+
+    private func transcriptView(messages: [TranscriptMessage]) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Image(systemName: "doc.text.magnifyingglass")
+                    .font(.system(size: 16))
+                    .foregroundStyle(.purple)
+                Text("Agent Transcript")
+                    .font(.subheadline)
+                    .fontWeight(.semibold)
+                    .foregroundStyle(.purple)
+                Spacer()
+                Text("\(messages.count) messages")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            ForEach(messages) { msg in
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 4) {
+                        Text(transcriptRoleLabel(msg.role))
+                            .font(.system(size: 10, weight: .bold, design: .monospaced))
+                            .foregroundStyle(transcriptRoleColor(msg.role))
+                        if let tool = msg.toolName {
+                            Text(tool)
+                                .font(.system(size: 10, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    Text(msg.content)
+                        .font(.system(size: 12, design: .monospaced))
+                        .foregroundStyle(.primary)
+                        .textSelection(.enabled)
+                }
+                .padding(8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(transcriptBgColor(msg.role))
+                )
+            }
+        }
+        .padding(14)
+        .background(
+            RoundedRectangle(cornerRadius: 14)
+                .fill(.purple.opacity(0.05))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14)
+                        .strokeBorder(.purple.opacity(0.2), lineWidth: 1)
+                )
+        )
+        .padding(.top, 4)
+    }
+
+    private func transcriptRoleLabel(_ role: String) -> String {
+        switch role {
+        case "user": return "USER"
+        case "assistant": return "ASSISTANT"
+        case "system": return "SYSTEM"
+        case "tool_start": return "TOOL →"
+        case "tool_end": return "TOOL ←"
+        case "tool_result": return "RESULT"
+        default: return role.uppercased()
+        }
+    }
+
+    private func transcriptRoleColor(_ role: String) -> Color {
+        switch role {
+        case "user": return .blue
+        case "assistant": return .green
+        case "system": return .orange
+        case "tool_start", "tool_end", "tool_result": return .purple
+        default: return .secondary
+        }
+    }
+
+    private func transcriptBgColor(_ role: String) -> Color {
+        switch role {
+        case "user": return .blue.opacity(0.08)
+        case "assistant": return .green.opacity(0.08)
+        case "tool_result": return .purple.opacity(0.08)
+        default: return .gray.opacity(0.06)
+        }
+    }
+
     // MARK: - Shared Components
 
     private func toolBadge(_ name: String) -> some View {
@@ -443,6 +635,7 @@ public struct TodoDetailView: View {
         switch todo.status {
         case .created: .blue
         case .agentWorking: .orange
+        case .awaitingApproval: .orange
         case .readyForReview: .green
         case .waitingOnYou: .purple
         case .snoozed: .gray

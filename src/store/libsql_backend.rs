@@ -157,7 +157,7 @@ fn row_to_card(row: &libsql::Row) -> Result<ApprovalCard, libsql::Error> {
     let payload_str: Option<String> = row.get(3).ok();
     let status_str: String = row.get(4)?;
     let created_str: String = row.get(5)?;
-    let expires_str: String = row.get(6)?;
+    let expires_str: Option<String> = row.get(6).ok();
     let updated_str: String = row.get(7)?;
 
     let silo: CardSilo = silo_str.parse().unwrap_or_default();
@@ -206,7 +206,7 @@ fn row_to_card(row: &libsql::Row) -> Result<ApprovalCard, libsql::Error> {
         payload,
         status: str_to_status(&status_str),
         created_at: parse_datetime(&created_str),
-        expires_at: parse_datetime(&expires_str),
+        expires_at: expires_str.as_deref().map(parse_datetime),
         updated_at: parse_datetime(&updated_str),
     })
 }
@@ -415,7 +415,7 @@ impl Database for LibSqlBackend {
                 status_to_str(&card.status),
                 channel,
                 card.created_at.to_rfc3339(),
-                card.expires_at.to_rfc3339(),
+                card.expires_at.map(|t| t.to_rfc3339()),
                 card.updated_at.to_rfc3339(),
                 opt_text_owned(message_id),
                 opt_text_owned(reply_metadata_str),
@@ -493,7 +493,7 @@ impl Database for LibSqlBackend {
         let mut rows = conn
             .query(
                 &format!(
-                    "SELECT {CARD_COLUMNS} FROM cards WHERE status = 'pending' AND expires_at > ?1 ORDER BY created_at ASC"
+                    "SELECT {CARD_COLUMNS} FROM cards WHERE status = 'pending' AND (expires_at IS NULL OR expires_at > ?1) ORDER BY created_at ASC"
                 ),
                 params![now],
             )
@@ -549,7 +549,7 @@ impl Database for LibSqlBackend {
         let mut rows = conn
             .query(
                 &format!(
-                    "SELECT {CARD_COLUMNS} FROM cards WHERE status = 'pending' AND expires_at > ?1 AND silo = ?2 ORDER BY created_at DESC"
+                    "SELECT {CARD_COLUMNS} FROM cards WHERE status = 'pending' AND (expires_at IS NULL OR expires_at > ?1) AND silo = ?2 ORDER BY created_at DESC"
                 ),
                 params![now, silo.to_string()],
             )
@@ -573,7 +573,7 @@ impl Database for LibSqlBackend {
         let now = Utc::now().to_rfc3339();
         let mut rows = conn
             .query(
-                "SELECT silo, COUNT(*) FROM cards WHERE status = 'pending' AND expires_at > ?1 GROUP BY silo",
+                "SELECT silo, COUNT(*) FROM cards WHERE status = 'pending' AND (expires_at IS NULL OR expires_at > ?1) GROUP BY silo",
                 params![now],
             )
             .await
@@ -598,7 +598,7 @@ impl Database for LibSqlBackend {
         let now = Utc::now().to_rfc3339();
         let mut rows = conn
             .query(
-                "SELECT COUNT(*) FROM cards WHERE json_extract(payload, '$.message_id') = ?1 AND status = 'pending' AND expires_at > ?2",
+                "SELECT COUNT(*) FROM cards WHERE json_extract(payload, '$.message_id') = ?1 AND status = 'pending' AND (expires_at IS NULL OR expires_at > ?2)",
                 params![message_id, now],
             )
             .await
@@ -618,7 +618,7 @@ impl Database for LibSqlBackend {
         let now = Utc::now().to_rfc3339();
         let count = conn
             .execute(
-                "UPDATE cards SET status = 'expired', updated_at = ?1 WHERE status = 'pending' AND expires_at <= ?1",
+                "UPDATE cards SET status = 'expired', updated_at = ?1 WHERE status = 'pending' AND expires_at IS NOT NULL AND expires_at <= ?1",
                 params![now],
             )
             .await
@@ -2283,7 +2283,7 @@ mod tests {
         let db = test_db().await;
 
         let mut card = make_card("telegram");
-        card.expires_at = Utc::now() - chrono::Duration::hours(1);
+        card.expires_at = Some(Utc::now() - chrono::Duration::hours(1));
         db.insert_card(&card).await.unwrap();
 
         let fresh_card = make_card("telegram");
