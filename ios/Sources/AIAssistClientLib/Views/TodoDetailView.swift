@@ -13,6 +13,21 @@ private struct ScrollOffsetKey: PreferenceKey {
     }
 }
 
+/// Preference keys for detecting description text truncation.
+private struct FullTextHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
+private struct TruncatedTextHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
 public struct TodoDetailView: View {
     let todo: TodoItem
     @State private var activitySocket: TodoActivitySocket
@@ -129,6 +144,10 @@ public struct TodoDetailView: View {
 
     // MARK: - Collapsible Description
 
+    @State private var descriptionIsTruncated = false
+    @State private var fullDescriptionHeight: CGFloat = 0
+    @State private var truncatedDescriptionHeight: CGFloat = 0
+
     private func descriptionSection(_ description: String) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             if isDescriptionExpanded {
@@ -145,27 +164,63 @@ public struct TodoDetailView: View {
                         }
                     }
             } else {
-                // Truncated description with inline "… See more"
-                HStack(alignment: .lastTextBaseline, spacing: 0) {
-                    Text(description)
-                        .font(.subheadline)
-                        .foregroundStyle(.primary)
-                        .lineLimit(3)
-
-                    // Only show "See more" if there's likely more text
-                    // (we always show it — lineLimit handles the truncation)
-                }
-
-                Text("… See more")
+                Text(description)
                     .font(.subheadline)
-                    .foregroundStyle(.blue)
-                    .onTapGesture {
-                        withAnimation(.easeInOut(duration: 0.2)) {
-                            isDescriptionExpanded = true
+                    .foregroundStyle(.primary)
+                    .lineLimit(3)
+                    .background(
+                        // Measure full-height text vs truncated to detect truncation
+                        Text(description)
+                            .font(.subheadline)
+                            .lineLimit(nil)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .hidden()
+                            .background(
+                                GeometryReader { fullSize in
+                                    Color.clear.preference(
+                                        key: FullTextHeightKey.self,
+                                        value: fullSize.size.height
+                                    )
+                                }
+                            )
+                    )
+                    .overlay(
+                        GeometryReader { truncatedSize in
+                            Color.clear.preference(
+                                key: TruncatedTextHeightKey.self,
+                                value: truncatedSize.size.height
+                            )
                         }
+                    )
+                    .onPreferenceChange(FullTextHeightKey.self) { fullHeight in
+                        fullDescriptionHeight = fullHeight
+                        updateTruncationState()
                     }
+                    .onPreferenceChange(TruncatedTextHeightKey.self) { truncatedHeight in
+                        truncatedDescriptionHeight = truncatedHeight
+                        updateTruncationState()
+                    }
+
+                if descriptionIsTruncated {
+                    Text("… See more")
+                        .font(.subheadline)
+                        .foregroundStyle(.blue)
+                        .onTapGesture {
+                            withAnimation(.easeInOut(duration: 0.2)) {
+                                isDescriptionExpanded = true
+                            }
+                        }
+                }
             }
         }
+    }
+
+    /// Compare full vs truncated text height to determine if "See more" is needed.
+    /// Called whenever either height preference changes.
+    private func updateTruncationState() {
+        // Both heights must be measured before comparing
+        guard fullDescriptionHeight > 0, truncatedDescriptionHeight > 0 else { return }
+        descriptionIsTruncated = fullDescriptionHeight > truncatedDescriptionHeight + 1
     }
 
     // MARK: - Header
