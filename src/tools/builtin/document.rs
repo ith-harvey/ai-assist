@@ -55,14 +55,14 @@ impl Tool for CreateDocumentTool {
                 "doc_type": {
                     "type": "string",
                     "enum": ["research", "instructions", "notes", "report", "design", "summary", "other"],
-                    "description": "Type of document (default: other)"
+                    "description": "Type of document"
                 },
                 "todo_id": {
                     "type": "string",
                     "description": "Optional UUID of the todo this document belongs to"
                 }
             },
-            "required": ["title", "content"]
+            "required": ["title", "content", "doc_type"]
         })
     }
 
@@ -241,7 +241,8 @@ impl Tool for ListDocumentsTool {
 
     fn description(&self) -> &str {
         "List documents, optionally filtered by todo_id. Returns titles, IDs, and types \
-         without full content (use get_document for full content)."
+         without full content (use get_document for full content). \
+         To search by title or content, use find_document instead."
     }
 
     fn parameters_schema(&self) -> serde_json::Value {
@@ -307,6 +308,106 @@ impl Tool for ListDocumentsTool {
         Ok(ToolOutput::success(
             serde_json::json!({
                 "count": summaries.len(),
+                "documents": summaries,
+            }),
+            start.elapsed(),
+        ))
+    }
+}
+
+// ── find_document ───────────────────────────────────────────────────
+
+/// Tool for searching documents by title or content.
+pub struct FindDocumentTool {
+    db: Arc<dyn Database>,
+}
+
+impl FindDocumentTool {
+    pub fn new(db: Arc<dyn Database>) -> Self {
+        Self { db }
+    }
+}
+
+#[async_trait]
+impl Tool for FindDocumentTool {
+    fn name(&self) -> &str {
+        "find_document"
+    }
+
+    fn description(&self) -> &str {
+        "Search for documents by title or content. Returns matching document summaries \
+         with a content preview. Use this to find specific documents when you know \
+         keywords or topics."
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Search query (matches title and content, case-insensitive)"
+                },
+                "doc_type": {
+                    "type": "string",
+                    "enum": ["research", "instructions", "notes", "report", "design", "summary", "other"],
+                    "description": "Optional filter by document type"
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max results (default: 10, max: 50)",
+                    "default": 10
+                }
+            },
+            "required": ["query"]
+        })
+    }
+
+    async fn execute(
+        &self,
+        params: serde_json::Value,
+        _ctx: &JobContext,
+    ) -> Result<ToolOutput, ToolError> {
+        let start = std::time::Instant::now();
+        let query = require_str(&params, "query")?;
+
+        let doc_type_filter: Option<DocumentType> = params
+            .get("doc_type")
+            .and_then(|v| v.as_str())
+            .and_then(|s| serde_json::from_value(serde_json::Value::String(s.to_string())).ok());
+
+        let limit = params
+            .get("limit")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(10)
+            .min(50) as u32;
+
+        let docs = self
+            .db
+            .search_documents(query, doc_type_filter.as_ref(), limit)
+            .await
+            .map_err(|e| ToolError::ExecutionFailed(format!("Failed to search documents: {e}")))?;
+
+        let summaries: Vec<serde_json::Value> = docs
+            .iter()
+            .map(|d| {
+                let content_preview: String = d.content.chars().take(200).collect();
+                serde_json::json!({
+                    "id": d.id.to_string(),
+                    "title": d.title,
+                    "doc_type": d.doc_type,
+                    "todo_id": d.todo_id.map(|id| id.to_string()),
+                    "created_by": d.created_by,
+                    "created_at": d.created_at.to_rfc3339(),
+                    "content_preview": content_preview,
+                })
+            })
+            .collect();
+
+        Ok(ToolOutput::success(
+            serde_json::json!({
+                "count": summaries.len(),
+                "query": query,
                 "documents": summaries,
             }),
             start.elapsed(),

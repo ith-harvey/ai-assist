@@ -9,6 +9,7 @@ use rust_decimal::Decimal;
 use uuid::Uuid;
 
 use crate::cards::model::{ApprovalCard, CardSilo, CardStatus, SiloCounts};
+use crate::documents::model::{Document, DocumentType};
 use crate::error::DatabaseError;
 use crate::todos::model::{TodoItem, TodoStatus};
 
@@ -447,4 +448,33 @@ pub trait Database: Send + Sync {
         tool_name: &str,
         error: &str,
     ) -> Result<(), DatabaseError>;
+
+    // ── Documents ───────────────────────────────────────────────────
+
+    /// Create a new document.
+    async fn create_document(&self, doc: &Document) -> Result<(), DatabaseError>;
+
+    /// Get a document by ID.
+    async fn get_document(&self, id: Uuid) -> Result<Option<Document>, DatabaseError>;
+
+    /// Update a document (full replace of mutable fields).
+    async fn update_document(&self, doc: &Document) -> Result<(), DatabaseError>;
+
+    /// Delete a document. Returns true if a row was deleted.
+    async fn delete_document(&self, id: Uuid) -> Result<bool, DatabaseError>;
+
+    /// List documents, most recent first.
+    async fn list_documents(&self, limit: u32) -> Result<Vec<Document>, DatabaseError>;
+
+    /// List documents linked to a specific todo.
+    async fn list_documents_by_todo(&self, todo_id: Uuid) -> Result<Vec<Document>, DatabaseError>;
+
+    /// Search documents by title or content (case-insensitive LIKE).
+    /// Optionally filter by document type.
+    async fn search_documents(
+        &self,
+        query: &str,
+        doc_type: Option<&DocumentType>,
+        limit: u32,
+    ) -> Result<Vec<Document>, DatabaseError>;
 }

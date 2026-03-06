@@ -13,6 +13,7 @@ use tracing::{debug, info};
 use uuid::Uuid;
 
 use crate::cards::model::{ApprovalCard, CardPayload, CardSilo, CardStatus, SiloCounts};
+use crate::documents::model::{Document, DocumentType};
 use crate::error::DatabaseError;
 use crate::store::migrations;
 use crate::store::traits::{ConversationMessage, Database, MessageStatus, StoredMessage};
@@ -1942,6 +1943,173 @@ impl Database for LibSqlBackend {
         .map_err(|e| DatabaseError::Query(format!("record_tool_failure: {e}")))?;
         Ok(())
     }
+
+    // ── Documents ───────────────────────────────────────────────────
+
+    async fn create_document(&self, doc: &Document) -> Result<(), DatabaseError> {
+        let conn = self.conn();
+        let id = doc.id.to_string();
+        let todo_id = doc.todo_id.map(|id| id.to_string());
+        let doc_type = doc_type_to_str(&doc.doc_type);
+        let created_at = doc.created_at.to_rfc3339();
+        let updated_at = doc.updated_at.to_rfc3339();
+        conn.execute(
+            "INSERT INTO documents (id, todo_id, title, content, doc_type, created_by, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![id, todo_id, doc.title.clone(), doc.content.clone(), doc_type, doc.created_by.clone(), created_at, updated_at],
+        )
+        .await
+        .map_err(|e| DatabaseError::Query(format!("create_document: {e}")))?;
+        Ok(())
+    }
+
+    async fn get_document(&self, id: Uuid) -> Result<Option<Document>, DatabaseError> {
+        let conn = self.conn();
+        let mut rows = conn
+            .query(
+                "SELECT id, todo_id, title, content, doc_type, created_by, created_at, updated_at FROM documents WHERE id = ?1",
+                params![id.to_string()],
+            )
+            .await
+            .map_err(|e| DatabaseError::Query(format!("get_document: {e}")))?;
+
+        match rows.next().await.map_err(|e| DatabaseError::Query(format!("get_document next: {e}")))? {
+            Some(row) => Ok(Some(row_to_document(&row)?)),
+            None => Ok(None),
+        }
+    }
+
+    async fn update_document(&self, doc: &Document) -> Result<(), DatabaseError> {
+        let conn = self.conn();
+        let doc_type = doc_type_to_str(&doc.doc_type);
+        let updated_at = doc.updated_at.to_rfc3339();
+        let id = doc.id.to_string();
+        conn.execute(
+            "UPDATE documents SET title = ?1, content = ?2, doc_type = ?3, updated_at = ?4 WHERE id = ?5",
+            params![doc.title.clone(), doc.content.clone(), doc_type, updated_at, id],
+        )
+        .await
+        .map_err(|e| DatabaseError::Query(format!("update_document: {e}")))?;
+        Ok(())
+    }
+
+    async fn delete_document(&self, id: Uuid) -> Result<bool, DatabaseError> {
+        let conn = self.conn();
+        let affected = conn
+            .execute(
+                "DELETE FROM documents WHERE id = ?1",
+                params![id.to_string()],
+            )
+            .await
+            .map_err(|e| DatabaseError::Query(format!("delete_document: {e}")))?;
+        Ok(affected > 0)
+    }
+
+    async fn list_documents(&self, limit: u32) -> Result<Vec<Document>, DatabaseError> {
+        let conn = self.conn();
+        let mut rows = conn
+            .query(
+                "SELECT id, todo_id, title, content, doc_type, created_by, created_at, updated_at FROM documents ORDER BY created_at DESC LIMIT ?1",
+                params![limit as i64],
+            )
+            .await
+            .map_err(|e| DatabaseError::Query(format!("list_documents: {e}")))?;
+
+        let mut docs = Vec::new();
+        while let Some(row) = rows.next().await.map_err(|e| DatabaseError::Query(format!("list_documents next: {e}")))? {
+            docs.push(row_to_document(&row)?);
+        }
+        Ok(docs)
+    }
+
+    async fn list_documents_by_todo(&self, todo_id: Uuid) -> Result<Vec<Document>, DatabaseError> {
+        let conn = self.conn();
+        let mut rows = conn
+            .query(
+                "SELECT id, todo_id, title, content, doc_type, created_by, created_at, updated_at FROM documents WHERE todo_id = ?1 ORDER BY created_at DESC",
+                params![todo_id.to_string()],
+            )
+            .await
+            .map_err(|e| DatabaseError::Query(format!("list_documents_by_todo: {e}")))?;
+
+        let mut docs = Vec::new();
+        while let Some(row) = rows.next().await.map_err(|e| DatabaseError::Query(format!("list_documents_by_todo next: {e}")))? {
+            docs.push(row_to_document(&row)?);
+        }
+        Ok(docs)
+    }
+
+    async fn search_documents(
+        &self,
+        query: &str,
+        doc_type: Option<&DocumentType>,
+        limit: u32,
+    ) -> Result<Vec<Document>, DatabaseError> {
+        let conn = self.conn();
+        let pattern = format!("%{}%", query);
+
+        let mut rows = if let Some(dt) = doc_type {
+            let dt_str = serde_json::to_value(dt).unwrap();
+            let dt_str = dt_str.as_str().unwrap_or("other").to_string();
+            conn.query(
+                "SELECT id, todo_id, title, content, doc_type, created_by, created_at, updated_at FROM documents WHERE (title LIKE ?1 COLLATE NOCASE OR content LIKE ?1 COLLATE NOCASE) AND doc_type = ?2 ORDER BY created_at DESC LIMIT ?3",
+                params![pattern, dt_str, limit as i64],
+            )
+            .await
+        } else {
+            conn.query(
+                "SELECT id, todo_id, title, content, doc_type, created_by, created_at, updated_at FROM documents WHERE (title LIKE ?1 COLLATE NOCASE OR content LIKE ?1 COLLATE NOCASE) ORDER BY created_at DESC LIMIT ?2",
+                params![pattern, limit as i64],
+            )
+            .await
+        }
+        .map_err(|e| DatabaseError::Query(format!("search_documents: {e}")))?;
+
+        let mut docs = Vec::new();
+        while let Some(row) = rows.next().await.map_err(|e| DatabaseError::Query(format!("search_documents next: {e}")))? {
+            docs.push(row_to_document(&row)?);
+        }
+        Ok(docs)
+    }
+}
+
+// ── Row mapping helpers for documents ───────────────────────────────
+
+fn doc_type_to_str(dt: &DocumentType) -> String {
+    serde_json::to_value(dt)
+        .ok()
+        .and_then(|v| v.as_str().map(String::from))
+        .unwrap_or_else(|| "other".into())
+}
+
+fn row_to_document(row: &libsql::Row) -> Result<Document, DatabaseError> {
+    let id_str: String = row.get(0).map_err(|e| DatabaseError::Query(format!("doc.id: {e}")))?;
+    let todo_id_str: Option<String> = row.get(1).map_err(|e| DatabaseError::Query(format!("doc.todo_id: {e}")))?;
+    let title: String = row.get(2).map_err(|e| DatabaseError::Query(format!("doc.title: {e}")))?;
+    let content: String = row.get(3).map_err(|e| DatabaseError::Query(format!("doc.content: {e}")))?;
+    let doc_type_str: String = row.get(4).map_err(|e| DatabaseError::Query(format!("doc.doc_type: {e}")))?;
+    let created_by: String = row.get(5).map_err(|e| DatabaseError::Query(format!("doc.created_by: {e}")))?;
+    let created_at_str: String = row.get(6).map_err(|e| DatabaseError::Query(format!("doc.created_at: {e}")))?;
+    let updated_at_str: String = row.get(7).map_err(|e| DatabaseError::Query(format!("doc.updated_at: {e}")))?;
+
+    Ok(Document {
+        id: Uuid::parse_str(&id_str).map_err(|e| DatabaseError::Query(format!("doc.id parse: {e}")))?,
+        todo_id: todo_id_str
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .map(|s| Uuid::parse_str(s).map_err(|e| DatabaseError::Query(format!("doc.todo_id parse: {e}"))))
+            .transpose()?,
+        title,
+        content,
+        doc_type: serde_json::from_value(serde_json::Value::String(doc_type_str.clone()))
+            .unwrap_or(DocumentType::Other),
+        created_by,
+        created_at: DateTime::parse_from_rfc3339(&created_at_str)
+            .map(|dt| dt.with_timezone(&Utc))
+            .map_err(|e| DatabaseError::Query(format!("doc.created_at parse: {e}")))?,
+        updated_at: DateTime::parse_from_rfc3339(&updated_at_str)
+            .map(|dt| dt.with_timezone(&Utc))
+            .map_err(|e| DatabaseError::Query(format!("doc.updated_at parse: {e}")))?,
+    })
 }
 
 // ── Row mapping helpers for todos ───────────────────────────────────
@@ -3913,5 +4081,186 @@ mod tests {
 
         let results = db.search_todos("u", "zebra", 20).await.unwrap();
         assert!(results.is_empty());
+    }
+
+    // ── Document tests ──────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn document_create_and_get() {
+        let db = test_db().await;
+        let doc = Document::new("Research: AI", "# Overview\nContent here.", DocumentType::Research, "agent");
+        let id = doc.id;
+        db.create_document(&doc).await.unwrap();
+
+        let fetched = db.get_document(id).await.unwrap().unwrap();
+        assert_eq!(fetched.title, "Research: AI");
+        assert_eq!(fetched.content, "# Overview\nContent here.");
+        assert_eq!(fetched.doc_type, DocumentType::Research);
+        assert_eq!(fetched.created_by, "agent");
+        assert!(fetched.todo_id.is_none());
+    }
+
+    #[tokio::test]
+    async fn document_get_not_found() {
+        let db = test_db().await;
+        let result = db.get_document(uuid::Uuid::new_v4()).await.unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn document_with_todo_id() {
+        let db = test_db().await;
+        let todo_id = uuid::Uuid::new_v4();
+        let doc = Document::new("Notes", "Some notes", DocumentType::Notes, "agent")
+            .with_todo(todo_id);
+        db.create_document(&doc).await.unwrap();
+
+        let fetched = db.get_document(doc.id).await.unwrap().unwrap();
+        assert_eq!(fetched.todo_id, Some(todo_id));
+    }
+
+    #[tokio::test]
+    async fn document_update() {
+        let db = test_db().await;
+        let mut doc = Document::new("Draft", "Initial", DocumentType::Notes, "agent");
+        db.create_document(&doc).await.unwrap();
+
+        doc.title = "Final".into();
+        doc.content = "Updated content".into();
+        doc.doc_type = DocumentType::Report;
+        doc.updated_at = chrono::Utc::now();
+        db.update_document(&doc).await.unwrap();
+
+        let fetched = db.get_document(doc.id).await.unwrap().unwrap();
+        assert_eq!(fetched.title, "Final");
+        assert_eq!(fetched.content, "Updated content");
+        assert_eq!(fetched.doc_type, DocumentType::Report);
+    }
+
+    #[tokio::test]
+    async fn document_delete() {
+        let db = test_db().await;
+        let doc = Document::new("Temp", "Content", DocumentType::Other, "agent");
+        let id = doc.id;
+        db.create_document(&doc).await.unwrap();
+
+        assert!(db.delete_document(id).await.unwrap());
+        assert!(db.get_document(id).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn document_delete_not_found() {
+        let db = test_db().await;
+        assert!(!db.delete_document(uuid::Uuid::new_v4()).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn document_list_ordered_by_created_desc() {
+        let db = test_db().await;
+        let d1 = Document::new("First", "A", DocumentType::Notes, "agent");
+        let d2 = Document::new("Second", "B", DocumentType::Notes, "agent");
+        db.create_document(&d1).await.unwrap();
+        // Slight delay so created_at differs
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        db.create_document(&d2).await.unwrap();
+
+        let docs = db.list_documents(10).await.unwrap();
+        assert_eq!(docs.len(), 2);
+        assert_eq!(docs[0].title, "Second"); // most recent first
+        assert_eq!(docs[1].title, "First");
+    }
+
+    #[tokio::test]
+    async fn document_list_respects_limit() {
+        let db = test_db().await;
+        for i in 0..5 {
+            let doc = Document::new(format!("Doc {i}"), "Content", DocumentType::Notes, "agent");
+            db.create_document(&doc).await.unwrap();
+        }
+
+        let docs = db.list_documents(3).await.unwrap();
+        assert_eq!(docs.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn document_list_by_todo() {
+        let db = test_db().await;
+        let todo_id = uuid::Uuid::new_v4();
+        let d1 = Document::new("Linked", "A", DocumentType::Notes, "agent").with_todo(todo_id);
+        let d2 = Document::new("Unlinked", "B", DocumentType::Notes, "agent");
+        db.create_document(&d1).await.unwrap();
+        db.create_document(&d2).await.unwrap();
+
+        let docs = db.list_documents_by_todo(todo_id).await.unwrap();
+        assert_eq!(docs.len(), 1);
+        assert_eq!(docs[0].title, "Linked");
+    }
+
+    #[tokio::test]
+    async fn document_search_by_title() {
+        let db = test_db().await;
+        let d1 = Document::new("Rust concurrency guide", "Content about threads", DocumentType::Research, "agent");
+        let d2 = Document::new("Python basics", "Intro to Python", DocumentType::Notes, "agent");
+        db.create_document(&d1).await.unwrap();
+        db.create_document(&d2).await.unwrap();
+
+        let results = db.search_documents("rust", None, 10).await.unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].title, "Rust concurrency guide");
+    }
+
+    #[tokio::test]
+    async fn document_search_by_content() {
+        let db = test_db().await;
+        let doc = Document::new("Untitled", "The tokio runtime provides async IO", DocumentType::Notes, "agent");
+        db.create_document(&doc).await.unwrap();
+
+        let results = db.search_documents("tokio", None, 10).await.unwrap();
+        assert_eq!(results.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn document_search_with_type_filter() {
+        let db = test_db().await;
+        let d1 = Document::new("Research: AI", "Machine learning overview", DocumentType::Research, "agent");
+        let d2 = Document::new("Notes: AI", "Quick notes about AI", DocumentType::Notes, "agent");
+        db.create_document(&d1).await.unwrap();
+        db.create_document(&d2).await.unwrap();
+
+        let results = db.search_documents("AI", Some(&DocumentType::Research), 10).await.unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].doc_type, DocumentType::Research);
+    }
+
+    #[tokio::test]
+    async fn document_search_no_match() {
+        let db = test_db().await;
+        let doc = Document::new("Something", "Content", DocumentType::Notes, "agent");
+        db.create_document(&doc).await.unwrap();
+
+        let results = db.search_documents("nonexistent_xyz", None, 10).await.unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn document_search_case_insensitive() {
+        let db = test_db().await;
+        let doc = Document::new("Rust Guide", "Content about RUST", DocumentType::Research, "agent");
+        db.create_document(&doc).await.unwrap();
+
+        let results = db.search_documents("rust", None, 10).await.unwrap();
+        assert_eq!(results.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn document_search_respects_limit() {
+        let db = test_db().await;
+        for i in 0..5 {
+            let doc = Document::new(format!("Topic {i}"), "Shared keyword content", DocumentType::Notes, "agent");
+            db.create_document(&doc).await.unwrap();
+        }
+
+        let results = db.search_documents("keyword", None, 2).await.unwrap();
+        assert_eq!(results.len(), 2);
     }
 }

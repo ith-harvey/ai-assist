@@ -7,6 +7,7 @@ use ai_assist::cards::queue::{self, CardQueue};
 use ai_assist::cards::ws::card_routes;
 use ai_assist::channels::email::EmailConfig;
 use ai_assist::channels::{ChannelManager, CliChannel, IosChannel, TelegramChannel};
+use ai_assist::documents::routes::{DocumentState, document_routes};
 use ai_assist::config::{AgentConfig, RoutineConfig};
 use ai_assist::llm::{LlmBackend, LlmConfig, create_provider};
 use ai_assist::safety::SafetyLayer;
@@ -189,6 +190,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tools.register_sync(Arc::new(ai_assist::tools::builtin::file::ApplyPatchTool::new()));
     // Memory tools
     tools.register_memory_tools(Arc::clone(&workspace));
+    // Document tools
+    tools.register_sync(Arc::new(ai_assist::tools::builtin::document::CreateDocumentTool::new(Arc::clone(&db))));
+    tools.register_sync(Arc::new(ai_assist::tools::builtin::document::UpdateDocumentTool::new(Arc::clone(&db))));
+    tools.register_sync(Arc::new(ai_assist::tools::builtin::document::ListDocumentsTool::new(Arc::clone(&db))));
+    tools.register_sync(Arc::new(ai_assist::tools::builtin::document::FindDocumentTool::new(Arc::clone(&db))));
 
     // ── Worker System (Scheduler + ContextManager) ───────────────────
     let (activity_tx, _activity_rx) = tokio::sync::broadcast::channel::<TodoActivityMessage>(256);
@@ -305,7 +311,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .merge(ios_router)
     .merge(todo_routes(todo_state))
-    .merge(activity_routes(activity_state));
+    .merge(activity_routes(activity_state))
+    .merge(document_routes(DocumentState { db: Arc::clone(&db) }));
     tokio::spawn(async move {
         let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", ws_port))
             .await

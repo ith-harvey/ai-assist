@@ -40,7 +40,7 @@ pub struct ListParams {
 pub struct CreateDocumentRequest {
     pub title: String,
     pub content: String,
-    pub doc_type: Option<DocumentType>,
+    pub doc_type: DocumentType,
     pub todo_id: Option<String>,
     pub created_by: Option<String>,
 }
@@ -154,7 +154,7 @@ async fn create_document(
     let mut doc = Document::new(
         req.title,
         req.content,
-        req.doc_type.unwrap_or(DocumentType::Other),
+        req.doc_type,
         req.created_by.unwrap_or_else(|| "agent".to_string()),
     );
     if let Some(tid) = todo_id {
