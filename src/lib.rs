@@ -4,6 +4,7 @@ pub mod agent;
 pub mod cards;
 pub mod channels;
 pub mod config;
+pub mod documents;
 pub mod context;
 pub mod error;
 pub mod extensions;
