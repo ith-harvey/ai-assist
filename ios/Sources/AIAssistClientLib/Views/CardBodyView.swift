@@ -76,6 +76,7 @@ struct ReplyCardBody: View {
 /// Shows a tool/action name with optional parameters detail.
 struct ActionCardBody: View {
     let card: ApprovalCard
+    @State private var isDetailExpanded = false
 
     private var description: String {
         if case .action(let desc, _) = card.payload { return desc }
@@ -108,16 +109,40 @@ struct ActionCardBody: View {
 
             // Detail (collapsible JSON/params)
             if let detail = actionDetail, !detail.isEmpty {
-                Text(detail)
-                    .font(.system(size: 12, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                    .padding(10)
-                    #if os(iOS)
-                    .background(Color(uiColor: .systemGray6))
-                    #else
-                    .background(Color.gray.opacity(0.08))
-                    #endif
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 4) {
+                        Image(systemName: isDetailExpanded ? "chevron.down" : "chevron.right")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.tertiary)
+                        Text("Raw JSON")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(.tertiary)
+                        Spacer()
+                    }
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) {
+                            isDetailExpanded.toggle()
+                        }
+                    }
+
+                    if isDetailExpanded {
+                        Text(detail)
+                            .font(.system(size: 12, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                            .padding(10)
+                            #if os(iOS)
+                            .background(Color(uiColor: .systemGray6))
+                            #else
+                            .background(Color.gray.opacity(0.08))
+                            #endif
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                            .transition(.asymmetric(
+                                insertion: .opacity.combined(with: .move(edge: .top)),
+                                removal: .opacity
+                            ))
+                    }
+                }
             }
         }
         .padding(16)
