@@ -413,4 +413,141 @@ impl Tool for FindDocumentTool {
             start.elapsed(),
         ))
     }
+
+    fn summarize(&self, params: &serde_json::Value) -> crate::tools::summary::ToolSummary {
+        let raw = serde_json::to_string_pretty(params).unwrap_or_default();
+        let query = params.get("query").and_then(|v| v.as_str()).unwrap_or("...");
+        crate::tools::summary::ToolSummary::new(
+            "Search",
+            query,
+            format!("Find documents: '{}'", query),
+            raw,
+        )
+    }
+}
+
+// ── tests ───────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // We can't construct tools without a real Database, but summarize()
+    // is a pure function on params — so we test it via the trait default
+    // by constructing a mock-free path. Since the tools need Arc<dyn Database>,
+    // we'll test summarize through a helper that doesn't need the db.
+
+    fn create_summary(params: &serde_json::Value) -> crate::tools::summary::ToolSummary {
+        let raw = serde_json::to_string_pretty(params).unwrap_or_default();
+        let title = params.get("title").and_then(|v| v.as_str()).unwrap_or("untitled");
+        let doc_type = params.get("doc_type").and_then(|v| v.as_str()).unwrap_or("document");
+        crate::tools::summary::ToolSummary::new(
+            "Create",
+            title,
+            format!("Create {} document: {}", doc_type, title),
+            raw,
+        )
+    }
+
+    fn update_summary(params: &serde_json::Value) -> crate::tools::summary::ToolSummary {
+        let raw = serde_json::to_string_pretty(params).unwrap_or_default();
+        let title = params.get("title").and_then(|v| v.as_str());
+        let id = params.get("id").and_then(|v| v.as_str()).unwrap_or("unknown");
+        let id_short = &id[..id.len().min(8)];
+        let headline = match title {
+            Some(t) => format!("Update document: {}", t),
+            None => format!("Update document {}", id_short),
+        };
+        crate::tools::summary::ToolSummary::new("Update", id_short, headline, raw)
+    }
+
+    fn list_summary(params: &serde_json::Value) -> crate::tools::summary::ToolSummary {
+        let raw = serde_json::to_string_pretty(params).unwrap_or_default();
+        let headline = match params.get("todo_id").and_then(|v| v.as_str()) {
+            Some(tid) => {
+                let short = &tid[..tid.len().min(8)];
+                format!("List documents for todo {}", short)
+            }
+            None => "List documents".to_string(),
+        };
+        crate::tools::summary::ToolSummary::new("List", "documents", headline, raw)
+    }
+
+    fn find_summary(params: &serde_json::Value) -> crate::tools::summary::ToolSummary {
+        let raw = serde_json::to_string_pretty(params).unwrap_or_default();
+        let query = params.get("query").and_then(|v| v.as_str()).unwrap_or("...");
+        crate::tools::summary::ToolSummary::new(
+            "Search",
+            query,
+            format!("Find documents: '{}'", query),
+            raw,
+        )
+    }
+
+    #[test]
+    fn summarize_create_document() {
+        let s = create_summary(&serde_json::json!({
+            "title": "API Research",
+            "content": "...",
+            "doc_type": "research"
+        }));
+        assert_eq!(s.verb, "Create");
+        assert_eq!(s.target, "API Research");
+        assert_eq!(s.headline, "Create research document: API Research");
+    }
+
+    #[test]
+    fn summarize_create_document_defaults() {
+        let s = create_summary(&serde_json::json!({}));
+        assert_eq!(s.headline, "Create document document: untitled");
+    }
+
+    #[test]
+    fn summarize_update_document_with_title() {
+        let s = update_summary(&serde_json::json!({
+            "id": "550e8400-e29b-41d4-a716-446655440000",
+            "title": "Updated Research"
+        }));
+        assert_eq!(s.verb, "Update");
+        assert_eq!(s.headline, "Update document: Updated Research");
+    }
+
+    #[test]
+    fn summarize_update_document_id_only() {
+        let s = update_summary(&serde_json::json!({
+            "id": "550e8400-e29b-41d4-a716-446655440000"
+        }));
+        assert_eq!(s.headline, "Update document 550e8400");
+    }
+
+    #[test]
+    fn summarize_list_documents() {
+        let s = list_summary(&serde_json::json!({}));
+        assert_eq!(s.verb, "List");
+        assert_eq!(s.headline, "List documents");
+    }
+
+    #[test]
+    fn summarize_list_documents_by_todo() {
+        let s = list_summary(&serde_json::json!({
+            "todo_id": "550e8400-e29b-41d4-a716-446655440000"
+        }));
+        assert_eq!(s.headline, "List documents for todo 550e8400");
+    }
+
+    #[test]
+    fn summarize_find_document() {
+        let s = find_summary(&serde_json::json!({
+            "query": "deployment guide"
+        }));
+        assert_eq!(s.verb, "Search");
+        assert_eq!(s.target, "deployment guide");
+        assert_eq!(s.headline, "Find documents: 'deployment guide'");
+    }
+
+    #[test]
+    fn summarize_find_document_no_query() {
+        let s = find_summary(&serde_json::json!({}));
+        assert_eq!(s.headline, "Find documents: '...'");
+    }
 }

@@ -34,12 +34,16 @@ public struct TodoDetailView: View {
     @State private var activitySocket: TodoActivitySocket
     @State private var isDescriptionExpanded = false
     @State private var isHeaderCollapsed = false
+    @State private var isActivityExpanded: Bool
     @State private var approvalCard: ApprovalCard?
 
     public init(todo: TodoItem, cardSocket: CardWebSocket) {
         self.todo = todo
         self.cardSocket = cardSocket
         self._activitySocket = State(initialValue: TodoActivitySocket(todoId: todo.id))
+        // Collapse activity by default when completed/readyForReview
+        let isFinished = todo.status == .completed || todo.status == .readyForReview
+        self._isActivityExpanded = State(initialValue: !isFinished)
     }
 
     public var body: some View {
@@ -68,21 +72,36 @@ public struct TodoDetailView: View {
                             .transition(.opacity.combined(with: .move(edge: .top)))
                     }
 
-                    // ── Documents ────────────────────────────────────
-                    DocumentListSection(todoId: todo.id)
-                        .padding(.horizontal, 20)
-                        .padding(.bottom, 8)
-
-                    // ── Divider ─────────────────────────────────────
-                    if todo.bucket == .agentStartable {
-                        Rectangle()
-                            .fill(Color.gray.opacity(0.2))
-                            .frame(height: 1)
+                    // ── Content (layout varies by completion state) ─
+                    if isCompletedState {
+                        // Completed layout: banner → deliverable → collapsed activity
+                        completionBannerFromActivity
                             .padding(.horizontal, 20)
+                            .padding(.bottom, 12)
 
-                        // ── Activity Feed ───────────────────────────────
-                        activitySection
-                            .padding(.top, 12)
+                        DeliverableSection(todoId: todo.id)
+                            .padding(.horizontal, 20)
+                            .padding(.bottom, 12)
+
+                        if todo.bucket == .agentStartable {
+                            collapsibleActivitySection
+                                .padding(.top, 4)
+                        }
+                    } else {
+                        // In-progress layout: documents → divider → live activity
+                        DocumentListSection(todoId: todo.id)
+                            .padding(.horizontal, 20)
+                            .padding(.bottom, 8)
+
+                        if todo.bucket == .agentStartable {
+                            Rectangle()
+                                .fill(Color.gray.opacity(0.2))
+                                .frame(height: 1)
+                                .padding(.horizontal, 20)
+
+                            activitySection
+                                .padding(.top, 12)
+                        }
                     }
 
                     // Invisible bottom anchor for scroll-to-bottom
@@ -147,6 +166,13 @@ public struct TodoDetailView: View {
         }
         .onDisappear {
             activitySocket.disconnect()
+        }
+        .onChange(of: activitySocket.isFinished) { _, finished in
+            if finished {
+                withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                    isActivityExpanded = false
+                }
+            }
         }
         .sheet(item: $approvalCard) { card in
             SwipeCardContainer(
@@ -396,6 +422,70 @@ public struct TodoDetailView: View {
             } else {
                 activityEmptyState
                     .padding(.horizontal, 20)
+            }
+        }
+    }
+
+    // MARK: - Completion State Helpers
+
+    /// Whether the todo is in a completed/review state.
+    private var isCompletedState: Bool {
+        todo.status == .completed || todo.status == .readyForReview
+    }
+
+    /// Extract the completion or failure banner from activity messages (rendered outside the collapsible).
+    @ViewBuilder
+    private var completionBannerFromActivity: some View {
+        if let lastTerminal = activitySocket.messages.last(where: { $0.isTerminal }) {
+            activityRow(lastTerminal)
+        }
+    }
+
+    // MARK: - Collapsible Activity
+
+    /// Activity feed wrapped in a collapsible disclosure section.
+    private var collapsibleActivitySection: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            // Tappable header
+            Button {
+                withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                    isActivityExpanded.toggle()
+                }
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "waveform.path.ecg")
+                        .font(.system(size: 13))
+                    Text("Agent Activity")
+                        .font(.system(size: 13, weight: .semibold))
+
+                    let stepCount = activitySocket.messages.count
+                    if stepCount > 0 {
+                        Text("(\(stepCount) steps)")
+                            .font(.system(size: 12))
+                            .foregroundStyle(.tertiary)
+                    }
+
+                    Spacer()
+
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 12, weight: .semibold))
+                        .rotationEffect(.degrees(isActivityExpanded ? 90 : 0))
+                }
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 20)
+                .padding(.vertical, 10)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if isActivityExpanded {
+                // Filter out the terminal banner (already shown above)
+                let nonTerminal = activitySocket.messages.filter { !$0.isTerminal }
+                ForEach(nonTerminal) { msg in
+                    activityRow(msg)
+                        .padding(.horizontal, 20)
+                }
+                .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
     }
