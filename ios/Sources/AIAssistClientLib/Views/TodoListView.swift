@@ -290,16 +290,14 @@ struct TodoRowView: View {
                         .foregroundStyle(todo.isOverdue ? .red : .secondary)
                     }
 
-                    // Agent badge
-                    if todo.bucket == .agentStartable {
-                        HStack(spacing: 2) {
-                            Image(systemName: "cpu")
-                                .font(.system(size: 9))
-                            Text("Agent")
-                                .font(.system(size: 10))
-                        }
-                        .foregroundStyle(.blue.opacity(0.7))
+                    // Agent / Human badge
+                    HStack(spacing: 2) {
+                        Image(systemName: todo.bucket == .agentStartable ? "cpu" : "person.fill")
+                            .font(.system(size: 9))
+                        Text(todo.bucket == .agentStartable ? "Agent" : "Human")
+                            .font(.system(size: 10))
                     }
+                    .foregroundStyle(todo.bucket == .agentStartable ? .blue.opacity(0.7) : .purple.opacity(0.7))
                 }
             }
 
