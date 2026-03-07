@@ -20,7 +20,8 @@ use crate::agent::routine::{
 use crate::agent::routine_engine::RoutineEngine;
 use crate::context::JobContext;
 use crate::store::Database;
-use crate::tools::tool::{Tool, ToolError, ToolOutput, require_str};
+use crate::tools::params::Params;
+use crate::tools::tool::{Tool, ToolError, ToolOutput};
 
 // ── routine_create ──────────────────────────────────────────────────
 
@@ -104,14 +105,15 @@ impl Tool for RoutineCreateTool {
         ctx: &JobContext,
     ) -> Result<ToolOutput, ToolError> {
         let start = std::time::Instant::now();
-        let name = require_str(&params, "name")?;
-        let description = params.get("description").and_then(|v| v.as_str()).unwrap_or("");
-        let trigger_type = require_str(&params, "trigger_type")?;
-        let prompt = require_str(&params, "prompt")?;
+        let p = Params::new(&params);
+        let name = p.require_str("name")?;
+        let description = p.optional_str("description").unwrap_or("");
+        let trigger_type = p.require_str("trigger_type")?;
+        let prompt = p.require_str("prompt")?;
 
         let trigger = match trigger_type {
             "cron" => {
-                let schedule = params.get("schedule").and_then(|v| v.as_str()).ok_or_else(|| {
+                let schedule = p.optional_str("schedule").ok_or_else(|| {
                     ToolError::InvalidParameters("cron trigger requires 'schedule'".into())
                 })?;
                 next_cron_fire(schedule)
@@ -119,12 +121,12 @@ impl Tool for RoutineCreateTool {
                 Trigger::Cron { schedule: schedule.to_string() }
             }
             "event" => {
-                let pattern = params.get("event_pattern").and_then(|v| v.as_str()).ok_or_else(|| {
+                let pattern = p.optional_str("event_pattern").ok_or_else(|| {
                     ToolError::InvalidParameters("event trigger requires 'event_pattern'".into())
                 })?;
                 regex::Regex::new(pattern)
                     .map_err(|e| ToolError::InvalidParameters(format!("invalid regex: {e}")))?;
-                let channel = params.get("event_channel").and_then(|v| v.as_str()).map(String::from);
+                let channel = p.optional_str("event_channel").map(String::from);
                 Trigger::Event { channel, pattern: pattern.to_string() }
             }
             "webhook" => Trigger::Webhook { path: None, secret: None },
@@ -132,7 +134,7 @@ impl Tool for RoutineCreateTool {
             other => return Err(ToolError::InvalidParameters(format!("unknown trigger_type: {other}"))),
         };
 
-        let action_type = params.get("action_type").and_then(|v| v.as_str()).unwrap_or("lightweight");
+        let action_type = p.optional_str("action_type").unwrap_or("lightweight");
         let context_paths: Vec<String> = params
             .get("context_paths")
             .and_then(|v| v.as_array())
@@ -153,7 +155,7 @@ impl Tool for RoutineCreateTool {
             other => return Err(ToolError::InvalidParameters(format!("unknown action_type: {other}"))),
         };
 
-        let cooldown_secs = params.get("cooldown_secs").and_then(|v| v.as_u64()).unwrap_or(300);
+        let cooldown_secs = p.u64_or("cooldown_secs", 300);
 
         let next_fire = if let Trigger::Cron { ref schedule } = trigger {
             next_cron_fire(schedule).unwrap_or(None)
@@ -187,7 +189,7 @@ impl Tool for RoutineCreateTool {
         self.store
             .create_routine(&routine)
             .await
-            .map_err(|e| ToolError::ExecutionFailed(format!("failed to create routine: {e}")))?;
+            .map_err(|e| ToolError::exec("Create routine", e))?;
 
         if routine.trigger.type_tag() == "event" {
             self.engine.refresh_event_cache().await;
@@ -239,7 +241,7 @@ impl Tool for RoutineListTool {
     ) -> Result<ToolOutput, ToolError> {
         let start = std::time::Instant::now();
         let routines = self.store.list_routines(&ctx.user_id).await
-            .map_err(|e| ToolError::ExecutionFailed(format!("failed to list routines: {e}")))?;
+            .map_err(|e| ToolError::exec("List routines", e))?;
 
         let list: Vec<serde_json::Value> = routines.iter().map(|r| {
             serde_json::json!({
@@ -306,25 +308,26 @@ impl Tool for RoutineUpdateTool {
         ctx: &JobContext,
     ) -> Result<ToolOutput, ToolError> {
         let start = std::time::Instant::now();
-        let name = require_str(&params, "name")?;
+        let p = Params::new(&params);
+        let name = p.require_str("name")?;
 
         let mut routine = self.store.get_routine_by_name(&ctx.user_id, name).await
-            .map_err(|e| ToolError::ExecutionFailed(format!("DB error: {e}")))?
+            .map_err(|e| ToolError::exec("Get routine", e))?
             .ok_or_else(|| ToolError::ExecutionFailed(format!("routine '{}' not found", name)))?;
 
-        if let Some(enabled) = params.get("enabled").and_then(|v| v.as_bool()) {
+        if let Some(enabled) = p.optional_json("enabled").and_then(|v| v.as_bool()) {
             routine.enabled = enabled;
         }
-        if let Some(desc) = params.get("description").and_then(|v| v.as_str()) {
+        if let Some(desc) = p.optional_str("description") {
             routine.description = desc.to_string();
         }
-        if let Some(prompt) = params.get("prompt").and_then(|v| v.as_str()) {
+        if let Some(prompt) = p.optional_str("prompt") {
             match &mut routine.action {
                 RoutineAction::Lightweight { prompt: p, .. } => *p = prompt.to_string(),
                 RoutineAction::FullJob { description: d, .. } => *d = prompt.to_string(),
             }
         }
-        if let Some(schedule) = params.get("schedule").and_then(|v| v.as_str()) {
+        if let Some(schedule) = p.optional_str("schedule") {
             next_cron_fire(schedule)
                 .map_err(|e| ToolError::InvalidParameters(format!("invalid cron: {e}")))?;
             routine.trigger = Trigger::Cron { schedule: schedule.to_string() };
@@ -332,7 +335,7 @@ impl Tool for RoutineUpdateTool {
         }
 
         self.store.update_routine(&routine).await
-            .map_err(|e| ToolError::ExecutionFailed(format!("failed to update: {e}")))?;
+            .map_err(|e| ToolError::exec("Update routine", e))?;
         self.engine.refresh_event_cache().await;
 
         Ok(ToolOutput::success(
@@ -387,14 +390,15 @@ impl Tool for RoutineDeleteTool {
         ctx: &JobContext,
     ) -> Result<ToolOutput, ToolError> {
         let start = std::time::Instant::now();
-        let name = require_str(&params, "name")?;
+        let p = Params::new(&params);
+        let name = p.require_str("name")?;
 
         let routine = self.store.get_routine_by_name(&ctx.user_id, name).await
-            .map_err(|e| ToolError::ExecutionFailed(format!("DB error: {e}")))?
+            .map_err(|e| ToolError::exec("Get routine", e))?
             .ok_or_else(|| ToolError::ExecutionFailed(format!("routine '{}' not found", name)))?;
 
         let deleted = self.store.delete_routine(routine.id).await
-            .map_err(|e| ToolError::ExecutionFailed(format!("failed to delete: {e}")))?;
+            .map_err(|e| ToolError::exec("Delete routine", e))?;
         self.engine.refresh_event_cache().await;
 
         Ok(ToolOutput::success(
@@ -443,15 +447,16 @@ impl Tool for RoutineHistoryTool {
         ctx: &JobContext,
     ) -> Result<ToolOutput, ToolError> {
         let start = std::time::Instant::now();
-        let name = require_str(&params, "name")?;
-        let limit = params.get("limit").and_then(|v| v.as_i64()).unwrap_or(10).min(50);
+        let p = Params::new(&params);
+        let name = p.require_str("name")?;
+        let limit = p.u64_or("limit", 10).min(50) as i64;
 
         let routine = self.store.get_routine_by_name(&ctx.user_id, name).await
-            .map_err(|e| ToolError::ExecutionFailed(format!("DB error: {e}")))?
+            .map_err(|e| ToolError::exec("Get routine", e))?
             .ok_or_else(|| ToolError::ExecutionFailed(format!("routine '{}' not found", name)))?;
 
         let runs = self.store.list_routine_runs(routine.id, limit).await
-            .map_err(|e| ToolError::ExecutionFailed(format!("failed to list runs: {e}")))?;
+            .map_err(|e| ToolError::exec("List routine runs", e))?;
 
         let run_list: Vec<serde_json::Value> = runs.iter().map(|r| {
             let duration_secs = r.completed_at.map(|c| c.signed_duration_since(r.started_at).num_seconds());

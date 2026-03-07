@@ -8,12 +8,12 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use uuid::Uuid;
 
 use crate::context::JobContext;
 use crate::documents::model::{Document, DocumentType};
 use crate::store::Database;
-use crate::tools::tool::{Tool, ToolError, ToolOutput, require_str};
+use crate::tools::params::Params;
+use crate::tools::tool::{Tool, ToolError, ToolOutput};
 
 // ── create_document ─────────────────────────────────────────────────
 
@@ -84,19 +84,17 @@ impl Tool for CreateDocumentTool {
         ctx: &JobContext,
     ) -> Result<ToolOutput, ToolError> {
         let start = std::time::Instant::now();
-        let title = require_str(&params, "title")?;
-        let content = require_str(&params, "content")?;
+        let p = Params::new(&params);
+        let title = p.require_str("title")?;
+        let content = p.require_str("content")?;
 
-        let doc_type_str = params.get("doc_type").and_then(|v| v.as_str()).unwrap_or("other");
+        let doc_type_str = p.optional_str("doc_type").unwrap_or("other");
         let doc_type: DocumentType = serde_json::from_value(
             serde_json::Value::String(doc_type_str.to_string()),
         )
         .unwrap_or(DocumentType::Other);
 
-        let todo_id = params
-            .get("todo_id")
-            .and_then(|v| v.as_str())
-            .and_then(|s| Uuid::parse_str(s).ok());
+        let todo_id = p.optional_uuid("todo_id")?;
 
         let created_by = if ctx.user_id.is_empty() {
             "agent".to_string()
@@ -113,7 +111,7 @@ impl Tool for CreateDocumentTool {
         self.db
             .create_document(&doc)
             .await
-            .map_err(|e| ToolError::ExecutionFailed(format!("Failed to create document: {e}")))?;
+            .map_err(|e| ToolError::exec("Create document", e))?;
 
         Ok(ToolOutput::success(
             serde_json::json!({
@@ -195,31 +193,21 @@ impl Tool for UpdateDocumentTool {
         _ctx: &JobContext,
     ) -> Result<ToolOutput, ToolError> {
         let start = std::time::Instant::now();
-        let id_str = require_str(&params, "id")?;
-        let doc_id = Uuid::parse_str(id_str)
-            .map_err(|_| ToolError::InvalidParameters("Invalid document UUID".into()))?;
+        let p = Params::new(&params);
+        let doc_id = p.require_uuid("id")?;
 
         let existing = self
             .db
             .get_document(doc_id)
             .await
-            .map_err(|e| ToolError::ExecutionFailed(format!("Failed to get document: {e}")))?
+            .map_err(|e| ToolError::exec("Get document", e))?
             .ok_or_else(|| ToolError::InvalidParameters("Document not found".into()))?;
 
         let updated = Document {
-            title: params
-                .get("title")
-                .and_then(|v| v.as_str())
-                .map(String::from)
-                .unwrap_or(existing.title),
-            content: params
-                .get("content")
-                .and_then(|v| v.as_str())
-                .map(String::from)
-                .unwrap_or(existing.content),
-            doc_type: params
-                .get("doc_type")
-                .and_then(|v| v.as_str())
+            title: p.optional_str("title").map(String::from).unwrap_or(existing.title),
+            content: p.optional_str("content").map(String::from).unwrap_or(existing.content),
+            doc_type: p
+                .optional_str("doc_type")
                 .and_then(|s| {
                     serde_json::from_value(serde_json::Value::String(s.to_string())).ok()
                 })
@@ -231,7 +219,7 @@ impl Tool for UpdateDocumentTool {
         self.db
             .update_document(&updated)
             .await
-            .map_err(|e| ToolError::ExecutionFailed(format!("Failed to update document: {e}")))?;
+            .map_err(|e| ToolError::exec("Update document", e))?;
 
         Ok(ToolOutput::success(
             serde_json::json!({
@@ -305,25 +293,19 @@ impl Tool for ListDocumentsTool {
         _ctx: &JobContext,
     ) -> Result<ToolOutput, ToolError> {
         let start = std::time::Instant::now();
+        let p = Params::new(&params);
 
-        let docs = if let Some(todo_id_str) = params.get("todo_id").and_then(|v| v.as_str()) {
-            let todo_id = Uuid::parse_str(todo_id_str)
-                .map_err(|_| ToolError::InvalidParameters("Invalid todo_id UUID".into()))?;
+        let docs = if let Some(todo_id) = p.optional_uuid("todo_id")? {
             self.db
                 .list_documents_by_todo(todo_id)
                 .await
-                .map_err(|e| {
-                    ToolError::ExecutionFailed(format!("Failed to list documents: {e}"))
-                })?
+                .map_err(|e| ToolError::exec("List documents", e))?
         } else {
-            let limit = params
-                .get("limit")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(20)
-                .min(100) as u32;
-            self.db.list_documents(limit).await.map_err(|e| {
-                ToolError::ExecutionFailed(format!("Failed to list documents: {e}"))
-            })?
+            let limit = p.u64_or("limit", 20).min(100) as u32;
+            self.db
+                .list_documents(limit)
+                .await
+                .map_err(|e| ToolError::exec("List documents", e))?
         };
 
         // Return summaries (no full content) to save context window
@@ -405,24 +387,20 @@ impl Tool for FindDocumentTool {
         _ctx: &JobContext,
     ) -> Result<ToolOutput, ToolError> {
         let start = std::time::Instant::now();
-        let query = require_str(&params, "query")?;
+        let p = Params::new(&params);
+        let query = p.require_str("query")?;
 
-        let doc_type_filter: Option<DocumentType> = params
-            .get("doc_type")
-            .and_then(|v| v.as_str())
+        let doc_type_filter: Option<DocumentType> = p
+            .optional_str("doc_type")
             .and_then(|s| serde_json::from_value(serde_json::Value::String(s.to_string())).ok());
 
-        let limit = params
-            .get("limit")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(10)
-            .min(50) as u32;
+        let limit = p.u64_or("limit", 10).min(50) as u32;
 
         let docs = self
             .db
             .search_documents(query, doc_type_filter.as_ref(), limit)
             .await
-            .map_err(|e| ToolError::ExecutionFailed(format!("Failed to search documents: {e}")))?;
+            .map_err(|e| ToolError::exec("Search documents", e))?;
 
         let summaries: Vec<serde_json::Value> = docs
             .iter()
