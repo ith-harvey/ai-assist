@@ -41,6 +41,8 @@ pub struct TodoChannel {
     responded: AtomicBool,
     /// Structured per-run logger.
     logger: AgentLogger,
+    /// Buffered ToolCompleted message waiting to be merged with a ToolResult.
+    pending_tool_completed: Mutex<Option<TodoActivityMessage>>,
     /// Sender half of the mpsc channel feeding the message stream.
     /// Wrapped in Mutex<Option<>> so we can take/drop it to close the stream.
     msg_tx: Mutex<Option<mpsc::Sender<IncomingMessage>>>,
@@ -76,6 +78,7 @@ impl TodoChannel {
             approval_registry,
             responded: AtomicBool::new(false),
             logger,
+            pending_tool_completed: Mutex::new(None),
             msg_tx: Mutex::new(Some(tx)),
             msg_rx: Mutex::new(Some(rx)),
         }
@@ -108,6 +111,13 @@ impl TodoChannel {
                 tracing::warn!(error = %e, "Failed to persist activity event");
             }
         });
+    }
+
+    /// Flush any buffered ToolCompleted message (emits it with empty summary).
+    async fn flush_pending_tool(&self) {
+        if let Some(msg) = self.pending_tool_completed.lock().await.take() {
+            self.emit(msg);
+        }
     }
 
     /// Broadcast a todo update to the iOS todo list WebSocket.
@@ -202,38 +212,63 @@ impl Channel for TodoChannel {
         status: StatusUpdate,
         _metadata: &serde_json::Value,
     ) -> Result<(), ChannelError> {
-        let msg = match status {
+        match status {
             StatusUpdate::Thinking(ref content) => {
+                self.flush_pending_tool().await;
                 self.logger.system(content).await;
-                TodoActivityMessage::Reasoning {
+                self.emit(TodoActivityMessage::Reasoning {
                     job_id: self.job_id,
                     content: content.clone(),
-                }
+                });
             }
             StatusUpdate::ToolStarted { ref name } => {
+                // Log only — no activity message emitted.
+                // The ToolCompleted+ToolResult merge will produce a single event.
+                self.flush_pending_tool().await;
                 self.logger.tool_start(name).await;
-                TodoActivityMessage::ToolStarted {
-                    job_id: self.job_id,
-                    tool_name: name.clone(),
-                }
             }
             StatusUpdate::ToolCompleted { ref name, success } => {
                 self.logger.tool_end(name, success).await;
-                TodoActivityMessage::ToolCompleted {
-                    job_id: self.job_id,
-                    tool_name: name.clone(),
-                    success,
-                    summary: String::new(),
-                }
+                // Buffer — wait for ToolResult to merge summary.
+                *self.pending_tool_completed.lock().await = Some(
+                    TodoActivityMessage::ToolCompleted {
+                        job_id: self.job_id,
+                        tool_name: name.clone(),
+                        success,
+                        summary: String::new(),
+                    },
+                );
             }
             StatusUpdate::ToolResult { ref name, ref preview } => {
                 self.logger.tool_result(name, preview).await;
-                TodoActivityMessage::ToolCompleted {
-                    job_id: self.job_id,
-                    tool_name: name.clone(),
-                    success: true,
-                    summary: preview.clone(),
-                }
+                // Merge with buffered ToolCompleted if present.
+                let merged = if let Some(buffered) = self.pending_tool_completed.lock().await.take()
+                {
+                    match buffered {
+                        TodoActivityMessage::ToolCompleted {
+                            job_id, success, ..
+                        } => TodoActivityMessage::ToolCompleted {
+                            job_id,
+                            tool_name: name.clone(),
+                            success,
+                            summary: preview.clone(),
+                        },
+                        _ => TodoActivityMessage::ToolCompleted {
+                            job_id: self.job_id,
+                            tool_name: name.clone(),
+                            success: true,
+                            summary: preview.clone(),
+                        },
+                    }
+                } else {
+                    TodoActivityMessage::ToolCompleted {
+                        job_id: self.job_id,
+                        tool_name: name.clone(),
+                        success: true,
+                        summary: preview.clone(),
+                    }
+                };
+                self.emit(merged);
             }
             StatusUpdate::ApprovalNeeded {
                 ref request_id,
@@ -242,6 +277,8 @@ impl Channel for TodoChannel {
                 ref parameters,
                 ref summary,
             } => {
+                self.flush_pending_tool().await;
+
                 let headline = summary
                     .as_ref()
                     .map(|s| s.headline.clone())
@@ -303,18 +340,17 @@ impl Channel for TodoChannel {
                 );
 
                 // Emit structured activity event for iOS
-                TodoActivityMessage::ApprovalNeeded {
+                self.emit(TodoActivityMessage::ApprovalNeeded {
                     job_id: self.job_id,
                     card_id,
                     tool_name: tool_name.clone(),
                     description: headline,
-                }
+                });
             }
             // StreamChunk and other variants — ignore for now
             _ => return Ok(()),
         };
 
-        self.emit(msg);
         Ok(())
     }
 
@@ -323,6 +359,9 @@ impl Channel for TodoChannel {
     }
 
     async fn shutdown(&self) -> Result<(), ChannelError> {
+        // Flush any buffered ToolCompleted before emitting terminal events
+        self.flush_pending_tool().await;
+
         // If respond() was never called, the agent errored out
         if !self.responded.load(Ordering::SeqCst) {
             self.emit(TodoActivityMessage::Failed {

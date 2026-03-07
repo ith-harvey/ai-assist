@@ -53,11 +53,6 @@ pub enum TodoActivityMessage {
         job_id: Uuid,
         iteration: u32,
     },
-    /// A tool execution has started.
-    ToolStarted {
-        job_id: Uuid,
-        tool_name: String,
-    },
     /// A tool execution has completed.
     ToolCompleted {
         job_id: Uuid,
@@ -114,7 +109,6 @@ impl TodoActivityMessage {
         match self {
             Self::Started { job_id, .. }
             | Self::Thinking { job_id, .. }
-            | Self::ToolStarted { job_id, .. }
             | Self::ToolCompleted { job_id, .. }
             | Self::Reasoning { job_id, .. }
             | Self::AgentResponse { job_id, .. }
@@ -144,7 +138,6 @@ impl TodoActivityMessage {
         match self {
             Self::Started { .. } => "started".to_string(),
             Self::Thinking { .. } => "thinking".to_string(),
-            Self::ToolStarted { .. } => "tool_started".to_string(),
             Self::ToolCompleted { .. } => "tool_completed".to_string(),
             Self::Reasoning { .. } => "reasoning".to_string(),
             Self::AgentResponse { .. } => "agent_response".to_string(),
@@ -329,17 +322,6 @@ mod tests {
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains("\"type\":\"thinking\""));
         assert!(json.contains("\"iteration\":3"));
-    }
-
-    #[test]
-    fn activity_message_serde_tool_started() {
-        let msg = TodoActivityMessage::ToolStarted {
-            job_id: Uuid::new_v4(),
-            tool_name: "shell".to_string(),
-        };
-        let json = serde_json::to_string(&msg).unwrap();
-        assert!(json.contains("\"type\":\"tool_started\""));
-        assert!(json.contains("\"tool_name\":\"shell\""));
     }
 
     #[test]
