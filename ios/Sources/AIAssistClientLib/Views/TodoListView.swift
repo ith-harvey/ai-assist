@@ -11,6 +11,8 @@ public struct TodoListView: View {
     @State private var showCompleted = false
     @State private var selectedTodo: TodoItem?
     @State private var approvalCard: ApprovalCard?
+    @State private var searchText: String = ""
+    @State private var searchTask: Task<Void, Never>?
     let cardSocket: CardWebSocket
 
     public init(cardSocket: CardWebSocket) {
@@ -27,13 +29,29 @@ public struct TodoListView: View {
                 .ignoresSafeArea()
             #endif
 
-            if todoSocket.activeTodos.isEmpty && todoSocket.completedTodos.isEmpty {
+            if let results = todoSocket.searchResults {
+                searchResultsList(results)
+            } else if todoSocket.activeTodos.isEmpty && todoSocket.completedTodos.isEmpty {
                 emptyState
             } else {
                 todoList
             }
         }
         .navigationTitle("To-Dos")
+        .searchable(text: $searchText, prompt: "Search todos...")
+        .onChange(of: searchText) { _, newValue in
+            searchTask?.cancel()
+            let trimmed = newValue.trimmingCharacters(in: .whitespaces)
+            if trimmed.isEmpty {
+                todoSocket.clearSearch()
+                return
+            }
+            searchTask = Task {
+                try? await Task.sleep(for: .milliseconds(300))
+                guard !Task.isCancelled else { return }
+                todoSocket.search(query: trimmed)
+            }
+        }
         #if os(iOS)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
@@ -226,6 +244,38 @@ public struct TodoListView: View {
                 todoSocket.delete(todoId: todo.id)
             } label: {
                 Label("Delete", systemImage: "trash.fill")
+            }
+        }
+    }
+
+    // MARK: - Search Results
+
+    private func searchResultsList(_ results: [TodoItem]) -> some View {
+        Group {
+            if results.isEmpty {
+                VStack(spacing: 16) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: 48))
+                        .foregroundStyle(.secondary)
+                    Text("No results found")
+                        .font(.title3)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                List {
+                    ForEach(results) { todo in
+                        todoCard(todo)
+                            .listRowSeparator(.hidden)
+                            .listRowBackground(Color.clear)
+                            .listRowInsets(EdgeInsets(top: 5, leading: 14, bottom: 5, trailing: 14))
+                    }
+                }
+                .listStyle(.plain)
+                .scrollContentBackground(.hidden)
+                #if os(iOS)
+                .scrollDismissesKeyboard(.interactively)
+                #endif
             }
         }
     }
