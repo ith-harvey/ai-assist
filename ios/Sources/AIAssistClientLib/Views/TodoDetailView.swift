@@ -160,7 +160,7 @@ public struct TodoDetailView: View {
         }
         #endif
         .onAppear {
-            if todo.bucket == .agentStartable {
+            if todo.bucket == .agentStartable && !isCompletedState {
                 activitySocket.connect()
             }
         }
@@ -842,7 +842,15 @@ public struct TodoDetailView: View {
 
     private var activityEmptyState: some View {
         VStack(spacing: 12) {
-            if activitySocket.isConnected {
+            if isCompletedState {
+                // Completed todos don't connect — show a calm offline message
+                Image(systemName: "clock.arrow.circlepath")
+                    .font(.system(size: 24))
+                    .foregroundStyle(.tertiary)
+                Text("Activity log available when server is running")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            } else if activitySocket.isConnected {
                 ProgressView()
                     .controlSize(.small)
                 Text("Waiting for agent to start...")

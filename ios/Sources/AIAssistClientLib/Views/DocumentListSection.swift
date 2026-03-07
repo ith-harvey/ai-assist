@@ -24,10 +24,9 @@ public struct DocumentListSection: View {
                         .foregroundStyle(.secondary)
                 }
                 .padding(.vertical, 4)
-            } else if let error = api.error {
-                Text(error)
-                    .font(.caption)
-                    .foregroundStyle(.red)
+            } else if api.error != nil {
+                // Silently hide errors — connection failures are not actionable
+                // for the user, especially on completed todos.
             } else if api.documents.isEmpty {
                 // Show nothing if no documents
             } else {
