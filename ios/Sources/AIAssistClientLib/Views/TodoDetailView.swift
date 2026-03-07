@@ -203,7 +203,7 @@ public struct TodoDetailView: View {
         #else
         .background(Color.gray.opacity(0.08).ignoresSafeArea())
         #endif
-        .navigationTitle(todo.title)
+        .navigationTitle("")
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
