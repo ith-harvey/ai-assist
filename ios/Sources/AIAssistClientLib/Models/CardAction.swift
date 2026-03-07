@@ -12,12 +12,14 @@ public enum CardAction: Encodable, Sendable {
     case dismiss(cardId: UUID)
     case edit(cardId: UUID, newText: String)
     case refine(cardId: UUID, instruction: String)
+    case selectOption(cardId: UUID, selectedIndex: Int)
 
     private enum CodingKeys: String, CodingKey {
         case action
         case cardId = "card_id"
         case newText = "new_text"
         case instruction
+        case selectedIndex = "selected_index"
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -37,6 +39,10 @@ public enum CardAction: Encodable, Sendable {
             try container.encode("refine", forKey: .action)
             try container.encode(cardId, forKey: .cardId)
             try container.encode(instruction, forKey: .instruction)
+        case .selectOption(let cardId, let selectedIndex):
+            try container.encode("select_option", forKey: .action)
+            try container.encode(cardId, forKey: .cardId)
+            try container.encode(selectedIndex, forKey: .selectedIndex)
         }
     }
 

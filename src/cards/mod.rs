@@ -1,5 +1,6 @@
 //! Card system — reply suggestion cards streamed to clients via WebSocket.
 
+pub mod choice_registry;
 pub mod handlers;
 pub mod reply_drafter;
 pub mod model;

@@ -10,6 +10,7 @@ import SwiftUI
 struct SwipeCardContainer<Content: View>: View {
     let onApprove: () -> Void
     let onReject: () -> Void
+    let approveDisabled: Bool
     @ViewBuilder let content: () -> Content
 
     @State private var dragOffset: CGFloat = 0
@@ -17,6 +18,18 @@ struct SwipeCardContainer<Content: View>: View {
 
     private let swipeThreshold: CGFloat = 100
     private let directionLockDistance: CGFloat = 20
+
+    init(
+        onApprove: @escaping () -> Void,
+        onReject: @escaping () -> Void,
+        approveDisabled: Bool = false,
+        @ViewBuilder content: @escaping () -> Content
+    ) {
+        self.onApprove = onApprove
+        self.onReject = onReject
+        self.approveDisabled = approveDisabled
+        self.content = content
+    }
 
     var body: some View {
         ZStack {
@@ -57,7 +70,9 @@ struct SwipeCardContainer<Content: View>: View {
                     }
 
                     if isDraggingHorizontally {
-                        dragOffset = value.translation.width
+                        let width = value.translation.width
+                        // When approveDisabled, only allow left (negative) swipe
+                        dragOffset = approveDisabled ? min(0, width) : width
                     }
                 }
                 .onEnded { value in

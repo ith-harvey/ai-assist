@@ -120,6 +120,12 @@ pub enum CardPayload {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         options: Vec<String>,
     },
+    /// Agent asks the user a multiple-choice question (max 3 options).
+    /// The user must select one option; the answer is returned to the agent.
+    MultipleChoice {
+        question: String,
+        options: Vec<String>,
+    },
 }
 
 impl CardPayload {
@@ -130,6 +136,7 @@ impl CardPayload {
             Self::Compose { .. } => "compose",
             Self::Action { .. } => "action",
             Self::Decision { .. } => "decision",
+            Self::MultipleChoice { .. } => "multiple_choice",
         }
     }
 
@@ -339,6 +346,28 @@ impl ApprovalCard {
         )
     }
 
+    /// Create a new MultipleChoice card (no expiry — waits for user response).
+    pub fn new_multiple_choice(
+        question: impl Into<String>,
+        options: Vec<String>,
+        silo: CardSilo,
+    ) -> Self {
+        let now = Utc::now();
+        Self {
+            id: Uuid::new_v4(),
+            silo,
+            payload: CardPayload::MultipleChoice {
+                question: question.into(),
+                options,
+            },
+            status: CardStatus::Pending,
+            created_at: now,
+            expires_at: None,
+            updated_at: now,
+            todo_id: None,
+        }
+    }
+
     /// Set the silo on this card (builder pattern).
     pub fn with_silo(mut self, silo: CardSilo) -> Self {
         self.silo = silo;
@@ -430,6 +459,8 @@ pub enum CardAction {
     Edit { card_id: Uuid, new_text: String },
     /// Refine the draft with an instruction, then regenerate via LLM.
     Refine { card_id: Uuid, instruction: String },
+    /// Select an option from a multiple-choice card.
+    SelectOption { card_id: Uuid, selected_index: usize },
 }
 
 /// Messages sent over WebSocket (server → client and internal events).

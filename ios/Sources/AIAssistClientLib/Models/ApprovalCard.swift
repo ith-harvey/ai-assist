@@ -23,6 +23,7 @@ public enum CardType: String, Codable, Sendable {
     case compose
     case action
     case decision
+    case multipleChoice
 }
 
 /// Type-specific payload for each card variant.
@@ -53,6 +54,10 @@ public enum CardPayload: Sendable {
     case decision(
         question: String,
         context: String,
+        options: [String]
+    )
+    case multipleChoice(
+        question: String,
         options: [String]
     )
 }
@@ -171,6 +176,9 @@ extension ApprovalCard: Codable {
     enum DecisionPayloadKeys: String, CodingKey {
         case question, context, options
     }
+    enum MultipleChoicePayloadKeys: String, CodingKey {
+        case question, options
+    }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -221,6 +229,12 @@ extension ApprovalCard: Codable {
             payload = .decision(
                 question: try p.decode(String.self, forKey: .question),
                 context: try p.decode(String.self, forKey: .context),
+                options: try p.decodeIfPresent([String].self, forKey: .options) ?? []
+            )
+        case .multipleChoice:
+            let p = try container.nestedContainer(keyedBy: MultipleChoicePayloadKeys.self, forKey: .payload)
+            payload = .multipleChoice(
+                question: try p.decode(String.self, forKey: .question),
                 options: try p.decodeIfPresent([String].self, forKey: .options) ?? []
             )
         }

@@ -17,6 +17,9 @@ struct CardBodyView: View {
             ActionCardBody(card: card)
         case .decision:
             DecisionCardBody(card: card)
+        case .multipleChoice:
+            // Rendered via MultipleChoiceCardBody in ContentView directly
+            EmptyView()
         }
     }
 }
@@ -304,5 +307,169 @@ struct DecisionCardBody: View {
             }
         }
         .padding(16)
+    }
+}
+
+// MARK: - Multiple Choice Card Body
+
+/// Shows a question with swipeable A/B/C option rows.
+/// Each option can be swiped right to select it.
+struct MultipleChoiceCardBody: View {
+    let card: ApprovalCard
+    let socket: CardWebSocket
+
+    private var question: String {
+        if case .multipleChoice(let q, _) = card.payload { return q }
+        return ""
+    }
+
+    private var options: [String] {
+        if case .multipleChoice(_, let opts) = card.payload { return opts }
+        return []
+    }
+
+    private let labels = ["A", "B", "C"]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            // Header
+            HStack(spacing: 8) {
+                Image(systemName: "list.bullet.circle.fill")
+                    .font(.system(size: 20))
+                    .foregroundStyle(.blue)
+                Text("Question")
+                    .font(.headline)
+                    .foregroundStyle(.primary)
+                Spacer()
+            }
+
+            // Question
+            Text(question)
+                .font(.body)
+                .fontWeight(.medium)
+                .foregroundStyle(.primary)
+
+            // Swipeable options
+            VStack(spacing: 8) {
+                ForEach(Array(options.enumerated()), id: \.offset) { index, option in
+                    SwipeOptionRow(
+                        label: labels[index],
+                        text: option,
+                        onSelect: {
+                            socket.selectOption(cardId: card.id, selectedIndex: index)
+                        }
+                    )
+                }
+            }
+        }
+        .padding(16)
+    }
+}
+
+// MARK: - Swipeable Option Row
+
+/// A single multiple-choice option that can be swiped right to select.
+struct SwipeOptionRow: View {
+    let label: String
+    let text: String
+    let onSelect: () -> Void
+
+    @State private var dragOffset: CGFloat = 0
+    @State private var isDragging = false
+
+    private let swipeThreshold: CGFloat = 80
+
+    var body: some View {
+        ZStack {
+            // Background reveal on swipe
+            HStack {
+                if dragOffset > 10 {
+                    HStack(spacing: 4) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 14, weight: .bold))
+                        Text("Confirmed")
+                            .font(.caption.bold())
+                    }
+                    .foregroundStyle(.white)
+                    .padding(.leading, 12)
+                    .opacity(min(1.0, Double(dragOffset - 10) / 60))
+                }
+                Spacer()
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color.green.opacity(min(0.85, Double(max(0, dragOffset - 10)) / 150)))
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+
+            // Option pill
+            HStack(spacing: 10) {
+                Text(label)
+                    .font(.system(size: 14, weight: .bold, design: .rounded))
+                    .foregroundStyle(.white)
+                    .frame(width: 28, height: 28)
+                    .background(Circle().fill(.blue))
+
+                Text(text)
+                    .font(.subheadline)
+                    .foregroundStyle(.primary)
+                    .lineLimit(2)
+
+                Spacer()
+
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .background(
+                RoundedRectangle(cornerRadius: 12)
+                    #if os(iOS)
+                    .fill(Color(uiColor: .secondarySystemBackground))
+                    #else
+                    .fill(Color.gray.opacity(0.08))
+                    #endif
+            )
+            .offset(x: dragOffset)
+        }
+        .gesture(
+            DragGesture(minimumDistance: 15)
+                .onChanged { value in
+                    let horizontal = abs(value.translation.width)
+                    let vertical = abs(value.translation.height)
+
+                    if !isDragging && horizontal > vertical && horizontal > 15 {
+                        isDragging = true
+                    }
+
+                    if isDragging {
+                        // Only allow right swipe (positive)
+                        dragOffset = max(0, value.translation.width)
+                    }
+                }
+                .onEnded { value in
+                    guard isDragging else {
+                        isDragging = false
+                        return
+                    }
+
+                    let width = value.translation.width
+                    let velocityX = value.predictedEndTranslation.width - width
+                    let effectiveWidth = width + velocityX * 0.15
+
+                    if effectiveWidth > swipeThreshold {
+                        withAnimation(.easeOut(duration: 0.18)) {
+                            dragOffset = 400
+                        }
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) {
+                            onSelect()
+                        }
+                    } else {
+                        withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+                            dragOffset = 0
+                        }
+                    }
+                    isDragging = false
+                }
+        )
     }
 }

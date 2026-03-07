@@ -20,6 +20,7 @@ use super::reply_drafter::ReplyDrafter;
 use super::handlers::{ApprovalHandler, CardActionContext};
 use super::model::{ApprovalCard, CardAction, CardPayload, CardSilo, WsMessage};
 use super::queue::CardQueue;
+use crate::cards::choice_registry::ChoiceRegistry;
 use crate::channels::email::EmailConfig;
 use crate::todos::activity::TodoActivityMessage;
 use crate::todos::approval_registry::TodoApprovalRegistry;
@@ -32,6 +33,7 @@ pub struct AppState {
     pub reply_drafter: Arc<ReplyDrafter>,
     pub approval_registry: TodoApprovalRegistry,
     pub activity_tx: tokio::sync::broadcast::Sender<TodoActivityMessage>,
+    pub choice_registry: ChoiceRegistry,
 }
 
 impl AppState {
@@ -58,6 +60,11 @@ impl AppState {
             }
             CardPayload::Compose { .. } => Box::new(super::handlers::ComposeHandler),
             CardPayload::Decision { .. } => Box::new(super::handlers::DecisionHandler),
+            CardPayload::MultipleChoice { .. } => {
+                Box::new(super::handlers::MultipleChoiceHandler {
+                    choice_registry: self.choice_registry.clone(),
+                })
+            }
         }
     }
 }
@@ -69,6 +76,7 @@ pub fn card_routes(
     reply_drafter: Arc<ReplyDrafter>,
     approval_registry: TodoApprovalRegistry,
     activity_tx: tokio::sync::broadcast::Sender<TodoActivityMessage>,
+    choice_registry: ChoiceRegistry,
 ) -> Router {
     let state = AppState {
         queue,
@@ -76,6 +84,7 @@ pub fn card_routes(
         reply_drafter,
         approval_registry,
         activity_tx,
+        choice_registry,
     };
 
     Router::new()
@@ -217,6 +226,22 @@ async fn handle_client_message(text: &str, state: &AppState) {
                 Ok(_card) => info!(card_id = %card_id, "Card refined via WS"),
                 Err(e) => warn!(card_id = %card_id, error = %e, "Refine failed via WS"),
             },
+            CardAction::SelectOption {
+                card_id,
+                selected_index,
+            } => {
+                if let Some(card) = state.queue.approve(card_id).await {
+                    info!(card_id = %card_id, selected_index, "Option selected via WS");
+                    if let CardPayload::MultipleChoice { .. } = &card.payload {
+                        let handler = super::handlers::MultipleChoiceHandler {
+                            choice_registry: state.choice_registry.clone(),
+                        };
+                        handler.on_select_option(&card, selected_index).await;
+                    }
+                } else {
+                    warn!(card_id = %card_id, "SelectOption failed — card not found or not pending");
+                }
+            }
         },
         Err(e) => {
             debug!(error = %e, text = text, "Unrecognized WS message from client");
