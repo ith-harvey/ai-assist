@@ -60,6 +60,8 @@ public struct TodoDetailView: View {
     @State private var deliverables: [Document] = []
     /// Text input for follow-up messages.
     @State private var inputText = ""
+    /// Todo fetched via REST — source of truth for current status.
+    @State private var fetchedTodo: TodoItem?
 
     public init(todo: TodoItem, cardSocket: CardWebSocket) {
         self.todo = todo
@@ -99,20 +101,14 @@ public struct TodoDetailView: View {
 
                     // ── Content (layout varies by completion state) ─
                     if isCompletedState {
-                        // Completed layout: banner → deliverable → collapsed activity
+                        // Completed layout: banner → documents → collapsed activity
                         completionBannerFromActivity
                             .padding(.horizontal, 20)
                             .padding(.bottom, 12)
 
-                        if !deliverables.isEmpty {
-                            VStack(alignment: .leading, spacing: 16) {
-                                ForEach(deliverables) { doc in
-                                    deliverableCard(doc)
-                                }
-                            }
+                        DocumentListSection(todoId: todo.id, host: cardSocket.host, port: cardSocket.port)
                             .padding(.horizontal, 20)
                             .padding(.bottom, 12)
-                        }
 
                         if todo.bucket == .agentStartable {
                             collapsibleActivitySection
@@ -226,11 +222,9 @@ public struct TodoDetailView: View {
         }
         #endif
         .task {
-            if isCompletedState {
-                let api = TodoAPI(host: cardSocket.host, port: cardSocket.port)
-                if let detail = try? await api.fetchTodoDetail(id: todo.id) {
-                    deliverables = detail.documents
-                }
+            let api = TodoAPI(host: cardSocket.host, port: cardSocket.port)
+            if let detail = try? await api.fetchTodoDetail(id: todo.id) {
+                fetchedTodo = detail.todo
             }
         }
         .onAppear {
@@ -244,6 +238,13 @@ public struct TodoDetailView: View {
         .onChange(of: isActivityExpanded) { _, expanded in
             if expanded && !activitySocket.isConnected {
                 activitySocket.connect()
+            }
+        }
+        .onChange(of: fetchedTodo?.status) { _, newStatus in
+            if newStatus == .completed || newStatus == .readyForReview {
+                withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                    isActivityExpanded = false
+                }
             }
         }
         .onChange(of: activitySocket.isFinished) { _, finished in
@@ -512,67 +513,21 @@ public struct TodoDetailView: View {
 
     // MARK: - Completion State Helpers
 
-    /// Whether the todo is in a completed/review state.
+    /// Whether the todo is in a completed/review state (prefers API-fetched status).
     private var isCompletedState: Bool {
-        todo.status == .completed || todo.status == .readyForReview
+        let status = fetchedTodo?.status ?? todo.status
+        return status == .completed || status == .readyForReview
     }
 
-    /// Extract the completion or failure banner from activity messages (rendered outside the collapsible).
+    /// Completion banner driven by todo status from the API.
     @ViewBuilder
     private var completionBannerFromActivity: some View {
-        if let lastTerminal = activitySocket.messages.last(where: { $0.isTerminal }) {
-            activityRow(lastTerminal)
+        let status = fetchedTodo?.status ?? todo.status
+        if status == .completed {
+            completedBanner(summary: "")
+        } else if status == .readyForReview {
+            completedBanner(summary: "Ready for your review")
         }
-    }
-
-    // MARK: - Deliverable Card
-
-    @ViewBuilder
-    private func deliverableCard(_ doc: Document) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 8) {
-                Image(systemName: doc.docType.iconName)
-                    .font(.system(size: 18))
-                    .foregroundStyle(.blue)
-
-                Text(doc.title)
-                    .font(.headline)
-                    .foregroundStyle(.primary)
-                    .lineLimit(3)
-
-                Spacer()
-
-                Text(doc.docType.label)
-                    .font(.system(size: 11, weight: .medium))
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 3)
-                    .background(.blue.opacity(0.12))
-                    .foregroundStyle(.blue)
-                    .clipShape(Capsule())
-            }
-
-            MarkdownBodyView(content: doc.content)
-                .padding(.top, 4)
-
-            HStack(spacing: 8) {
-                Text("by \(doc.createdBy)")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-                Spacer()
-                Text(doc.createdAt, style: .date)
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-            }
-            .padding(.top, 4)
-        }
-        .padding(16)
-        #if os(iOS)
-        .background(Color(uiColor: .systemBackground))
-        #else
-        .background(Color.white)
-        #endif
-        .clipShape(RoundedRectangle(cornerRadius: 14))
-        .shadow(color: .black.opacity(0.08), radius: 6, y: 3)
     }
 
     // MARK: - Collapsible Activity

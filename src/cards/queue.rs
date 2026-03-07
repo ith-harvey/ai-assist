@@ -9,7 +9,7 @@ use tokio::sync::{RwLock, broadcast};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
-use super::generator::CardGenerator;
+use super::reply_drafter::ReplyDrafter;
 use super::model::{ApprovalCard, CardPayload, CardStatus, SiloCounts, WsMessage};
 use crate::store::{Database, MessageStatus};
 
@@ -66,6 +66,15 @@ impl CardQueue {
     /// Subscribe to real-time card events. Each WS client calls this.
     pub fn subscribe(&self) -> broadcast::Receiver<WsMessage> {
         self.tx.subscribe()
+    }
+
+    /// Create a card: push to queue, broadcast to WS clients, persist to DB.
+    ///
+    /// This is the preferred entry point for production code. Returns the card
+    /// so callers can read its `id` for registry purposes.
+    pub async fn create(&self, card: ApprovalCard) -> ApprovalCard {
+        self.push(card.clone()).await;
+        card
     }
 
     /// Push a new card into the queue and broadcast to all subscribers.
@@ -220,7 +229,7 @@ impl CardQueue {
         &self,
         card_id: Uuid,
         instruction: String,
-        generator: &CardGenerator,
+        drafter: &ReplyDrafter,
     ) -> Result<ApprovalCard, String> {
         // Find the card and verify it's pending
         let card_snapshot = {
@@ -239,10 +248,11 @@ impl CardQueue {
         };
 
         // Call LLM to refine (this is async, done outside the lock)
-        let (new_text, new_confidence) = generator
+        let draft = drafter
             .refine_card(&card_snapshot, &instruction)
             .await
             .map_err(|e| format!("LLM refinement failed: {}", e))?;
+        let (new_text, new_confidence) = (draft.text, draft.confidence);
 
         // Update card in-place
         let updated = {

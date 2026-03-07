@@ -463,7 +463,8 @@ async fn spawn_followup_agent(
         tools: Arc::clone(&deps.tools),
         workspace: Some(Arc::clone(&deps.workspace)),
         extension_manager: None,
-        card_generator: None,
+        reply_drafter: None,
+        card_queue: None,
         routine_engine: None,
     };
 

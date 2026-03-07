@@ -34,6 +34,10 @@ const PROTECTED_TOOL_NAMES: &[&str] = &[
     "update_document",
     "list_documents",
     "find_document",
+    "create_todo",
+    "update_todo",
+    "delete_todo",
+    "list_todos",
 ];
 
 /// Registry of available tools.
@@ -185,6 +189,19 @@ impl ToolRegistry {
         self.register_sync(Arc::new(UpdateDocumentTool::new(db.clone())));
         self.register_sync(Arc::new(ListDocumentsTool::new(db.clone())));
         self.register_sync(Arc::new(FindDocumentTool::new(db)));
+    }
+
+    /// Register all todo management tools.
+    pub fn register_todo_tools(
+        &self,
+        db: Arc<dyn Database>,
+        todo_tx: tokio::sync::broadcast::Sender<crate::todos::model::TodoWsMessage>,
+    ) {
+        use crate::tools::builtin::todo::*;
+        self.register_sync(Arc::new(CreateTodoTool::new(db.clone(), todo_tx.clone())));
+        self.register_sync(Arc::new(UpdateTodoTool::new(db.clone(), todo_tx.clone())));
+        self.register_sync(Arc::new(DeleteTodoTool::new(db.clone(), todo_tx)));
+        self.register_sync(Arc::new(ListTodosTool::new(db)));
     }
 
     /// Register all memory/workspace tools.
