@@ -227,15 +227,26 @@ impl Agent {
                         tool_calls.clone(),
                     ));
 
-                    // Execute tools and add results to context
+                    // Build a descriptive status using tool summaries
+                    let mut headlines: Vec<String> = Vec::new();
+                    for tc in &tool_calls {
+                        if let Some(tool) = self.tools().get(&tc.name).await {
+                            headlines.push(tool.summarize(&tc.arguments).headline);
+                        } else {
+                            headlines.push(tc.name.clone());
+                        }
+                    }
+                    let status_msg = if headlines.len() == 1 {
+                        format!("{}...", headlines[0])
+                    } else {
+                        format!("{}...", headlines.join(", "))
+                    };
+
                     let _ = self
                         .channels
                         .send_status(
                             &message.channel,
-                            StatusUpdate::Thinking(format!(
-                                "Executing {} tool(s)...",
-                                tool_calls.len()
-                            )),
+                            StatusUpdate::Thinking(status_msg),
                             &message.metadata,
                         )
                         .await;

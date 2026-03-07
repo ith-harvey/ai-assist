@@ -347,7 +347,11 @@ impl Tool for ShellTool {
 
         let (verb, target, headline) = match base {
             "curl" | "wget" => {
-                let url = words.iter().find(|w| w.starts_with("http")).copied().unwrap_or("URL");
+                let url = words
+                    .iter()
+                    .map(|w| w.trim_matches(|c: char| c == '"' || c == '\''))
+                    .find(|w| w.starts_with("http"))
+                    .unwrap_or("URL");
                 // Extract hostname: "https://www.southwest.com/path" → "southwest.com"
                 let after_scheme = url.split("://").nth(1).unwrap_or(url);
                 let host_port = after_scheme.split('/').next().unwrap_or(after_scheme);
@@ -597,6 +601,22 @@ mod tests {
         let s = tool.summarize(&serde_json::json!({"command": "curl https://www.southwest.com/air/booking/"}));
         assert_eq!(s.target, "southwest.com");
         assert_eq!(s.headline, "Fetch southwest.com");
+    }
+
+    #[test]
+    fn summarize_curl_quoted_url() {
+        let tool = ShellTool::new();
+        let s = tool.summarize(&serde_json::json!({"command": "curl -s \"https://www.southwest.com\" > /dev/null && echo ok"}));
+        assert_eq!(s.target, "southwest.com");
+        assert_eq!(s.headline, "Fetch southwest.com");
+    }
+
+    #[test]
+    fn summarize_curl_single_quoted_url() {
+        let tool = ShellTool::new();
+        let s = tool.summarize(&serde_json::json!({"command": "curl -s 'https://api.example.com/data'"}));
+        assert_eq!(s.target, "api.example.com");
+        assert_eq!(s.headline, "Fetch api.example.com");
     }
 
     #[test]
