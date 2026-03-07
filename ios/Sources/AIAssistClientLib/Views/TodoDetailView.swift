@@ -56,6 +56,8 @@ public struct TodoDetailView: View {
     @State private var isNearBottom: Bool = true
     /// Bottom edge of the scroll view's visible frame (global Y).
     @State private var scrollViewMaxY: CGFloat = 0
+    /// Documents fetched via REST for completed todos.
+    @State private var deliverables: [Document] = []
 
     public init(todo: TodoItem, cardSocket: CardWebSocket) {
         self.todo = todo
@@ -99,9 +101,15 @@ public struct TodoDetailView: View {
                             .padding(.horizontal, 20)
                             .padding(.bottom, 12)
 
-                        DeliverableSection(todoId: todo.id)
+                        if !deliverables.isEmpty {
+                            VStack(alignment: .leading, spacing: 16) {
+                                ForEach(deliverables) { doc in
+                                    deliverableCard(doc)
+                                }
+                            }
                             .padding(.horizontal, 20)
                             .padding(.bottom, 12)
+                        }
 
                         if todo.bucket == .agentStartable {
                             collapsibleActivitySection
@@ -109,7 +117,7 @@ public struct TodoDetailView: View {
                         }
                     } else {
                         // In-progress layout: documents → divider → live activity
-                        DocumentListSection(todoId: todo.id)
+                        DocumentListSection(todoId: todo.id, host: cardSocket.host, port: cardSocket.port)
                             .padding(.horizontal, 20)
                             .padding(.bottom, 8)
 
@@ -214,13 +222,26 @@ public struct TodoDetailView: View {
             }
         }
         #endif
+        .task {
+            if isCompletedState {
+                let api = TodoAPI(host: cardSocket.host, port: cardSocket.port)
+                if let detail = try? await api.fetchTodoDetail(id: todo.id) {
+                    deliverables = detail.documents
+                }
+            }
+        }
         .onAppear {
-            if todo.bucket == .agentStartable {
+            if todo.bucket == .agentStartable && !isCompletedState {
                 activitySocket.connect()
             }
         }
         .onDisappear {
             activitySocket.disconnect()
+        }
+        .onChange(of: isActivityExpanded) { _, expanded in
+            if expanded && !activitySocket.isConnected {
+                activitySocket.connect()
+            }
         }
         .onChange(of: activitySocket.isFinished) { _, finished in
             if finished {
@@ -494,6 +515,56 @@ public struct TodoDetailView: View {
         if let lastTerminal = activitySocket.messages.last(where: { $0.isTerminal }) {
             activityRow(lastTerminal)
         }
+    }
+
+    // MARK: - Deliverable Card
+
+    @ViewBuilder
+    private func deliverableCard(_ doc: Document) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                Image(systemName: doc.docType.iconName)
+                    .font(.system(size: 18))
+                    .foregroundStyle(.blue)
+
+                Text(doc.title)
+                    .font(.headline)
+                    .foregroundStyle(.primary)
+                    .lineLimit(3)
+
+                Spacer()
+
+                Text(doc.docType.label)
+                    .font(.system(size: 11, weight: .medium))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(.blue.opacity(0.12))
+                    .foregroundStyle(.blue)
+                    .clipShape(Capsule())
+            }
+
+            MarkdownBodyView(content: doc.content)
+                .padding(.top, 4)
+
+            HStack(spacing: 8) {
+                Text("by \(doc.createdBy)")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                Spacer()
+                Text(doc.createdAt, style: .date)
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(.top, 4)
+        }
+        .padding(16)
+        #if os(iOS)
+        .background(Color(uiColor: .systemBackground))
+        #else
+        .background(Color.white)
+        #endif
+        .clipShape(RoundedRectangle(cornerRadius: 14))
+        .shadow(color: .black.opacity(0.08), radius: 6, y: 3)
     }
 
     // MARK: - Collapsible Activity
