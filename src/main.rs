@@ -182,19 +182,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ── Tools ────────────────────────────────────────────────────────────
     let tools = Arc::new(ToolRegistry::new());
-    // Shell + file tools
-    tools.register_sync(Arc::new(ai_assist::tools::builtin::shell::ShellTool::new()));
-    tools.register_sync(Arc::new(ai_assist::tools::builtin::file::ReadFileTool::new()));
-    tools.register_sync(Arc::new(ai_assist::tools::builtin::file::WriteFileTool::new()));
-    tools.register_sync(Arc::new(ai_assist::tools::builtin::file::ListDirTool::new()));
-    tools.register_sync(Arc::new(ai_assist::tools::builtin::file::ApplyPatchTool::new()));
-    // Memory tools
+    tools.register_file_tools();
     tools.register_memory_tools(Arc::clone(&workspace));
-    // Document tools
-    tools.register_sync(Arc::new(ai_assist::tools::builtin::document::CreateDocumentTool::new(Arc::clone(&db))));
-    tools.register_sync(Arc::new(ai_assist::tools::builtin::document::UpdateDocumentTool::new(Arc::clone(&db))));
-    tools.register_sync(Arc::new(ai_assist::tools::builtin::document::ListDocumentsTool::new(Arc::clone(&db))));
-    tools.register_sync(Arc::new(ai_assist::tools::builtin::document::FindDocumentTool::new(Arc::clone(&db))));
+    tools.register_document_tools(Arc::clone(&db));
 
     // ── Worker System (Scheduler + ContextManager) ───────────────────
     let (activity_tx, _activity_rx) = tokio::sync::broadcast::channel::<TodoActivityMessage>(256);

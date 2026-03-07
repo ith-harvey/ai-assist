@@ -30,6 +30,10 @@ const PROTECTED_TOOL_NAMES: &[&str] = &[
     "routine_update",
     "routine_delete",
     "routine_history",
+    "create_document",
+    "update_document",
+    "list_documents",
+    "find_document",
 ];
 
 /// Registry of available tools.
@@ -161,6 +165,26 @@ impl ToolRegistry {
         self.register_sync(Arc::new(RoutineUpdateTool::new(store.clone(), engine.clone())));
         self.register_sync(Arc::new(RoutineDeleteTool::new(store.clone(), engine)));
         self.register_sync(Arc::new(RoutineHistoryTool::new(store)));
+    }
+
+    /// Register all file and shell tools.
+    pub fn register_file_tools(&self) {
+        use crate::tools::builtin::file::*;
+        use crate::tools::builtin::shell::ShellTool;
+        self.register_sync(Arc::new(ShellTool::new()));
+        self.register_sync(Arc::new(ReadFileTool::new()));
+        self.register_sync(Arc::new(WriteFileTool::new()));
+        self.register_sync(Arc::new(ListDirTool::new()));
+        self.register_sync(Arc::new(ApplyPatchTool::new()));
+    }
+
+    /// Register all document tools.
+    pub fn register_document_tools(&self, db: Arc<dyn Database>) {
+        use crate::tools::builtin::document::*;
+        self.register_sync(Arc::new(CreateDocumentTool::new(db.clone())));
+        self.register_sync(Arc::new(UpdateDocumentTool::new(db.clone())));
+        self.register_sync(Arc::new(ListDocumentsTool::new(db.clone())));
+        self.register_sync(Arc::new(FindDocumentTool::new(db)));
     }
 
     /// Register all memory/workspace tools.
