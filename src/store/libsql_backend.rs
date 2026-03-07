@@ -395,6 +395,12 @@ fn serialize_payload_inner(payload: &CardPayload) -> String {
                 "options": options,
             }).to_string()
         }
+        CardPayload::MultipleChoice { question, options } => {
+            serde_json::json!({
+                "question": question,
+                "options": options,
+            }).to_string()
+        }
     }
 }
 
@@ -505,6 +511,9 @@ impl Database for LibSqlBackend {
                     String::new(), String::new(), String::new(), description.clone(), 0.0, String::new(), None, None, None,
                 ),
                 CardPayload::Decision { question, .. } => (
+                    String::new(), String::new(), String::new(), question.clone(), 0.0, String::new(), None, None, None,
+                ),
+                CardPayload::MultipleChoice { question, .. } => (
                     String::new(), String::new(), String::new(), question.clone(), 0.0, String::new(), None, None, None,
                 ),
             };

@@ -276,6 +276,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Arc::clone(&tracker),
     );
     tools.register_todo_tools(Arc::clone(&db), todo_state.tx.clone());
+    let choice_registry = ai_assist::cards::choice_registry::ChoiceRegistry::new();
+    tools.register_ask_user_tool(card_queue.clone(), choice_registry.clone());
     let activity_state = ActivityState::new(Arc::clone(&db), activity_tx.clone());
 
     // ── Todo Pickup Loop (auto-spawns agents for AgentStartable todos) ──
@@ -299,6 +301,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         card_generator.clone(),
         approval_registry,
         activity_tx.clone(),
+        choice_registry,
     )
     .merge(ios_router)
     .merge(todo_routes(todo_state))

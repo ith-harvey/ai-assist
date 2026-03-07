@@ -70,12 +70,14 @@ async fn start_server() -> (u16, Arc<CardQueue>, TodoApprovalRegistry) {
         GeneratorConfig::default(),
     ));
     let (activity_tx, _activity_rx) = tokio::sync::broadcast::channel::<TodoActivityMessage>(16);
+    let choice_registry = ai_assist::cards::choice_registry::ChoiceRegistry::new();
     let app = card_routes(
         Arc::clone(&queue),
         None,
         generator,
         registry.clone(),
         activity_tx,
+        choice_registry,
     );
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

@@ -169,6 +169,11 @@ public final class CardWebSocket: @unchecked Sendable {
         send(action: .refine(cardId: cardId, instruction: instruction))
     }
 
+    public func selectOption(cardId: UUID, selectedIndex: Int) {
+        send(action: .selectOption(cardId: cardId, selectedIndex: selectedIndex))
+        cards.removeAll { $0.id == cardId }
+    }
+
     // MARK: - Reconnection
 
     private func handleDisconnect() {

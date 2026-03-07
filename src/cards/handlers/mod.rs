@@ -7,6 +7,7 @@ mod action;
 mod compose;
 mod decision;
 mod message;
+mod multiple_choice;
 
 use std::sync::Arc;
 
@@ -19,6 +20,7 @@ pub use action::ActionHandler;
 pub use compose::ComposeHandler;
 pub use decision::DecisionHandler;
 pub use message::MessageHandler;
+pub use multiple_choice::MultipleChoiceHandler;
 
 /// Shared dependencies available to all approval handlers.
 pub struct CardActionContext {

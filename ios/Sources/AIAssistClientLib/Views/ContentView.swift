@@ -93,20 +93,37 @@ public struct ContentView: View {
         VStack(spacing: 0) {
             connectionBanner
 
-            SwipeCardContainer(
-                onApprove: { socket.approve(cardId: card.id) },
-                onReject: { socket.dismiss(cardId: card.id) }
-            ) {
-                CardBodyView(card: card)
+            if case .multipleChoice = card.payload {
+                multipleChoiceCardContent(for: card)
+            } else {
+                SwipeCardContainer(
+                    onApprove: { socket.approve(cardId: card.id) },
+                    onReject: { socket.dismiss(cardId: card.id) }
+                ) {
+                    CardBodyView(card: card)
 
-                Divider()
+                    Divider()
 
-                refineInputBar(for: card)
+                    refineInputBar(for: card)
 
-                if socket.isRefining {
-                    refiningBar
+                    if socket.isRefining {
+                        refiningBar
+                    }
                 }
             }
+        }
+    }
+
+    // MARK: - Multiple Choice Card (left-swipe-to-dismiss only)
+
+    @ViewBuilder
+    private func multipleChoiceCardContent(for card: ApprovalCard) -> some View {
+        SwipeCardContainer(
+            onApprove: { /* no-op: options handle their own selection */ },
+            onReject: { socket.dismiss(cardId: card.id) },
+            approveDisabled: true
+        ) {
+            MultipleChoiceCardBody(card: card, socket: socket)
         }
     }
 

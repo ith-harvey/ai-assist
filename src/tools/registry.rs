@@ -38,6 +38,7 @@ const PROTECTED_TOOL_NAMES: &[&str] = &[
     "update_todo",
     "delete_todo",
     "list_todos",
+    "ask_user",
 ];
 
 /// Registry of available tools.
@@ -202,6 +203,16 @@ impl ToolRegistry {
         self.register_sync(Arc::new(UpdateTodoTool::new(db.clone(), todo_tx.clone())));
         self.register_sync(Arc::new(DeleteTodoTool::new(db.clone(), todo_tx)));
         self.register_sync(Arc::new(ListTodosTool::new(db)));
+    }
+
+    /// Register the ask_user tool (multiple-choice question card).
+    pub fn register_ask_user_tool(
+        &self,
+        queue: Arc<crate::cards::queue::CardQueue>,
+        choice_registry: crate::cards::choice_registry::ChoiceRegistry,
+    ) {
+        use crate::tools::builtin::ask_user::AskUserTool;
+        self.register_sync(Arc::new(AskUserTool::new(queue, choice_registry)));
     }
 
     /// Register all memory/workspace tools.
