@@ -17,7 +17,7 @@ use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use super::generator::CardGenerator;
-use super::handler::{ApprovalHandler, CardActionContext};
+use super::handlers::{ApprovalHandler, CardActionContext};
 use super::model::{ApprovalCard, CardAction, CardPayload, WsMessage};
 use super::queue::CardQueue;
 use crate::channels::email::EmailConfig;
