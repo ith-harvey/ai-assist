@@ -144,10 +144,8 @@ struct DocumentDetailView: View {
 
                     Divider()
 
-                    // Content body (plain text for now — markdown rendering can come later)
-                    Text(document.content)
-                        .font(.body)
-                        .foregroundStyle(.primary)
+                    // Content body with markdown rendering
+                    MarkdownBodyView(content: document.content)
                         .textSelection(.enabled)
                         .padding(.horizontal)
                 }

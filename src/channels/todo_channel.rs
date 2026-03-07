@@ -186,7 +186,7 @@ impl Channel for TodoChannel {
         // Emit completed
         self.emit(TodoActivityMessage::Completed {
             job_id: self.job_id,
-            summary: response.content.chars().take(200).collect(),
+            summary: condense_summary(&response.content),
         });
 
         // Update todo status to ready_for_review
@@ -408,6 +408,33 @@ impl Channel for TodoChannel {
     }
 }
 
+/// Strip markdown syntax and extract a short, clean summary from the agent's response.
+fn condense_summary(content: &str) -> String {
+    let line = content
+        .lines()
+        .map(|l| {
+            l.trim()
+                .trim_start_matches('#')
+                .replace("**", "")
+                .replace("__", "")
+                .trim()
+                .to_string()
+        })
+        .find(|l| !l.is_empty())
+        .unwrap_or_default();
+
+    if line.len() <= 120 {
+        return line;
+    }
+    // Truncate at word boundary
+    let truncated: String = line.chars().take(120).collect();
+    if let Some(pos) = truncated.rfind(' ') {
+        format!("{}…", &truncated[..pos])
+    } else {
+        format!("{}…", truncated)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -416,5 +443,39 @@ mod tests {
     fn todo_channel_name() {
         fn assert_channel<T: Channel>() {}
         assert_channel::<TodoChannel>();
+    }
+
+    #[test]
+    fn condense_summary_strips_markdown_heading() {
+        let input = "## Research Complete ✅\n\nI've researched Nashville flight options";
+        let result = condense_summary(input);
+        assert_eq!(result, "Research Complete ✅");
+    }
+
+    #[test]
+    fn condense_summary_strips_bold() {
+        let input = "**Key Findings:** Southwest has direct flights";
+        let result = condense_summary(input);
+        assert_eq!(result, "Key Findings: Southwest has direct flights");
+    }
+
+    #[test]
+    fn condense_summary_truncates_long_line() {
+        let input = "This is a very long line that goes on and on and on and on and on and on and on and on and on and on and on and on and on and on forever";
+        let result = condense_summary(input);
+        assert!(result.len() <= 125); // 120 + room for ellipsis
+        assert!(result.ends_with('…'));
+    }
+
+    #[test]
+    fn condense_summary_skips_blank_lines() {
+        let input = "\n\n  \nActual content here";
+        let result = condense_summary(input);
+        assert_eq!(result, "Actual content here");
+    }
+
+    #[test]
+    fn condense_summary_empty_input() {
+        assert_eq!(condense_summary(""), "");
     }
 }
