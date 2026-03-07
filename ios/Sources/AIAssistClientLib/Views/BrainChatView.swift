@@ -177,14 +177,22 @@ public struct BrainChatView: View {
                 .padding(.horizontal, 16)
                 .padding(.top, 8)
 
-            // Message content — full width, terminal style
-            Text(message.content)
-                .font(.system(.body, design: .monospaced))
-                .foregroundStyle(.primary)
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 16)
-                .padding(.bottom, 4)
+            // Message content — full width
+            if message.isFromUser {
+                Text(message.content)
+                    .font(.system(.body, design: .monospaced))
+                    .foregroundStyle(.primary)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 4)
+            } else {
+                MarkdownBodyView(content: message.content)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 4)
+            }
         }
     }
 

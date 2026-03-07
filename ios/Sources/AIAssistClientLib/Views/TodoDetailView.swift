@@ -628,9 +628,7 @@ public struct TodoDetailView: View {
                     .foregroundStyle(.blue)
             }
 
-            Text(content)
-                .font(.subheadline)
-                .foregroundStyle(.primary)
+            MarkdownBodyView(content: content)
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
                 #if os(iOS)
@@ -657,7 +655,8 @@ public struct TodoDetailView: View {
             if !summary.isEmpty {
                 Text(summary)
                     .font(.subheadline)
-                    .foregroundStyle(.primary)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(3)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
