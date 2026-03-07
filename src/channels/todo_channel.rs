@@ -14,8 +14,7 @@ use async_trait::async_trait;
 use tokio::sync::{Mutex, broadcast, mpsc};
 use uuid::Uuid;
 
-use crate::cards::builder::ApprovalCardBuilder;
-use crate::cards::model::CardSilo;
+use crate::cards::model::{ApprovalCard, CardPayload, CardSilo};
 use crate::cards::queue::CardQueue;
 use crate::channels::channel::{
     Channel, IncomingMessage, MessageStream, OutgoingResponse, StatusUpdate,
@@ -33,12 +32,12 @@ pub struct TodoChannel {
     job_id: Uuid,
     todo_title: String,
     todo_description: String,
+    /// If set, `start()` uses this instead of title+description.
+    override_content: Option<String>,
     activity_tx: broadcast::Sender<TodoActivityMessage>,
     db: Arc<dyn Database>,
     todo_tx: broadcast::Sender<TodoWsMessage>,
-    #[allow(dead_code)]
     card_queue: Arc<CardQueue>,
-    approval_builder: ApprovalCardBuilder,
     approval_registry: TodoApprovalRegistry,
     /// Set to true when respond() is called successfully.
     responded: AtomicBool,
@@ -66,8 +65,22 @@ impl TodoChannel {
         card_queue: Arc<CardQueue>,
         approval_registry: TodoApprovalRegistry,
     ) -> Self {
+        Self::with_override(todo_id, job_id, todo_title, todo_description, None, activity_tx, db, todo_tx, card_queue, approval_registry)
+    }
+
+    pub fn with_override(
+        todo_id: Uuid,
+        job_id: Uuid,
+        todo_title: String,
+        todo_description: String,
+        override_content: Option<String>,
+        activity_tx: broadcast::Sender<TodoActivityMessage>,
+        db: Arc<dyn Database>,
+        todo_tx: broadcast::Sender<TodoWsMessage>,
+        card_queue: Arc<CardQueue>,
+        approval_registry: TodoApprovalRegistry,
+    ) -> Self {
         let logger = AgentLogger::new(todo_id, job_id, &todo_title);
-        let approval_builder = ApprovalCardBuilder::new(card_queue.clone());
         // Bounded channel: 1 message at a time (approval response)
         let (tx, rx) = mpsc::channel(8);
         Self {
@@ -75,11 +88,11 @@ impl TodoChannel {
             job_id,
             todo_title,
             todo_description,
+            override_content,
             activity_tx,
             db,
             todo_tx,
             card_queue,
-            approval_builder,
             approval_registry,
             responded: AtomicBool::new(false),
             logger,
@@ -140,10 +153,16 @@ impl Channel for TodoChannel {
     }
 
     async fn start(&self) -> Result<MessageStream, ChannelError> {
-        let content = if self.todo_description.is_empty() {
-            self.todo_title.clone()
+        let todo_id_str = self.todo_id.to_string();
+        let content = if let Some(ref override_content) = self.override_content {
+            override_content.clone()
+        } else if self.todo_description.is_empty() {
+            format!("[todo_id: {}]\n\n{}", todo_id_str, self.todo_title)
         } else {
-            format!("{}\n\n{}", self.todo_title, self.todo_description)
+            format!(
+                "[todo_id: {}]\n\n{}\n\n{}",
+                todo_id_str, self.todo_title, self.todo_description
+            )
         };
 
         // Record the task prompt in logger
@@ -191,7 +210,7 @@ impl Channel for TodoChannel {
         // Emit completed
         self.emit(TodoActivityMessage::Completed {
             job_id: self.job_id,
-            summary: response.content.chars().take(200).collect(),
+            summary: condense_summary(&response.content),
         });
 
         // Update todo status to ready_for_review
@@ -293,15 +312,24 @@ impl Channel for TodoChannel {
                     .system(&format!("⚠️ Approval needed: {}", headline))
                     .await;
 
-                let card = self.approval_builder.create_tool_approval(
-                    summary.as_ref(),
-                    tool_name,
-                    description,
-                    parameters,
+                let action_detail = summary
+                    .as_ref()
+                    .map(|s| s.raw_params.clone())
+                    .or_else(|| serde_json::to_string_pretty(parameters).ok());
+
+                let card = ApprovalCard::new(
+                    CardPayload::Action {
+                        description: headline.clone(),
+                        action_detail,
+                    },
                     CardSilo::Todos,
-                    Some(self.todo_id),
-                ).await;
+                    60,
+                )
+                .without_expiry()
+                .with_todo_id(self.todo_id);
+
                 let card_id = card.id;
+                self.card_queue.push(card).await;
 
                 // Register in approval registry so card WS can route back to us
                 let request_uuid = Uuid::parse_str(request_id).unwrap_or_else(|_| Uuid::new_v4());
@@ -404,6 +432,33 @@ impl Channel for TodoChannel {
     }
 }
 
+/// Strip markdown syntax and extract a short, clean summary from the agent's response.
+fn condense_summary(content: &str) -> String {
+    let line = content
+        .lines()
+        .map(|l| {
+            l.trim()
+                .trim_start_matches('#')
+                .replace("**", "")
+                .replace("__", "")
+                .trim()
+                .to_string()
+        })
+        .find(|l| !l.is_empty())
+        .unwrap_or_default();
+
+    if line.len() <= 120 {
+        return line;
+    }
+    // Truncate at word boundary
+    let truncated: String = line.chars().take(120).collect();
+    if let Some(pos) = truncated.rfind(' ') {
+        format!("{}…", &truncated[..pos])
+    } else {
+        format!("{}…", truncated)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -412,5 +467,39 @@ mod tests {
     fn todo_channel_name() {
         fn assert_channel<T: Channel>() {}
         assert_channel::<TodoChannel>();
+    }
+
+    #[test]
+    fn condense_summary_strips_markdown_heading() {
+        let input = "## Research Complete ✅\n\nI've researched Nashville flight options";
+        let result = condense_summary(input);
+        assert_eq!(result, "Research Complete ✅");
+    }
+
+    #[test]
+    fn condense_summary_strips_bold() {
+        let input = "**Key Findings:** Southwest has direct flights";
+        let result = condense_summary(input);
+        assert_eq!(result, "Key Findings: Southwest has direct flights");
+    }
+
+    #[test]
+    fn condense_summary_truncates_long_line() {
+        let input = "This is a very long line that goes on and on and on and on and on and on and on and on and on and on and on and on and on and on forever";
+        let result = condense_summary(input);
+        assert!(result.len() <= 125); // 120 + room for ellipsis
+        assert!(result.ends_with('…'));
+    }
+
+    #[test]
+    fn condense_summary_skips_blank_lines() {
+        let input = "\n\n  \nActual content here";
+        let result = condense_summary(input);
+        assert_eq!(result, "Actual content here");
+    }
+
+    #[test]
+    fn condense_summary_empty_input() {
+        assert_eq!(condense_summary(""), "");
     }
 }

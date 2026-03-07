@@ -188,7 +188,7 @@ const SCHEMA: &str = r#"
 
     CREATE TABLE IF NOT EXISTS documents (
         id TEXT PRIMARY KEY,
-        todo_id TEXT,
+        todo_id TEXT NOT NULL,
         title TEXT NOT NULL,
         content TEXT NOT NULL,
         doc_type TEXT NOT NULL,

@@ -15,7 +15,7 @@ public final class TodoActivitySocket: @unchecked Sendable {
     /// The latest activity event for this todo (replaces on each update).
     public var latestActivity: ActivityMessage? = nil
     /// Full history kept internally for replay on reconnect.
-    public private(set) var messages: [ActivityMessage] = []
+    public var messages: [ActivityMessage] = []
     public var isConnected: Bool = false
     /// Flips to `true` after the initial history replay finishes (debounced).
     public var hasCompletedInitialLoad: Bool = false
@@ -86,6 +86,23 @@ public final class TodoActivitySocket: @unchecked Sendable {
         reconnectAttempt = 0
         print("📡 [ActivitySocket] Task resumed, starting receive loop")
         receiveMessage()
+    }
+
+    // MARK: - Sending
+
+    public func send(text: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+
+        let payload: [String: String] = [
+            "type": "user_message",
+            "content": trimmed
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: payload),
+              let jsonString = String(data: data, encoding: .utf8) else { return }
+        webSocketTask?.send(.string(jsonString)) { error in
+            if let error { print("[ActivitySocket] send error: \(error)") }
+        }
     }
 
     // MARK: - Receiving

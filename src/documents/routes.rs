@@ -41,7 +41,7 @@ pub struct CreateDocumentRequest {
     pub title: String,
     pub content: String,
     pub doc_type: DocumentType,
-    pub todo_id: Option<String>,
+    pub todo_id: String,
     pub created_by: Option<String>,
 }
 
@@ -137,29 +137,24 @@ async fn create_document(
     State(state): State<DocumentState>,
     Json(req): Json<CreateDocumentRequest>,
 ) -> impl IntoResponse {
-    let todo_id = match &req.todo_id {
-        Some(s) => match Uuid::parse_str(s) {
-            Ok(id) => Some(id),
-            Err(_) => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(serde_json::json!({"error": "Invalid todo_id UUID"})),
-                )
-                    .into_response()
-            }
-        },
-        None => None,
+    let todo_id = match Uuid::parse_str(&req.todo_id) {
+        Ok(id) => id,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "Invalid todo_id UUID"})),
+            )
+                .into_response()
+        }
     };
 
-    let mut doc = Document::new(
+    let doc = Document::new(
+        todo_id,
         req.title,
         req.content,
         req.doc_type,
         req.created_by.unwrap_or_else(|| "agent".to_string()),
     );
-    if let Some(tid) = todo_id {
-        doc = doc.with_todo(tid);
-    }
 
     let doc_id = doc.id;
     match state.db.create_document(&doc).await {

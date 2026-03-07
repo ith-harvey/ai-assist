@@ -1,4 +1,8 @@
-//! Card generator — uses LLM to produce reply suggestion cards from incoming messages.
+//! Reply drafter — uses LLM to draft reply suggestions for incoming messages.
+//!
+//! This is a **content service**, not a card service. It produces `DraftReply`
+//! values (text + confidence). The caller wraps them in `ApprovalCard` and
+//! pushes to the `CardQueue`.
 
 use std::sync::Arc;
 
@@ -8,12 +12,11 @@ use crate::error::LlmError;
 use crate::llm::provider::{ChatMessage, CompletionRequest, LlmProvider};
 
 use super::model::{ApprovalCard, CardPayload};
-use super::queue::CardQueue;
 
-/// Configuration for card generation.
+/// Configuration for reply drafting.
 #[derive(Debug, Clone)]
 pub struct GeneratorConfig {
-    /// Card expiry time in minutes.
+    /// Card expiry time in minutes (passed through to callers).
     pub expire_minutes: u32,
     /// Maximum number of reply suggestions per message.
     pub max_suggestions: usize,
@@ -34,26 +37,34 @@ impl Default for GeneratorConfig {
     }
 }
 
-/// Generates reply suggestion cards from incoming messages using an LLM.
-pub struct CardGenerator {
+/// A drafted reply suggestion — pure content, no card wrapping.
+#[derive(Debug, Clone)]
+pub struct DraftReply {
+    /// The suggested reply text.
+    pub text: String,
+    /// Confidence score 0.0–1.0.
+    pub confidence: f32,
+}
+
+/// Drafts reply suggestions from incoming messages using an LLM.
+pub struct ReplyDrafter {
     llm: Arc<dyn LlmProvider>,
-    queue: Arc<CardQueue>,
     config: GeneratorConfig,
 }
 
-impl CardGenerator {
-    /// Create a new card generator.
-    pub fn new(llm: Arc<dyn LlmProvider>, queue: Arc<CardQueue>, config: GeneratorConfig) -> Self {
-        Self { llm, queue, config }
+impl ReplyDrafter {
+    /// Create a new reply drafter.
+    pub fn new(llm: Arc<dyn LlmProvider>, config: GeneratorConfig) -> Self {
+        Self { llm, config }
     }
 
-    /// Get a reference to the card queue.
-    pub fn queue(&self) -> &Arc<CardQueue> {
-        &self.queue
+    /// Get the configured expire_minutes (callers use this when creating cards).
+    pub fn expire_minutes(&self) -> u32 {
+        self.config.expire_minutes
     }
 
-    /// Should we generate a card for this message?
-    pub fn should_generate(&self, content: &str, sender: &str, _chat_id: &str) -> bool {
+    /// Should we draft a reply for this message?
+    pub fn should_draft(&self, content: &str, sender: &str, _chat_id: &str) -> bool {
         // Skip empty messages
         if content.trim().is_empty() {
             return false;
@@ -75,34 +86,25 @@ impl CardGenerator {
         true
     }
 
-    /// Generate reply suggestion cards for an incoming message.
+    /// Draft reply suggestions for an incoming message via LLM.
     ///
-    /// Creates ONE card with the best reply suggestion (1:1 card-to-message model).
-    /// Optionally links the card to a tracked message via `message_id`.
-    /// If `thread` is non-empty, attaches email thread context to the card.
-    ///
-    /// This is designed to be called asynchronously (tokio::spawn) so it doesn't
-    /// block the main message processing flow.
-    pub async fn generate_cards(
+    /// Returns the single best `DraftReply` (1:1 message-to-draft model).
+    /// The caller is responsible for wrapping the result in an `ApprovalCard`
+    /// and pushing it to the `CardQueue`.
+    pub async fn draft(
         &self,
         source_message: &str,
         sender: &str,
         chat_id: &str,
-        channel: &str,
-        message_id: Option<&str>,
-        thread: Vec<super::model::ThreadMessage>,
-        reply_metadata: Option<serde_json::Value>,
-        email_thread: Vec<crate::channels::EmailMessage>,
-    ) -> Result<Vec<ApprovalCard>, LlmError> {
-        if !self.should_generate(source_message, sender, chat_id) {
-            return Ok(vec![]);
+    ) -> Result<Option<DraftReply>, LlmError> {
+        if !self.should_draft(source_message, sender, chat_id) {
+            return Ok(None);
         }
 
         info!(
             sender = sender,
-            channel = channel,
             chat_id = chat_id,
-            "Generating reply suggestions"
+            "Drafting reply suggestion"
         );
 
         let system_prompt = format!(
@@ -139,65 +141,33 @@ impl CardGenerator {
 
         let response = self.llm.complete(request).await?;
 
-        // Parse JSON response and pick the best suggestion (1:1 model)
-        let mut cards =
-            self.parse_suggestions(&response.content, source_message, sender, chat_id, channel);
+        // Parse and pick the best suggestion
+        let mut drafts = self.parse_suggestions(&response.content);
 
-        // Sort by confidence descending, take only the best one
-        cards.sort_by(|a, b| {
-            let ac = a.payload.confidence().unwrap_or(0.0);
-            let bc = b.payload.confidence().unwrap_or(0.0);
-            bc.partial_cmp(&ac).unwrap_or(std::cmp::Ordering::Equal)
+        // Sort by confidence descending, take the best one
+        drafts.sort_by(|a, b| {
+            b.confidence
+                .partial_cmp(&a.confidence)
+                .unwrap_or(std::cmp::Ordering::Equal)
         });
-        cards.truncate(1);
 
-        // Enrich reply payload with additional context
-        for card in &mut cards {
-            if let CardPayload::Reply {
-                message_id: ref mut mid,
-                thread: ref mut t,
-                reply_metadata: ref mut rm,
-                email_thread: ref mut et,
-                ..
-            } = card.payload
-            {
-                if let Some(m) = message_id {
-                    *mid = Some(m.to_string());
-                }
-                if !thread.is_empty() {
-                    *t = thread.clone();
-                }
-                if let Some(ref meta) = reply_metadata {
-                    *rm = Some(meta.clone());
-                }
-                if !email_thread.is_empty() {
-                    *et = email_thread.clone();
-                }
-            }
+        let best = drafts.into_iter().next();
+
+        if best.is_some() {
+            info!(sender = sender, "Drafted reply suggestion");
         }
 
-        // Push card to queue
-        for card in &cards {
-            self.queue.push(card.clone()).await;
-        }
-
-        info!(
-            count = cards.len(),
-            sender = sender,
-            "Generated reply suggestion (1:1)"
-        );
-
-        Ok(cards)
+        Ok(best)
     }
 
     /// Refine an existing card's draft using an LLM with the user's instruction.
     ///
-    /// Returns (new_suggested_reply, confidence).
+    /// Returns a new `DraftReply` with the rewritten text.
     pub async fn refine_card(
         &self,
         card: &ApprovalCard,
         instruction: &str,
-    ) -> Result<(String, f32), LlmError> {
+    ) -> Result<DraftReply, LlmError> {
         info!(
             card_id = %card.id,
             instruction = instruction,
@@ -270,18 +240,14 @@ impl CardGenerator {
 
         info!(card_id = %card.id, "Card draft refined successfully");
 
-        Ok((refined_text, confidence))
+        Ok(DraftReply {
+            text: refined_text,
+            confidence,
+        })
     }
 
-    /// Parse LLM response JSON into ApprovalCard objects.
-    fn parse_suggestions(
-        &self,
-        llm_response: &str,
-        source_message: &str,
-        sender: &str,
-        chat_id: &str,
-        channel: &str,
-    ) -> Vec<ApprovalCard> {
+    /// Parse LLM response JSON into DraftReply values.
+    fn parse_suggestions(&self, llm_response: &str) -> Vec<DraftReply> {
         // Try to extract JSON array from response (LLM might wrap in markdown)
         let json_str = extract_json_array(llm_response);
 
@@ -301,16 +267,9 @@ impl CardGenerator {
             .into_iter()
             .take(self.config.max_suggestions)
             .filter(|s| !s.text.trim().is_empty())
-            .map(|s| {
-                ApprovalCard::new_reply(
-                    channel,
-                    sender,
-                    source_message,
-                    s.text,
-                    s.confidence,
-                    chat_id,
-                    self.config.expire_minutes,
-                )
+            .map(|s| DraftReply {
+                text: s.text,
+                confidence: s.confidence.clamp(0.0, 1.0),
             })
             .collect()
     }
@@ -396,10 +355,8 @@ mod tests {
     }
 
     #[test]
-    fn should_generate_filters_commands() {
-        let queue = CardQueue::new();
-        // Generator needs an LlmProvider — but should_generate doesn't use it
-        // so we test the filter logic via the function directly
+    fn should_draft_filters_commands() {
+        // Test the filter logic via the helper (doesn't need an LlmProvider)
         assert!(!should_generate_helper("/start"));
         assert!(!should_generate_helper(""));
         assert!(!should_generate_helper("  "));
@@ -407,7 +364,7 @@ mod tests {
         assert!(should_generate_helper("can we meet tomorrow?"));
     }
 
-    /// Helper to test should_generate logic without needing an LlmProvider.
+    /// Helper to test should_draft logic without needing an LlmProvider.
     fn should_generate_helper(content: &str) -> bool {
         if content.trim().is_empty() {
             return false;

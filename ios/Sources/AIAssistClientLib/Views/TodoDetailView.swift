@@ -56,6 +56,12 @@ public struct TodoDetailView: View {
     @State private var isNearBottom: Bool = true
     /// Bottom edge of the scroll view's visible frame (global Y).
     @State private var scrollViewMaxY: CGFloat = 0
+    /// Documents fetched via REST for completed todos.
+    @State private var deliverables: [Document] = []
+    /// Text input for follow-up messages.
+    @State private var inputText = ""
+    /// Todo fetched via REST — source of truth for current status.
+    @State private var fetchedTodo: TodoItem?
 
     public init(todo: TodoItem, cardSocket: CardWebSocket) {
         self.todo = todo
@@ -67,7 +73,8 @@ public struct TodoDetailView: View {
     }
 
     public var body: some View {
-        ScrollViewReader { proxy in
+        VStack(spacing: 0) {
+            ScrollViewReader { proxy in
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
                     // ── Header ──────────────────────────────────────
@@ -94,12 +101,12 @@ public struct TodoDetailView: View {
 
                     // ── Content (layout varies by completion state) ─
                     if isCompletedState {
-                        // Completed layout: banner → deliverable → collapsed activity
+                        // Completed layout: banner → documents → collapsed activity
                         completionBannerFromActivity
                             .padding(.horizontal, 20)
                             .padding(.bottom, 12)
 
-                        DeliverableSection(todoId: todo.id)
+                        DocumentListSection(todoId: todo.id, host: cardSocket.host, port: cardSocket.port)
                             .padding(.horizontal, 20)
                             .padding(.bottom, 12)
 
@@ -109,7 +116,7 @@ public struct TodoDetailView: View {
                         }
                     } else {
                         // In-progress layout: documents → divider → live activity
-                        DocumentListSection(todoId: todo.id)
+                        DocumentListSection(todoId: todo.id, host: cardSocket.host, port: cardSocket.port)
                             .padding(.horizontal, 20)
                             .padding(.bottom, 8)
 
@@ -214,6 +221,12 @@ public struct TodoDetailView: View {
             }
         }
         #endif
+        .task {
+            let api = TodoAPI(host: cardSocket.host, port: cardSocket.port)
+            if let detail = try? await api.fetchTodoDetail(id: todo.id) {
+                fetchedTodo = detail.todo
+            }
+        }
         .onAppear {
             if todo.bucket == .agentStartable {
                 activitySocket.connect()
@@ -221,6 +234,18 @@ public struct TodoDetailView: View {
         }
         .onDisappear {
             activitySocket.disconnect()
+        }
+        .onChange(of: isActivityExpanded) { _, expanded in
+            if expanded && !activitySocket.isConnected {
+                activitySocket.connect()
+            }
+        }
+        .onChange(of: fetchedTodo?.status) { _, newStatus in
+            if newStatus == .completed || newStatus == .readyForReview {
+                withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                    isActivityExpanded = false
+                }
+            }
         }
         .onChange(of: activitySocket.isFinished) { _, finished in
             if finished {
@@ -244,6 +269,11 @@ public struct TodoDetailView: View {
             }
             .presentationDetents([.medium, .large])
         }
+
+        if todo.bucket == .agentStartable {
+            inputBar
+        }
+        } // VStack
     }
 
     // MARK: - Collapsible Description
@@ -483,16 +513,20 @@ public struct TodoDetailView: View {
 
     // MARK: - Completion State Helpers
 
-    /// Whether the todo is in a completed/review state.
+    /// Whether the todo is in a completed/review state (prefers API-fetched status).
     private var isCompletedState: Bool {
-        todo.status == .completed || todo.status == .readyForReview
+        let status = fetchedTodo?.status ?? todo.status
+        return status == .completed || status == .readyForReview
     }
 
-    /// Extract the completion or failure banner from activity messages (rendered outside the collapsible).
+    /// Completion banner driven by todo status from the API.
     @ViewBuilder
     private var completionBannerFromActivity: some View {
-        if let lastTerminal = activitySocket.messages.last(where: { $0.isTerminal }) {
-            activityRow(lastTerminal)
+        let status = fetchedTodo?.status ?? todo.status
+        if status == .completed {
+            completedBanner(summary: "")
+        } else if status == .readyForReview {
+            completedBanner(summary: "Ready for your review")
         }
     }
 
@@ -570,6 +604,8 @@ public struct TodoDetailView: View {
             approvalPendingRow(cardId: cardId, toolName: toolName, description: description)
         case .approvalResolved(_, _, let approved):
             approvalResolvedRow(approved: approved)
+        case .userMessage(_, let content):
+            userMessageRow(content: content)
         }
     }
 
@@ -628,9 +664,7 @@ public struct TodoDetailView: View {
                     .foregroundStyle(.blue)
             }
 
-            Text(content)
-                .font(.subheadline)
-                .foregroundStyle(.primary)
+            MarkdownBodyView(content: content)
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
                 #if os(iOS)
@@ -657,7 +691,8 @@ public struct TodoDetailView: View {
             if !summary.isEmpty {
                 Text(summary)
                     .font(.subheadline)
-                    .foregroundStyle(.primary)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(3)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -849,6 +884,76 @@ public struct TodoDetailView: View {
                 .foregroundStyle(approved ? .green : .red)
         }
         .padding(.vertical, 4)
+    }
+
+    // MARK: - User Message Row
+
+    private func userMessageRow(content: String) -> some View {
+        VStack(alignment: .trailing, spacing: 4) {
+            HStack(spacing: 6) {
+                Spacer()
+                Text("You")
+                    .font(.caption)
+                    .fontWeight(.semibold)
+                    .foregroundStyle(.blue)
+            }
+            Text(content)
+                .font(.subheadline)
+                .foregroundStyle(.white)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 8)
+                .background(.blue)
+                .clipShape(RoundedRectangle(cornerRadius: 16))
+        }
+        .frame(maxWidth: .infinity, alignment: .trailing)
+        .padding(.vertical, 2)
+    }
+
+    // MARK: - Input Bar
+
+    private var inputBar: some View {
+        HStack(alignment: .bottom, spacing: 8) {
+            TextField("Send instructions...", text: $inputText, axis: .vertical)
+                .lineLimit(1...5)
+                .textFieldStyle(.plain)
+                .font(.subheadline)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                #if os(iOS)
+                .background(Color(uiColor: .systemGray6))
+                #else
+                .background(Color.gray.opacity(0.1))
+                #endif
+                .clipShape(RoundedRectangle(cornerRadius: 18))
+
+            if !inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Button {
+                    sendMessage()
+                } label: {
+                    Image(systemName: "arrow.up.circle.fill")
+                        .font(.system(size: 28))
+                        .foregroundStyle(.blue)
+                }
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+        .background(.bar)
+    }
+
+    private func sendMessage() {
+        let text = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+
+        // Optimistic: add user message to local activity feed
+        let msg = ActivityMessage.userMessage(todoId: todo.id, content: text)
+        activitySocket.messages.append(msg)
+
+        // Send over WebSocket
+        activitySocket.send(text: text)
+
+        // Clear input
+        inputText = ""
     }
 
     // MARK: - Connection Badge

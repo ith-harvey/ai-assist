@@ -16,9 +16,9 @@ use serde::Deserialize;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
-use super::generator::CardGenerator;
+use super::reply_drafter::ReplyDrafter;
 use super::handlers::{ApprovalHandler, CardActionContext};
-use super::model::{ApprovalCard, CardAction, CardPayload, WsMessage};
+use super::model::{ApprovalCard, CardAction, CardPayload, CardSilo, WsMessage};
 use super::queue::CardQueue;
 use crate::cards::choice_registry::ChoiceRegistry;
 use crate::channels::email::EmailConfig;
@@ -30,7 +30,7 @@ use crate::todos::approval_registry::TodoApprovalRegistry;
 pub struct AppState {
     pub queue: Arc<CardQueue>,
     pub email_config: Option<EmailConfig>,
-    pub generator: Arc<CardGenerator>,
+    pub reply_drafter: Arc<ReplyDrafter>,
     pub approval_registry: TodoApprovalRegistry,
     pub activity_tx: tokio::sync::broadcast::Sender<TodoActivityMessage>,
     pub choice_registry: ChoiceRegistry,
@@ -73,7 +73,7 @@ impl AppState {
 pub fn card_routes(
     queue: Arc<CardQueue>,
     email_config: Option<EmailConfig>,
-    generator: Arc<CardGenerator>,
+    reply_drafter: Arc<ReplyDrafter>,
     approval_registry: TodoApprovalRegistry,
     activity_tx: tokio::sync::broadcast::Sender<TodoActivityMessage>,
     choice_registry: ChoiceRegistry,
@@ -81,7 +81,7 @@ pub fn card_routes(
     let state = AppState {
         queue,
         email_config,
-        generator,
+        reply_drafter,
         approval_registry,
         activity_tx,
         choice_registry,
@@ -222,7 +222,7 @@ async fn handle_client_message(text: &str, state: &AppState) {
             CardAction::Refine {
                 card_id,
                 instruction,
-            } => match state.queue.refine(card_id, instruction, &state.generator).await {
+            } => match state.queue.refine(card_id, instruction, &state.reply_drafter).await {
                 Ok(_card) => info!(card_id = %card_id, "Card refined via WS"),
                 Err(e) => warn!(card_id = %card_id, error = %e, "Refine failed via WS"),
             },
@@ -385,7 +385,7 @@ async fn refine_card(
 
     match state
         .queue
-        .refine(card_id, body.instruction, &state.generator)
+        .refine(card_id, body.instruction, &state.reply_drafter)
         .await
     {
         Ok(card) => (
@@ -437,13 +437,20 @@ async fn create_test_card(
     State(state): State<AppState>,
     Json(body): Json<TestCardRequest>,
 ) -> impl IntoResponse {
-    let card = ApprovalCard::new_reply(
-        body.channel,
-        body.sender,
-        body.message,
-        body.reply,
-        body.confidence,
-        "chat_test",
+    let card = ApprovalCard::new(
+        CardPayload::Reply {
+            channel: body.channel,
+            source_sender: body.sender,
+            source_message: body.message,
+            suggested_reply: body.reply,
+            confidence: body.confidence.clamp(0.0, 1.0),
+            conversation_id: "chat_test".into(),
+            thread: Vec::new(),
+            email_thread: Vec::new(),
+            reply_metadata: None,
+            message_id: None,
+        },
+        CardSilo::Messages,
         15,
     );
     let card_id = card.id;

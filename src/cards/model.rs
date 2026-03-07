@@ -242,7 +242,25 @@ pub struct ApprovalCard {
 }
 
 impl ApprovalCard {
-    /// Create a new Reply card.
+    /// Create a new approval card with the given payload, silo, and expiry.
+    ///
+    /// This is the single constructor for all card types. Callers build the
+    /// `CardPayload` variant they need and pass it in.
+    pub fn new(payload: CardPayload, silo: CardSilo, expire_minutes: u32) -> Self {
+        let now = Utc::now();
+        Self {
+            id: Uuid::new_v4(),
+            silo,
+            payload,
+            status: CardStatus::Pending,
+            created_at: now,
+            expires_at: Some(now + chrono::Duration::minutes(expire_minutes as i64)),
+            updated_at: now,
+            todo_id: None,
+        }
+    }
+
+    /// Convenience: create a Reply card (delegates to `new()`).
     pub fn new_reply(
         channel: impl Into<String>,
         source_sender: impl Into<String>,
@@ -252,11 +270,8 @@ impl ApprovalCard {
         conversation_id: impl Into<String>,
         expire_minutes: u32,
     ) -> Self {
-        let now = Utc::now();
-        Self {
-            id: Uuid::new_v4(),
-            silo: CardSilo::Messages,
-            payload: CardPayload::Reply {
+        Self::new(
+            CardPayload::Reply {
                 channel: channel.into(),
                 source_sender: source_sender.into(),
                 source_message: source_message.into(),
@@ -268,15 +283,12 @@ impl ApprovalCard {
                 reply_metadata: None,
                 message_id: None,
             },
-            status: CardStatus::Pending,
-            created_at: now,
-            expires_at: Some(now + chrono::Duration::minutes(expire_minutes as i64)),
-            updated_at: now,
-            todo_id: None,
-        }
+            CardSilo::Messages,
+            expire_minutes,
+        )
     }
 
-    /// Create a new Compose card.
+    /// Convenience: create a Compose card (delegates to `new()`).
     pub fn new_compose(
         channel: impl Into<String>,
         recipient: impl Into<String>,
@@ -285,49 +297,37 @@ impl ApprovalCard {
         confidence: f32,
         expire_minutes: u32,
     ) -> Self {
-        let now = Utc::now();
-        Self {
-            id: Uuid::new_v4(),
-            silo: CardSilo::Messages,
-            payload: CardPayload::Compose {
+        Self::new(
+            CardPayload::Compose {
                 channel: channel.into(),
                 recipient: recipient.into(),
                 subject,
                 draft_body: draft_body.into(),
                 confidence: confidence.clamp(0.0, 1.0),
             },
-            status: CardStatus::Pending,
-            created_at: now,
-            expires_at: Some(now + chrono::Duration::minutes(expire_minutes as i64)),
-            updated_at: now,
-            todo_id: None,
-        }
+            CardSilo::Messages,
+            expire_minutes,
+        )
     }
 
-    /// Create a new Action card.
+    /// Convenience: create an Action card (delegates to `new()`).
     pub fn new_action(
         description: impl Into<String>,
         action_detail: Option<String>,
         silo: CardSilo,
         expire_minutes: u32,
     ) -> Self {
-        let now = Utc::now();
-        Self {
-            id: Uuid::new_v4(),
-            silo,
-            payload: CardPayload::Action {
+        Self::new(
+            CardPayload::Action {
                 description: description.into(),
                 action_detail,
             },
-            status: CardStatus::Pending,
-            created_at: now,
-            expires_at: Some(now + chrono::Duration::minutes(expire_minutes as i64)),
-            updated_at: now,
-            todo_id: None,
-        }
+            silo,
+            expire_minutes,
+        )
     }
 
-    /// Create a new Decision card.
+    /// Convenience: create a Decision card (delegates to `new()`).
     pub fn new_decision(
         question: impl Into<String>,
         context: impl Into<String>,
@@ -335,21 +335,15 @@ impl ApprovalCard {
         silo: CardSilo,
         expire_minutes: u32,
     ) -> Self {
-        let now = Utc::now();
-        Self {
-            id: Uuid::new_v4(),
-            silo,
-            payload: CardPayload::Decision {
+        Self::new(
+            CardPayload::Decision {
                 question: question.into(),
                 context: context.into(),
                 options,
             },
-            status: CardStatus::Pending,
-            created_at: now,
-            expires_at: Some(now + chrono::Duration::minutes(expire_minutes as i64)),
-            updated_at: now,
-            todo_id: None,
-        }
+            silo,
+            expire_minutes,
+        )
     }
 
     /// Create a new MultipleChoice card (no expiry — waits for user response).
