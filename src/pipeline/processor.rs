@@ -13,7 +13,7 @@ use std::sync::Arc;
 use chrono::Utc;
 use tracing::{debug, error, info, warn};
 
-use crate::cards::model::ApprovalCard;
+use crate::cards::model::{ApprovalCard, CardPayload, CardSilo};
 use crate::cards::queue::CardQueue;
 use crate::error::PipelineError;
 use crate::llm::provider::{ChatMessage, CompletionRequest, LlmProvider};
@@ -174,16 +174,22 @@ impl MessageProcessor {
                 Ok(())
             }
             TriageAction::Notify { summary } => {
-                let card = ApprovalCard::new_reply(
-                    &message.channel,
-                    &message.sender,
-                    &message.content,
-                    format!("[Notification] {}", summary),
-                    0.0, // No reply confidence — this is FYI only
-                    &message.id,
+                let card = ApprovalCard::new(
+                    CardPayload::Reply {
+                        channel: message.channel.clone(),
+                        source_sender: message.sender.clone(),
+                        source_message: message.content.clone(),
+                        suggested_reply: format!("[Notification] {}", summary),
+                        confidence: 0.0, // No reply confidence — this is FYI only
+                        conversation_id: message.id.clone(),
+                        thread: Vec::new(),
+                        email_thread: Vec::new(),
+                        reply_metadata: Some(message.reply_metadata.clone()),
+                        message_id: None,
+                    },
+                    CardSilo::Messages,
                     CARD_EXPIRE_MINUTES,
-                )
-                .with_reply_metadata(message.reply_metadata.clone());
+                );
 
                 self.card_queue.push(card).await;
                 info!(
@@ -209,16 +215,22 @@ impl MessageProcessor {
                     metadata["style_notes"] = serde_json::Value::String(s.clone());
                 }
 
-                let card = ApprovalCard::new_reply(
-                    &message.channel,
-                    &message.sender,
-                    &message.content,
-                    draft,
-                    *confidence,
-                    &message.id,
+                let card = ApprovalCard::new(
+                    CardPayload::Reply {
+                        channel: message.channel.clone(),
+                        source_sender: message.sender.clone(),
+                        source_message: message.content.clone(),
+                        suggested_reply: draft.clone(),
+                        confidence: confidence.clamp(0.0, 1.0),
+                        conversation_id: message.id.clone(),
+                        thread: Vec::new(),
+                        email_thread: Vec::new(),
+                        reply_metadata: Some(metadata),
+                        message_id: None,
+                    },
+                    CardSilo::Messages,
                     CARD_EXPIRE_MINUTES,
-                )
-                .with_reply_metadata(metadata);
+                );
 
                 self.card_queue.push(card).await;
                 info!(
@@ -237,16 +249,22 @@ impl MessageProcessor {
                     summary = %summary,
                     "Digest item — creating low-priority notification for now"
                 );
-                let card = ApprovalCard::new_reply(
-                    &message.channel,
-                    &message.sender,
-                    &message.content,
-                    format!("[Digest] {}", summary),
-                    0.0,
-                    &message.id,
+                let card = ApprovalCard::new(
+                    CardPayload::Reply {
+                        channel: message.channel.clone(),
+                        source_sender: message.sender.clone(),
+                        source_message: message.content.clone(),
+                        suggested_reply: format!("[Digest] {}", summary),
+                        confidence: 0.0,
+                        conversation_id: message.id.clone(),
+                        thread: Vec::new(),
+                        email_thread: Vec::new(),
+                        reply_metadata: Some(message.reply_metadata.clone()),
+                        message_id: None,
+                    },
+                    CardSilo::Messages,
                     CARD_EXPIRE_MINUTES * 4, // longer expiry for digest items
-                )
-                .with_reply_metadata(message.reply_metadata.clone());
+                );
 
                 self.card_queue.push(card).await;
                 Ok(())

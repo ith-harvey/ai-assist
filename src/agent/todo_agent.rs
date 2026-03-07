@@ -151,7 +151,7 @@ pub async fn spawn_todo_agent(
         ..AgentConfig::default()
     };
 
-    // Build AgentDeps (no card_generator, routine_engine, extension_manager)
+    // Build AgentDeps (no reply_drafter, routine_engine, extension_manager)
     let agent_deps = AgentDeps {
         store: Some(Arc::clone(&deps.db)),
         llm: Arc::clone(&deps.llm),
@@ -159,7 +159,8 @@ pub async fn spawn_todo_agent(
         tools: Arc::clone(&deps.tools),
         workspace: Some(Arc::clone(&deps.workspace)),
         extension_manager: None,
-        card_generator: None,
+        reply_drafter: None,
+        card_queue: None,
         routine_engine: None,
     };
 

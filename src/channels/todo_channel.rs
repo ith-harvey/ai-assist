@@ -14,8 +14,7 @@ use async_trait::async_trait;
 use tokio::sync::{Mutex, broadcast, mpsc};
 use uuid::Uuid;
 
-use crate::cards::builder::ApprovalCardBuilder;
-use crate::cards::model::CardSilo;
+use crate::cards::model::{ApprovalCard, CardPayload, CardSilo};
 use crate::cards::queue::CardQueue;
 use crate::channels::channel::{
     Channel, IncomingMessage, MessageStream, OutgoingResponse, StatusUpdate,
@@ -36,9 +35,7 @@ pub struct TodoChannel {
     activity_tx: broadcast::Sender<TodoActivityMessage>,
     db: Arc<dyn Database>,
     todo_tx: broadcast::Sender<TodoWsMessage>,
-    #[allow(dead_code)]
     card_queue: Arc<CardQueue>,
-    approval_builder: ApprovalCardBuilder,
     approval_registry: TodoApprovalRegistry,
     /// Set to true when respond() is called successfully.
     responded: AtomicBool,
@@ -67,7 +64,6 @@ impl TodoChannel {
         approval_registry: TodoApprovalRegistry,
     ) -> Self {
         let logger = AgentLogger::new(todo_id, job_id, &todo_title);
-        let approval_builder = ApprovalCardBuilder::new(card_queue.clone());
         // Bounded channel: 1 message at a time (approval response)
         let (tx, rx) = mpsc::channel(8);
         Self {
@@ -79,7 +75,6 @@ impl TodoChannel {
             db,
             todo_tx,
             card_queue,
-            approval_builder,
             approval_registry,
             responded: AtomicBool::new(false),
             logger,
@@ -293,15 +288,24 @@ impl Channel for TodoChannel {
                     .system(&format!("⚠️ Approval needed: {}", headline))
                     .await;
 
-                let card = self.approval_builder.create_tool_approval(
-                    summary.as_ref(),
-                    tool_name,
-                    description,
-                    parameters,
+                let action_detail = summary
+                    .as_ref()
+                    .map(|s| s.raw_params.clone())
+                    .or_else(|| serde_json::to_string_pretty(parameters).ok());
+
+                let card = ApprovalCard::new(
+                    CardPayload::Action {
+                        description: headline.clone(),
+                        action_detail,
+                    },
                     CardSilo::Todos,
-                    Some(self.todo_id),
-                ).await;
+                    60,
+                )
+                .without_expiry()
+                .with_todo_id(self.todo_id);
+
                 let card_id = card.id;
+                self.card_queue.push(card).await;
 
                 // Register in approval registry so card WS can route back to us
                 let request_uuid = Uuid::parse_str(request_id).unwrap_or_else(|_| Uuid::new_v4());

@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use ai_assist::agent::routine_engine::{self, RoutineEngine};
 use ai_assist::agent::{Agent, AgentDeps};
-use ai_assist::cards::generator::{CardGenerator, GeneratorConfig};
+use ai_assist::cards::reply_drafter::{GeneratorConfig, ReplyDrafter};
 use ai_assist::cards::queue::{self, CardQueue};
 use ai_assist::cards::ws::card_routes;
 use ai_assist::channels::email::EmailConfig;
@@ -109,9 +109,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         expire_minutes: card_expire_min,
         ..Default::default()
     };
-    let card_generator = Arc::new(CardGenerator::new(
+    let reply_drafter = Arc::new(ReplyDrafter::new(
         llm.clone(),
-        card_queue.clone(),
         generator_config,
     ));
 
@@ -129,16 +128,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 continue;
             }
             // No active card — create a placeholder card for the UI
-            let card = ai_assist::cards::model::ApprovalCard::new_reply(
-                &msg.channel,
-                &msg.sender,
-                &msg.content,
-                "(pending re-generation)",
-                0.0,
-                &msg.sender,
+            let card = ai_assist::cards::model::ApprovalCard::new(
+                ai_assist::cards::model::CardPayload::Reply {
+                    channel: msg.channel.clone(),
+                    source_sender: msg.sender.clone(),
+                    source_message: msg.content.clone(),
+                    suggested_reply: "(pending re-generation)".into(),
+                    confidence: 0.0,
+                    conversation_id: msg.sender.clone(),
+                    thread: Vec::new(),
+                    email_thread: Vec::new(),
+                    reply_metadata: None,
+                    message_id: Some(msg.id.clone()),
+                },
+                ai_assist::cards::model::CardSilo::Messages,
                 card_expire_min,
-            )
-            .with_message_id(&msg.id);
+            );
             card_queue.push(card).await;
             recovered += 1;
         }
@@ -295,7 +300,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app = card_routes(
         card_queue.clone(),
         email_config_for_cards,
-        card_generator.clone(),
+        reply_drafter.clone(),
         approval_registry,
         activity_tx.clone(),
     )
@@ -320,7 +325,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tools,
         workspace: Some(Arc::clone(&workspace)),
         extension_manager: None,
-        card_generator: Some(card_generator),
+        reply_drafter: Some(reply_drafter),
+        card_queue: Some(card_queue.clone()),
         routine_engine,
     };
 
