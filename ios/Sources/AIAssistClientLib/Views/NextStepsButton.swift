@@ -13,18 +13,17 @@ public struct NextStepsButton: View {
 
     public var body: some View {
         Button(action: action) {
-            HStack {
+            HStack(spacing: 6) {
                 Text("Next Steps")
                     .font(.body)
                     .fontWeight(.medium)
-                Spacer()
                 Text("\(count)")
                     .font(.body)
                     .fontWeight(.semibold)
             }
             .foregroundStyle(.orange)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 16)
         }
         .buttonStyle(.plain)
         .background(

@@ -38,7 +38,11 @@ public struct TodoListView: View {
             }
         }
         .navigationTitle("To-Dos")
+        #if os(iOS)
+        .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .automatic), prompt: "Search todos...")
+        #else
         .searchable(text: $searchText, prompt: "Search todos...")
+        #endif
         .onChange(of: searchText) { _, newValue in
             searchTask?.cancel()
             let trimmed = newValue.trimmingCharacters(in: .whitespaces)
