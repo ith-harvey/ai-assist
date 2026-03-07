@@ -32,6 +32,8 @@ pub struct TodoChannel {
     job_id: Uuid,
     todo_title: String,
     todo_description: String,
+    /// If set, `start()` uses this instead of title+description.
+    override_content: Option<String>,
     activity_tx: broadcast::Sender<TodoActivityMessage>,
     db: Arc<dyn Database>,
     todo_tx: broadcast::Sender<TodoWsMessage>,
@@ -63,6 +65,21 @@ impl TodoChannel {
         card_queue: Arc<CardQueue>,
         approval_registry: TodoApprovalRegistry,
     ) -> Self {
+        Self::with_override(todo_id, job_id, todo_title, todo_description, None, activity_tx, db, todo_tx, card_queue, approval_registry)
+    }
+
+    pub fn with_override(
+        todo_id: Uuid,
+        job_id: Uuid,
+        todo_title: String,
+        todo_description: String,
+        override_content: Option<String>,
+        activity_tx: broadcast::Sender<TodoActivityMessage>,
+        db: Arc<dyn Database>,
+        todo_tx: broadcast::Sender<TodoWsMessage>,
+        card_queue: Arc<CardQueue>,
+        approval_registry: TodoApprovalRegistry,
+    ) -> Self {
         let logger = AgentLogger::new(todo_id, job_id, &todo_title);
         // Bounded channel: 1 message at a time (approval response)
         let (tx, rx) = mpsc::channel(8);
@@ -71,6 +88,7 @@ impl TodoChannel {
             job_id,
             todo_title,
             todo_description,
+            override_content,
             activity_tx,
             db,
             todo_tx,
@@ -136,7 +154,9 @@ impl Channel for TodoChannel {
 
     async fn start(&self) -> Result<MessageStream, ChannelError> {
         let todo_id_str = self.todo_id.to_string();
-        let content = if self.todo_description.is_empty() {
+        let content = if let Some(ref override_content) = self.override_content {
+            override_content.clone()
+        } else if self.todo_description.is_empty() {
             format!("[todo_id: {}]\n\n{}", todo_id_str, self.todo_title)
         } else {
             format!(

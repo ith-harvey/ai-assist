@@ -14,10 +14,12 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
-use tracing::{debug, info, warn};
+use tracing::{Instrument, debug, info, warn};
 use uuid::Uuid;
 
+use crate::agent::todo_agent::{ActiveAgentTracker, TodoAgentDeps};
 use crate::store::Database;
+use crate::todos::model::{TodoStatus, TodoWsMessage};
 
 /// A single message in an agent transcript dump.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -101,6 +103,11 @@ pub enum TodoActivityMessage {
         card_id: Uuid,
         approved: bool,
     },
+    /// A follow-up message from the user sent via the activity WebSocket.
+    UserMessage {
+        todo_id: Uuid,
+        content: String,
+    },
 }
 
 impl TodoActivityMessage {
@@ -117,6 +124,7 @@ impl TodoActivityMessage {
             | Self::Transcript { job_id, .. }
             | Self::ApprovalNeeded { job_id, .. }
             | Self::ApprovalResolved { job_id, .. } => *job_id,
+            Self::UserMessage { .. } => Uuid::nil(),
         }
     }
 
@@ -124,6 +132,7 @@ impl TodoActivityMessage {
     pub fn todo_id(&self) -> Option<Uuid> {
         match self {
             Self::Started { todo_id, .. } => *todo_id,
+            Self::UserMessage { todo_id, .. } => Some(*todo_id),
             _ => None,
         }
     }
@@ -146,6 +155,7 @@ impl TodoActivityMessage {
             Self::Transcript { .. } => "transcript".to_string(),
             Self::ApprovalNeeded { .. } => "approval_needed".to_string(),
             Self::ApprovalResolved { .. } => "approval_resolved".to_string(),
+            Self::UserMessage { .. } => "user_message".to_string(),
         }
     }
 }
@@ -156,14 +166,20 @@ pub struct ActivityState {
     pub db: Arc<dyn Database>,
     /// Broadcast channel for activity events.
     pub activity_tx: broadcast::Sender<TodoActivityMessage>,
+    /// Dependencies for spawning follow-up agents.
+    pub agent_deps: TodoAgentDeps,
+    /// Concurrency tracker for agent slots.
+    pub tracker: Arc<ActiveAgentTracker>,
 }
 
 impl ActivityState {
     pub fn new(
         db: Arc<dyn Database>,
         activity_tx: broadcast::Sender<TodoActivityMessage>,
+        agent_deps: TodoAgentDeps,
+        tracker: Arc<ActiveAgentTracker>,
     ) -> Self {
-        Self { db, activity_tx }
+        Self { db, activity_tx, agent_deps, tracker }
     }
 }
 
@@ -281,6 +297,53 @@ async fn handle_socket(mut socket: WebSocket, todo_id: Uuid, state: ActivityStat
                         info!(todo_id = %todo_id, "📡 Client socket returned None (disconnected)");
                         break;
                     }
+                    Some(Ok(Message::Text(text))) => {
+                        // Try to parse as a user message
+                        if let Ok(payload) = serde_json::from_str::<serde_json::Value>(&text) {
+                            if payload.get("type").and_then(|t| t.as_str()) == Some("user_message") {
+                                if let Some(content) = payload.get("content").and_then(|c| c.as_str()) {
+                                    let content = content.to_string();
+                                    info!(todo_id = %todo_id, content_len = content.len(), "📡 Received user follow-up message");
+
+                                    // Emit UserMessage activity event (broadcast + persist)
+                                    let user_msg = TodoActivityMessage::UserMessage {
+                                        todo_id,
+                                        content: content.clone(),
+                                    };
+                                    let _ = state.activity_tx.send(user_msg.clone());
+                                    let store = state.db.clone();
+                                    let action_data = serde_json::to_string(&user_msg).unwrap_or_default();
+                                    tokio::spawn(async move {
+                                        if let Err(e) = store.save_job_action(Uuid::nil(), Some(todo_id), "user_message", &action_data).await {
+                                            warn!(error = %e, "Failed to persist user message");
+                                        }
+                                    });
+
+                                    // Update todo status to AgentWorking
+                                    let db = state.db.clone();
+                                    let todo_tx = state.agent_deps.todo_tx.clone();
+                                    let db2 = db.clone();
+                                    tokio::spawn(async move {
+                                        if let Err(e) = db.update_todo_status(todo_id, TodoStatus::AgentWorking).await {
+                                            warn!(error = %e, "Failed to update todo status to AgentWorking");
+                                        }
+                                        if let Ok(Some(updated)) = db2.get_todo(todo_id).await {
+                                            let _ = todo_tx.send(TodoWsMessage::TodoUpdated { todo: updated });
+                                        }
+                                    });
+
+                                    // Spawn follow-up agent
+                                    let deps = state.agent_deps.clone();
+                                    let tracker = Arc::clone(&state.tracker);
+                                    tokio::spawn(async move {
+                                        if let Err(e) = spawn_followup_agent(todo_id, &content, &deps, &tracker).await {
+                                            warn!(todo_id = %todo_id, error = %e, "Failed to spawn follow-up agent");
+                                        }
+                                    });
+                                }
+                            }
+                        }
+                    }
                     Some(Err(e)) => {
                         warn!(todo_id = %todo_id, error = %e, "📡 WebSocket error");
                         break;
@@ -292,6 +355,154 @@ async fn handle_socket(mut socket: WebSocket, todo_id: Uuid, state: ActivityStat
     }
 
     info!(todo_id = %todo_id, "Activity WebSocket connection closed");
+}
+
+/// Spawn a follow-up agent for a todo, building context from prior activity history.
+async fn spawn_followup_agent(
+    todo_id: Uuid,
+    user_message: &str,
+    deps: &TodoAgentDeps,
+    tracker: &Arc<ActiveAgentTracker>,
+) -> Result<(), String> {
+    if !tracker.try_acquire() {
+        return Err("No agent slots available".to_string());
+    }
+
+    // Load todo
+    let todo = match deps.db.get_todo(todo_id).await {
+        Ok(Some(t)) => t,
+        Ok(None) => {
+            tracker.release();
+            return Err(format!("Todo {todo_id} not found"));
+        }
+        Err(e) => {
+            tracker.release();
+            return Err(format!("DB error: {e}"));
+        }
+    };
+
+    // Load prior activity history and build context
+    let history = deps
+        .db
+        .get_activity_for_todo(todo_id)
+        .await
+        .unwrap_or_default();
+
+    let mut context_parts = Vec::new();
+    for action_json in &history {
+        if let Ok(msg) = serde_json::from_str::<TodoActivityMessage>(action_json) {
+            match &msg {
+                TodoActivityMessage::AgentResponse { content, .. } => {
+                    context_parts.push(format!("**Agent:** {content}"));
+                }
+                TodoActivityMessage::UserMessage { content, .. } => {
+                    context_parts.push(format!("**User:** {content}"));
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let override_content = if context_parts.is_empty() {
+        format!(
+            "{}\n\n{}\n\n## New Instruction\n{}",
+            todo.title,
+            todo.description.as_deref().unwrap_or(""),
+            user_message
+        )
+    } else {
+        format!(
+            "{}\n\n{}\n\n## Previous Work on This Todo\n{}\n\n## New Instruction\n{}",
+            todo.title,
+            todo.description.as_deref().unwrap_or(""),
+            context_parts.join("\n\n"),
+            user_message
+        )
+    };
+
+    let job_id = Uuid::new_v4();
+
+    let worker_prompt = deps
+        .workspace
+        .worker_prompt()
+        .await
+        .unwrap_or_default();
+
+    let system_prompt = if worker_prompt.is_empty() {
+        None
+    } else {
+        Some(worker_prompt)
+    };
+
+    let channel = crate::channels::todo_channel::TodoChannel::with_override(
+        todo.id,
+        job_id,
+        todo.title.clone(),
+        todo.description.clone().unwrap_or_default(),
+        Some(override_content),
+        deps.activity_tx.clone(),
+        Arc::clone(&deps.db),
+        deps.todo_tx.clone(),
+        Arc::clone(&deps.card_queue),
+        deps.approval_registry.clone(),
+    );
+
+    let mut channel_manager = crate::channels::ChannelManager::new();
+    channel_manager.add(Box::new(channel));
+
+    let config = crate::config::AgentConfig {
+        name: format!("todo-followup-{}", &todo.id.to_string()[..8]),
+        system_prompt,
+        ..crate::config::AgentConfig::default()
+    };
+
+    let agent_deps = crate::agent::agent_loop::AgentDeps {
+        store: Some(Arc::clone(&deps.db)),
+        llm: Arc::clone(&deps.llm),
+        safety: Arc::clone(&deps.safety),
+        tools: Arc::clone(&deps.tools),
+        workspace: Some(Arc::clone(&deps.workspace)),
+        extension_manager: None,
+        reply_drafter: None,
+        card_queue: None,
+        routine_engine: None,
+    };
+
+    let _ = deps.activity_tx.send(TodoActivityMessage::Started {
+        job_id,
+        todo_id: Some(todo.id),
+    });
+
+    let agent = crate::agent::agent_loop::Agent::new(config, agent_deps, channel_manager, None);
+
+    let title = todo.title.clone();
+    let tracker_clone = Arc::clone(tracker);
+    let span = tracing::info_span!("todo_followup_agent",
+        todo_id = %todo_id,
+        job_id = %job_id,
+        title = %title,
+    );
+
+    let handle = tokio::spawn(async move {
+        if let Err(e) = agent.run().await {
+            tracing::error!(error = %e, "Follow-up todo agent failed");
+        }
+    }.instrument(span));
+
+    // Release tracker slot when agent finishes
+    tokio::spawn(async move {
+        let _ = handle.await;
+        tracker_clone.release();
+        tracing::info!(todo_id = %todo_id, "Follow-up agent finished, released tracker slot");
+    });
+
+    tracing::info!(
+        todo_id = %todo_id,
+        job_id = %job_id,
+        "Spawned follow-up todo agent"
+    );
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -450,6 +661,26 @@ mod tests {
 
         let parsed: TodoActivityMessage = serde_json::from_str(&json).unwrap();
         assert!(matches!(parsed, TodoActivityMessage::ApprovalResolved { .. }));
+    }
+
+    #[test]
+    fn activity_message_serde_user_message() {
+        let todo_id = Uuid::new_v4();
+        let msg = TodoActivityMessage::UserMessage {
+            todo_id,
+            content: "Please also add error handling".to_string(),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"user_message\""));
+        assert!(json.contains("\"content\":\"Please also add error handling\""));
+        assert!(json.contains(&todo_id.to_string()));
+        assert!(!msg.is_terminal());
+        assert_eq!(msg.action_type(), "user_message");
+        assert_eq!(msg.job_id(), Uuid::nil());
+        assert_eq!(msg.todo_id(), Some(todo_id));
+
+        let parsed: TodoActivityMessage = serde_json::from_str(&json).unwrap();
+        assert!(matches!(parsed, TodoActivityMessage::UserMessage { .. }));
     }
 
     #[test]
