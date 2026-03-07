@@ -33,7 +33,6 @@ public struct TranscriptMessage: Codable, Sendable, Identifiable {
 public enum ActivityMessage: Identifiable, Codable, Sendable {
     case started(jobId: UUID, todoId: UUID?)
     case thinking(jobId: UUID, iteration: UInt32)
-    case toolStarted(jobId: UUID, toolName: String)
     case toolCompleted(jobId: UUID, toolName: String, success: Bool, summary: String)
     case reasoning(jobId: UUID, content: String)
     case agentResponse(jobId: UUID, content: String)
@@ -53,8 +52,6 @@ public enum ActivityMessage: Identifiable, Codable, Sendable {
             return "started-\(jobId.uuidString)"
         case .thinking(let jobId, let iteration):
             return "thinking-\(jobId.uuidString)-\(iteration)"
-        case .toolStarted(let jobId, let toolName):
-            return "tool_started-\(jobId.uuidString)-\(toolName)"
         case .toolCompleted(let jobId, let toolName, _, _):
             return "tool_completed-\(jobId.uuidString)-\(toolName)"
         case .reasoning(let jobId, let content):
@@ -81,7 +78,6 @@ public enum ActivityMessage: Identifiable, Codable, Sendable {
         switch self {
         case .started(let id, _),
              .thinking(let id, _),
-             .toolStarted(let id, _),
              .toolCompleted(let id, _, _, _),
              .reasoning(let id, _),
              .agentResponse(let id, _),
@@ -134,11 +130,6 @@ public enum ActivityMessage: Identifiable, Codable, Sendable {
             let jobId = try container.decode(UUID.self, forKey: .jobId)
             let iteration = try container.decode(UInt32.self, forKey: .iteration)
             self = .thinking(jobId: jobId, iteration: iteration)
-
-        case "tool_started":
-            let jobId = try container.decode(UUID.self, forKey: .jobId)
-            let toolName = try container.decode(String.self, forKey: .toolName)
-            self = .toolStarted(jobId: jobId, toolName: toolName)
 
         case "tool_completed":
             let jobId = try container.decode(UUID.self, forKey: .jobId)
@@ -207,11 +198,6 @@ public enum ActivityMessage: Identifiable, Codable, Sendable {
             try container.encode("thinking", forKey: .type)
             try container.encode(jobId, forKey: .jobId)
             try container.encode(iteration, forKey: .iteration)
-
-        case .toolStarted(let jobId, let toolName):
-            try container.encode("tool_started", forKey: .type)
-            try container.encode(jobId, forKey: .jobId)
-            try container.encode(toolName, forKey: .toolName)
 
         case .toolCompleted(let jobId, let toolName, let success, let summary):
             try container.encode("tool_completed", forKey: .type)

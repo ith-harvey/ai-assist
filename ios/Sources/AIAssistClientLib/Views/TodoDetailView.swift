@@ -552,8 +552,6 @@ public struct TodoDetailView: View {
             startedRow()
         case .thinking(_, let iteration):
             thinkingRow(iteration: iteration)
-        case .toolStarted(_, let toolName):
-            toolStartedRow(toolName: toolName)
         case .toolCompleted(_, let toolName, let success, let summary):
             ToolCompletedRowView(toolName: toolName, success: success, summary: summary)
         case .reasoning(_, let content):
@@ -599,16 +597,6 @@ public struct TodoDetailView: View {
                     .font(.caption)
                     .foregroundStyle(.tertiary)
             }
-        }
-        .padding(.vertical, 2)
-    }
-
-    private func toolStartedRow(toolName: String) -> some View {
-        HStack(spacing: 8) {
-            toolBadge(toolName)
-            Text("running...")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
         }
         .padding(.vertical, 2)
     }
@@ -859,21 +847,6 @@ public struct TodoDetailView: View {
                 .foregroundStyle(approved ? .green : .red)
         }
         .padding(.vertical, 4)
-    }
-
-    // MARK: - Shared Components
-
-    private func toolBadge(_ name: String) -> some View {
-        Text(name)
-            .font(.system(size: 11, weight: .semibold, design: .monospaced))
-            .padding(.horizontal, 8)
-            .padding(.vertical, 3)
-            #if os(iOS)
-            .background(Color(uiColor: .systemGray5))
-            #else
-            .background(Color.gray.opacity(0.15))
-            #endif
-            .clipShape(Capsule())
     }
 
     // MARK: - Connection Badge
