@@ -2,7 +2,6 @@
 
 pub mod builder;
 pub mod generator;
-pub mod handler;
 pub mod handlers;
 pub mod model;
 pub mod queue;
