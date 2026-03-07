@@ -28,6 +28,22 @@ private struct TruncatedTextHeightKey: PreferenceKey {
     }
 }
 
+/// Tracks the bottom anchor's Y position in global coordinates.
+private struct BottomAnchorGlobalKey: PreferenceKey {
+    static var defaultValue: CGFloat = .infinity
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
+/// Tracks the scroll view's visible frame height in global coordinates.
+private struct ScrollViewFrameKey: PreferenceKey {
+    static var defaultValue: CGRect = .zero
+    static func reduce(value: inout CGRect, nextValue: () -> CGRect) {
+        value = nextValue()
+    }
+}
+
 public struct TodoDetailView: View {
     let todo: TodoItem
     let cardSocket: CardWebSocket
@@ -36,6 +52,10 @@ public struct TodoDetailView: View {
     @State private var isHeaderCollapsed = false
     @State private var isActivityExpanded: Bool
     @State private var approvalCard: ApprovalCard?
+    /// Whether the user is near the bottom of the scroll view (for auto-scroll).
+    @State private var isNearBottom: Bool = true
+    /// Bottom edge of the scroll view's visible frame (global Y).
+    @State private var scrollViewMaxY: CGFloat = 0
 
     public init(todo: TodoItem, cardSocket: CardWebSocket) {
         self.todo = todo
@@ -108,6 +128,14 @@ public struct TodoDetailView: View {
                     Color.clear
                         .frame(height: 1)
                         .id("activityBottom")
+                        .background(
+                            GeometryReader { geo in
+                                Color.clear.preference(
+                                    key: BottomAnchorGlobalKey.self,
+                                    value: geo.frame(in: .global).maxY
+                                )
+                            }
+                        )
                 }
                 .padding(.bottom, 20)
                 .background(
@@ -120,10 +148,27 @@ public struct TodoDetailView: View {
                 )
             }
             .coordinateSpace(name: "detailScroll")
+            .background(
+                GeometryReader { geo in
+                    Color.clear.preference(
+                        key: ScrollViewFrameKey.self,
+                        value: geo.frame(in: .global)
+                    )
+                }
+            )
             .onAppear {
                 // Scroll to bottom after a brief delay to let content render
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
                     proxy.scrollTo("activityBottom", anchor: .bottom)
+                }
+            }
+            .onChange(of: activitySocket.messages.count) { _, _ in
+                // Auto-scroll to bottom for in-progress todos as new activity arrives,
+                // but only if the user hasn't scrolled up to read history.
+                if !isCompletedState && isNearBottom {
+                    withAnimation(.easeOut(duration: 0.15)) {
+                        proxy.scrollTo("activityBottom", anchor: .bottom)
+                    }
                 }
             }
         }
@@ -141,6 +186,14 @@ public struct TodoDetailView: View {
                     isHeaderCollapsed = false
                 }
             }
+        }
+        .onPreferenceChange(ScrollViewFrameKey.self) { frame in
+            scrollViewMaxY = frame.maxY
+        }
+        .onPreferenceChange(BottomAnchorGlobalKey.self) { bottomY in
+            // User is "near bottom" when the bottom anchor is within 150pt
+            // of the scroll view's visible bottom edge.
+            isNearBottom = bottomY <= scrollViewMaxY + 150
         }
         #if os(iOS)
         .scrollDismissesKeyboard(.interactively)
