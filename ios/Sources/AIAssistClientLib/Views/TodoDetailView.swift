@@ -56,6 +56,8 @@ public struct TodoDetailView: View {
     @State private var isNearBottom: Bool = true
     /// Bottom edge of the scroll view's visible frame (global Y).
     @State private var scrollViewMaxY: CGFloat = 0
+    /// Todo fetched via REST — source of truth for current status.
+    @State private var fetchedTodo: TodoItem?
     /// Documents fetched via REST for completed todos.
     @State private var deliverables: [Document] = []
 
@@ -223,11 +225,10 @@ public struct TodoDetailView: View {
         }
         #endif
         .task {
-            if isCompletedState {
-                let api = TodoAPI(host: cardSocket.host, port: cardSocket.port)
-                if let detail = try? await api.fetchTodoDetail(id: todo.id) {
-                    deliverables = detail.documents
-                }
+            let api = TodoAPI(host: cardSocket.host, port: cardSocket.port)
+            if let detail = try? await api.fetchTodoDetail(id: todo.id) {
+                fetchedTodo = detail.todo
+                deliverables = detail.documents
             }
         }
         .onAppear {
@@ -241,6 +242,13 @@ public struct TodoDetailView: View {
         .onChange(of: isActivityExpanded) { _, expanded in
             if expanded && !activitySocket.isConnected {
                 activitySocket.connect()
+            }
+        }
+        .onChange(of: fetchedTodo?.status) { _, newStatus in
+            if newStatus == .completed || newStatus == .readyForReview {
+                withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                    isActivityExpanded = false
+                }
             }
         }
         .onChange(of: activitySocket.isFinished) { _, finished in
@@ -504,16 +512,20 @@ public struct TodoDetailView: View {
 
     // MARK: - Completion State Helpers
 
-    /// Whether the todo is in a completed/review state.
+    /// Whether the todo is in a completed/review state (prefers API-fetched status).
     private var isCompletedState: Bool {
-        todo.status == .completed || todo.status == .readyForReview
+        let status = fetchedTodo?.status ?? todo.status
+        return status == .completed || status == .readyForReview
     }
 
-    /// Extract the completion or failure banner from activity messages (rendered outside the collapsible).
+    /// Completion banner driven by todo status from the API.
     @ViewBuilder
     private var completionBannerFromActivity: some View {
-        if let lastTerminal = activitySocket.messages.last(where: { $0.isTerminal }) {
-            activityRow(lastTerminal)
+        let status = fetchedTodo?.status ?? todo.status
+        if status == .completed {
+            completedBanner(summary: "")
+        } else if status == .readyForReview {
+            completedBanner(summary: "Ready for your review")
         }
     }
 
