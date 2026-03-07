@@ -20,8 +20,8 @@ public struct MainTabView: View {
             // Home — to-do list
             NavigationStack {
                 TodoListView(cardSocket: cardSocket)
+                    .safeAreaInset(edge: .bottom) { aiInputBar }
             }
-            .safeAreaInset(edge: .bottom) { aiInputBar }
             .tabItem {
                 Image(systemName: "house.fill")
                 Text("Home")
@@ -42,8 +42,8 @@ public struct MainTabView: View {
             NavigationStack {
                 CalendarPlaceholderView()
                     .navigationTitle("Calendar")
+                    .safeAreaInset(edge: .bottom) { aiInputBar }
             }
-            .safeAreaInset(edge: .bottom) { aiInputBar }
             .tabItem {
                 Image(systemName: "calendar")
                 Text("Calendar")
@@ -55,8 +55,8 @@ public struct MainTabView: View {
             NavigationStack {
                 BrainChatView(chatSocket: chatSocket)
                     .navigationTitle("Brain")
+                    .safeAreaInset(edge: .bottom) { aiInputBar }
             }
-            .safeAreaInset(edge: .bottom) { aiInputBar }
             .tabItem {
                 Image(systemName: "brain.head.profile")
                 Text("Brain")
