@@ -17,6 +17,8 @@ public final class TodoActivitySocket: @unchecked Sendable {
     /// Full history kept internally for replay on reconnect.
     public private(set) var messages: [ActivityMessage] = []
     public var isConnected: Bool = false
+    /// Flips to `true` after the initial history replay finishes (debounced).
+    public var hasCompletedInitialLoad: Bool = false
 
     // MARK: - Configuration
 
@@ -31,6 +33,7 @@ public final class TodoActivitySocket: @unchecked Sendable {
     private var reconnectAttempt: Int = 0
     private let maxReconnectDelay: TimeInterval = 30.0
     private var isIntentionalDisconnect = false
+    private var initialLoadDebounceItem: DispatchWorkItem?
 
     public init(todoId: UUID, host: String = "localhost", port: Int = 8080) {
         self.todoId = todoId
@@ -56,6 +59,9 @@ public final class TodoActivitySocket: @unchecked Sendable {
     public func connect() {
         isIntentionalDisconnect = false
         reconnectAttempt = 0
+        hasCompletedInitialLoad = false
+        initialLoadDebounceItem?.cancel()
+        initialLoadDebounceItem = nil
         openConnection()
     }
 
@@ -125,9 +131,22 @@ public final class TodoActivitySocket: @unchecked Sendable {
             let activityMessage = try ActivityMessage.decode(from: data)
             print("📡 [ActivitySocket] Decoded: \(activityMessage.id) (terminal: \(activityMessage.isTerminal))")
             DispatchQueue.main.async { [weak self] in
-                self?.messages.append(activityMessage)
-                self?.latestActivity = activityMessage
-                print("📡 [ActivitySocket] UI updated — messages: \(self?.messages.count ?? 0), isConnected: \(self?.isConnected ?? false)")
+                guard let self else { return }
+                self.messages.append(activityMessage)
+                self.latestActivity = activityMessage
+                print("📡 [ActivitySocket] UI updated — messages: \(self.messages.count), isConnected: \(self.isConnected)")
+
+                // Debounce initial load detection: history messages arrive in a burst,
+                // so we wait 250ms after the last message to declare initial load complete.
+                if !self.hasCompletedInitialLoad {
+                    self.initialLoadDebounceItem?.cancel()
+                    let item = DispatchWorkItem { [weak self] in
+                        self?.hasCompletedInitialLoad = true
+                        print("📡 [ActivitySocket] Initial load complete")
+                    }
+                    self.initialLoadDebounceItem = item
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: item)
+                }
             }
         } catch {
             print("📡 [ActivitySocket] DECODE FAILED: \(error)")

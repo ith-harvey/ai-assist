@@ -156,16 +156,18 @@ public struct TodoDetailView: View {
                     )
                 }
             )
-            .onAppear {
-                // Scroll to bottom after a brief delay to let content render
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                    proxy.scrollTo("activityBottom", anchor: .bottom)
+            .onChange(of: activitySocket.hasCompletedInitialLoad) { _, loaded in
+                // One-shot scroll to bottom after history replay finishes
+                if loaded && !isCompletedState {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                        proxy.scrollTo("activityBottom", anchor: .bottom)
+                    }
                 }
             }
             .onChange(of: activitySocket.messages.count) { _, _ in
-                // Auto-scroll to bottom for in-progress todos as new activity arrives,
-                // but only if the user hasn't scrolled up to read history.
-                if !isCompletedState && isNearBottom {
+                // Auto-scroll for live messages (after initial load), only if user
+                // hasn't scrolled up and the todo is still in progress.
+                if !isCompletedState && activitySocket.hasCompletedInitialLoad && isNearBottom {
                     withAnimation(.easeOut(duration: 0.15)) {
                         proxy.scrollTo("activityBottom", anchor: .bottom)
                     }
