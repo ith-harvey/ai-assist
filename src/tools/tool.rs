@@ -41,6 +41,15 @@ pub enum ToolError {
     ExternalService(String),
 }
 
+impl ToolError {
+    /// Create an ExecutionFailed error with context prefix.
+    ///
+    /// Usage: `.map_err(|e| ToolError::exec("Create document", e))`
+    pub fn exec(context: &str, err: impl std::fmt::Display) -> Self {
+        Self::ExecutionFailed(format!("{}: {}", context, err))
+    }
+}
+
 /// Output from a tool execution.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolOutput {

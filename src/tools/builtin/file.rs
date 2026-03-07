@@ -12,7 +12,8 @@ use async_trait::async_trait;
 use tokio::fs;
 
 use crate::context::JobContext;
-use crate::tools::tool::{Tool, ToolDomain, ToolError, ToolOutput, require_str};
+use crate::tools::params::Params;
+use crate::tools::tool::{Tool, ToolDomain, ToolError, ToolOutput};
 
 /// Maximum file size for reading (1MB).
 const MAX_READ_SIZE: u64 = 1024 * 1024;
@@ -170,16 +171,17 @@ impl Tool for ReadFileTool {
         params: serde_json::Value,
         _ctx: &JobContext,
     ) -> Result<ToolOutput, ToolError> {
-        let path_str = require_str(&params, "path")?;
-        let offset = params.get("offset").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-        let limit = params.get("limit").and_then(|v| v.as_u64());
+        let p = Params::new(&params);
+        let path_str = p.require_str("path")?;
+        let offset = p.u64_or("offset", 0) as usize;
+        let limit = p.optional_u64("limit");
 
         let start = std::time::Instant::now();
         let path = validate_path(path_str, self.base_dir.as_deref())?;
 
         let metadata = fs::metadata(&path)
             .await
-            .map_err(|e| ToolError::ExecutionFailed(format!("Cannot access file: {}", e)))?;
+            .map_err(|e| ToolError::exec("Cannot access file", e))?;
 
         if metadata.len() > MAX_READ_SIZE {
             return Err(ToolError::ExecutionFailed(format!(
@@ -191,7 +193,7 @@ impl Tool for ReadFileTool {
 
         let content = fs::read_to_string(&path)
             .await
-            .map_err(|e| ToolError::ExecutionFailed(format!("Failed to read file: {}", e)))?;
+            .map_err(|e| ToolError::exec("Read file", e))?;
 
         let lines: Vec<&str> = content.lines().collect();
         let total_lines = lines.len();
@@ -294,8 +296,9 @@ impl Tool for WriteFileTool {
         params: serde_json::Value,
         _ctx: &JobContext,
     ) -> Result<ToolOutput, ToolError> {
-        let path_str = require_str(&params, "path")?;
-        let content = require_str(&params, "content")?;
+        let p = Params::new(&params);
+        let path_str = p.require_str("path")?;
+        let content = p.require_str("content")?;
 
         let start = std::time::Instant::now();
 
@@ -310,14 +313,14 @@ impl Tool for WriteFileTool {
         let path = validate_path(path_str, self.base_dir.as_deref())?;
 
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).await.map_err(|e| {
-                ToolError::ExecutionFailed(format!("Failed to create directories: {}", e))
-            })?;
+            fs::create_dir_all(parent)
+                .await
+                .map_err(|e| ToolError::exec("Create directories", e))?;
         }
 
         fs::write(&path, content)
             .await
-            .map_err(|e| ToolError::ExecutionFailed(format!("Failed to write file: {}", e)))?;
+            .map_err(|e| ToolError::exec("Write file", e))?;
 
         let result = serde_json::json!({
             "path": path.display().to_string(),
@@ -402,15 +405,10 @@ impl Tool for ListDirTool {
         params: serde_json::Value,
         _ctx: &JobContext,
     ) -> Result<ToolOutput, ToolError> {
-        let path_str = params.get("path").and_then(|v| v.as_str()).unwrap_or(".");
-        let recursive = params
-            .get("recursive")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
-        let max_depth = params
-            .get("max_depth")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(3) as usize;
+        let p = Params::new(&params);
+        let path_str = p.optional_str("path").unwrap_or(".");
+        let recursive = params.get("recursive").and_then(|v| v.as_bool()).unwrap_or(false);
+        let max_depth = p.u64_or("max_depth", 3) as usize;
 
         let start = std::time::Instant::now();
         let path = validate_path(path_str, self.base_dir.as_deref())?;
@@ -607,20 +605,18 @@ impl Tool for ApplyPatchTool {
         params: serde_json::Value,
         _ctx: &JobContext,
     ) -> Result<ToolOutput, ToolError> {
-        let path_str = require_str(&params, "path")?;
-        let old_string = require_str(&params, "old_string")?;
-        let new_string = require_str(&params, "new_string")?;
-        let replace_all = params
-            .get("replace_all")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
+        let p = Params::new(&params);
+        let path_str = p.require_str("path")?;
+        let old_string = p.require_str("old_string")?;
+        let new_string = p.require_str("new_string")?;
+        let replace_all = params.get("replace_all").and_then(|v| v.as_bool()).unwrap_or(false);
 
         let start = std::time::Instant::now();
         let path = validate_path(path_str, self.base_dir.as_deref())?;
 
         let content = fs::read_to_string(&path)
             .await
-            .map_err(|e| ToolError::ExecutionFailed(format!("Failed to read file: {}", e)))?;
+            .map_err(|e| ToolError::exec("Read file", e))?;
 
         if !content.contains(old_string) {
             return Err(ToolError::ExecutionFailed(format!(
@@ -643,7 +639,7 @@ impl Tool for ApplyPatchTool {
 
         fs::write(&path, &new_content)
             .await
-            .map_err(|e| ToolError::ExecutionFailed(format!("Failed to write file: {}", e)))?;
+            .map_err(|e| ToolError::exec("Write file", e))?;
 
         let result = serde_json::json!({
             "path": path.display().to_string(),
