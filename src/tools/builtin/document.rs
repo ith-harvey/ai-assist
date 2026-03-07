@@ -64,7 +64,7 @@ impl Tool for CreateDocumentTool {
                     "description": "UUID of the todo this document belongs to. Always provide this when working on a todo task."
                 }
             },
-            "required": ["title", "content", "doc_type"]
+            "required": ["title", "content", "doc_type", "todo_id"]
         })
     }
 
@@ -96,7 +96,7 @@ impl Tool for CreateDocumentTool {
         )
         .unwrap_or(DocumentType::Other);
 
-        let todo_id = p.optional_uuid("todo_id")?;
+        let todo_id = p.require_uuid("todo_id")?;
 
         let created_by = if ctx.user_id.is_empty() {
             "agent".to_string()
@@ -104,10 +104,7 @@ impl Tool for CreateDocumentTool {
             ctx.user_id.clone()
         };
 
-        let mut doc = Document::new(title, content, doc_type, &created_by);
-        if let Some(tid) = todo_id {
-            doc = doc.with_todo(tid);
-        }
+        let doc = Document::new(todo_id, title, content, doc_type, &created_by);
 
         let doc_id = doc.id;
         self.db
@@ -318,7 +315,7 @@ impl Tool for ListDocumentsTool {
                     "id": d.id.to_string(),
                     "title": d.title,
                     "doc_type": d.doc_type,
-                    "todo_id": d.todo_id.map(|id| id.to_string()),
+                    "todo_id": d.todo_id.to_string(),
                     "created_by": d.created_by,
                     "created_at": d.created_at.to_rfc3339(),
                 })
@@ -412,7 +409,7 @@ impl Tool for FindDocumentTool {
                     "id": d.id.to_string(),
                     "title": d.title,
                     "doc_type": d.doc_type,
-                    "todo_id": d.todo_id.map(|id| id.to_string()),
+                    "todo_id": d.todo_id.to_string(),
                     "created_by": d.created_by,
                     "created_at": d.created_at.to_rfc3339(),
                     "content_preview": content_preview,

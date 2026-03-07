@@ -22,9 +22,8 @@ pub enum DocumentType {
 pub struct Document {
     /// Unique ID.
     pub id: Uuid,
-    /// Optional link to the parent todo this document belongs to.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub todo_id: Option<Uuid>,
+    /// The parent todo this document belongs to.
+    pub todo_id: Uuid,
     /// Document title.
     pub title: String,
     /// Markdown content body.
@@ -40,8 +39,9 @@ pub struct Document {
 }
 
 impl Document {
-    /// Create a new document with sensible defaults.
+    /// Create a new document linked to a todo.
     pub fn new(
+        todo_id: Uuid,
         title: impl Into<String>,
         content: impl Into<String>,
         doc_type: DocumentType,
@@ -50,7 +50,7 @@ impl Document {
         let now = Utc::now();
         Self {
             id: Uuid::new_v4(),
-            todo_id: None,
+            todo_id,
             title: title.into(),
             content: content.into(),
             doc_type,
@@ -59,12 +59,6 @@ impl Document {
             updated_at: now,
         }
     }
-
-    /// Builder: link to a todo.
-    pub fn with_todo(mut self, todo_id: Uuid) -> Self {
-        self.todo_id = Some(todo_id);
-        self
-    }
 }
 
 #[cfg(test)]
@@ -72,20 +66,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn new_document_defaults() {
-        let doc = Document::new("Research: AI Models", "# Overview\n\nContent here.", DocumentType::Research, "agent");
+    fn new_document_has_todo_id() {
+        let todo_id = Uuid::new_v4();
+        let doc = Document::new(todo_id, "Research: AI Models", "# Overview\n\nContent here.", DocumentType::Research, "agent");
         assert_eq!(doc.title, "Research: AI Models");
         assert_eq!(doc.doc_type, DocumentType::Research);
         assert_eq!(doc.created_by, "agent");
-        assert!(doc.todo_id.is_none());
-    }
-
-    #[test]
-    fn document_with_todo() {
-        let todo_id = Uuid::new_v4();
-        let doc = Document::new("Notes", "Some notes", DocumentType::Notes, "agent")
-            .with_todo(todo_id);
-        assert_eq!(doc.todo_id, Some(todo_id));
+        assert_eq!(doc.todo_id, todo_id);
     }
 
     #[test]
@@ -99,18 +86,13 @@ mod tests {
 
     #[test]
     fn document_serde_roundtrip() {
-        let doc = Document::new("Title", "Body", DocumentType::Report, "agent");
+        let todo_id = Uuid::new_v4();
+        let doc = Document::new(todo_id, "Title", "Body", DocumentType::Report, "agent");
         let json = serde_json::to_string(&doc).unwrap();
         let parsed: Document = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.title, "Title");
         assert_eq!(parsed.content, "Body");
         assert_eq!(parsed.doc_type, DocumentType::Report);
-    }
-
-    #[test]
-    fn optional_todo_id_omitted_when_none() {
-        let doc = Document::new("T", "C", DocumentType::Notes, "a");
-        let json = serde_json::to_string(&doc).unwrap();
-        assert!(!json.contains("\"todo_id\""));
+        assert_eq!(parsed.todo_id, todo_id);
     }
 }
