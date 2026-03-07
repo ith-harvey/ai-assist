@@ -275,7 +275,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         todo_agent_deps.clone(),
         Arc::clone(&tracker),
     );
-    let activity_state = ActivityState::new(Arc::clone(&db), activity_tx.clone());
+    let activity_state = ActivityState::new(
+        Arc::clone(&db),
+        activity_tx.clone(),
+        todo_agent_deps.clone(),
+        Arc::clone(&tracker),
+    );
 
     // ── Todo Pickup Loop (auto-spawns agents for AgentStartable todos) ──
     let _pickup_handle = ai_assist::todos::pickup::spawn_todo_pickup_loop(

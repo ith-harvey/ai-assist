@@ -58,6 +58,8 @@ public struct TodoDetailView: View {
     @State private var scrollViewMaxY: CGFloat = 0
     /// Documents fetched via REST for completed todos.
     @State private var deliverables: [Document] = []
+    /// Text input for follow-up messages.
+    @State private var inputText = ""
 
     public init(todo: TodoItem, cardSocket: CardWebSocket) {
         self.todo = todo
@@ -69,7 +71,8 @@ public struct TodoDetailView: View {
     }
 
     public var body: some View {
-        ScrollViewReader { proxy in
+        VStack(spacing: 0) {
+            ScrollViewReader { proxy in
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
                     // ── Header ──────────────────────────────────────
@@ -231,7 +234,7 @@ public struct TodoDetailView: View {
             }
         }
         .onAppear {
-            if todo.bucket == .agentStartable && !isCompletedState {
+            if todo.bucket == .agentStartable {
                 activitySocket.connect()
             }
         }
@@ -265,6 +268,11 @@ public struct TodoDetailView: View {
             }
             .presentationDetents([.medium, .large])
         }
+
+        if todo.bucket == .agentStartable {
+            inputBar
+        }
+        } // VStack
     }
 
     // MARK: - Collapsible Description
@@ -641,6 +649,8 @@ public struct TodoDetailView: View {
             approvalPendingRow(cardId: cardId, toolName: toolName, description: description)
         case .approvalResolved(_, _, let approved):
             approvalResolvedRow(approved: approved)
+        case .userMessage(_, let content):
+            userMessageRow(content: content)
         }
     }
 
@@ -919,6 +929,76 @@ public struct TodoDetailView: View {
                 .foregroundStyle(approved ? .green : .red)
         }
         .padding(.vertical, 4)
+    }
+
+    // MARK: - User Message Row
+
+    private func userMessageRow(content: String) -> some View {
+        VStack(alignment: .trailing, spacing: 4) {
+            HStack(spacing: 6) {
+                Spacer()
+                Text("You")
+                    .font(.caption)
+                    .fontWeight(.semibold)
+                    .foregroundStyle(.blue)
+            }
+            Text(content)
+                .font(.subheadline)
+                .foregroundStyle(.white)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 8)
+                .background(.blue)
+                .clipShape(RoundedRectangle(cornerRadius: 16))
+        }
+        .frame(maxWidth: .infinity, alignment: .trailing)
+        .padding(.vertical, 2)
+    }
+
+    // MARK: - Input Bar
+
+    private var inputBar: some View {
+        HStack(alignment: .bottom, spacing: 8) {
+            TextField("Send instructions...", text: $inputText, axis: .vertical)
+                .lineLimit(1...5)
+                .textFieldStyle(.plain)
+                .font(.subheadline)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                #if os(iOS)
+                .background(Color(uiColor: .systemGray6))
+                #else
+                .background(Color.gray.opacity(0.1))
+                #endif
+                .clipShape(RoundedRectangle(cornerRadius: 18))
+
+            if !inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Button {
+                    sendMessage()
+                } label: {
+                    Image(systemName: "arrow.up.circle.fill")
+                        .font(.system(size: 28))
+                        .foregroundStyle(.blue)
+                }
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+        .background(.bar)
+    }
+
+    private func sendMessage() {
+        let text = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+
+        // Optimistic: add user message to local activity feed
+        let msg = ActivityMessage.userMessage(todoId: todo.id, content: text)
+        activitySocket.messages.append(msg)
+
+        // Send over WebSocket
+        activitySocket.send(text: text)
+
+        // Clear input
+        inputText = ""
     }
 
     // MARK: - Connection Badge
