@@ -37,7 +37,9 @@ impl Tool for CreateDocumentTool {
     fn description(&self) -> &str {
         "Create a document to store research output, instructions, reports, notes, \
          or any written content produced during task work. Documents are persisted \
-         and can be linked to a todo for context."
+         and linked to a todo for context. \
+         Always include todo_id when creating a document during todo execution \
+         so it appears in the todo's detail view."
     }
 
     fn parameters_schema(&self) -> serde_json::Value {
@@ -59,7 +61,7 @@ impl Tool for CreateDocumentTool {
                 },
                 "todo_id": {
                     "type": "string",
-                    "description": "Optional UUID of the todo this document belongs to"
+                    "description": "UUID of the todo this document belongs to. Always provide this when working on a todo task."
                 }
             },
             "required": ["title", "content", "doc_type"]
