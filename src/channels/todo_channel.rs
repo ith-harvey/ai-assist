@@ -153,12 +153,16 @@ impl Channel for TodoChannel {
     }
 
     async fn start(&self) -> Result<MessageStream, ChannelError> {
+        let todo_id_str = self.todo_id.to_string();
         let content = if let Some(ref override_content) = self.override_content {
             override_content.clone()
         } else if self.todo_description.is_empty() {
-            self.todo_title.clone()
+            format!("[todo_id: {}]\n\n{}", todo_id_str, self.todo_title)
         } else {
-            format!("{}\n\n{}", self.todo_title, self.todo_description)
+            format!(
+                "[todo_id: {}]\n\n{}\n\n{}",
+                todo_id_str, self.todo_title, self.todo_description
+            )
         };
 
         // Record the task prompt in logger

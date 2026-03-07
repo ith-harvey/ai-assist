@@ -44,7 +44,7 @@ public enum DocumentType: String, Codable, Sendable, CaseIterable {
 /// A document produced by an agent during task execution.
 public struct Document: Identifiable, Hashable, Sendable {
     public let id: UUID
-    public var todoId: UUID?
+    public var todoId: UUID
     public var title: String
     public var content: String
     public var docType: DocumentType
@@ -54,7 +54,7 @@ public struct Document: Identifiable, Hashable, Sendable {
 
     public init(
         id: UUID = UUID(),
-        todoId: UUID? = nil,
+        todoId: UUID,
         title: String,
         content: String,
         docType: DocumentType = .other,
@@ -83,7 +83,7 @@ extension Document: Codable {
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(UUID.self, forKey: .id)
-        todoId = try container.decodeIfPresent(UUID.self, forKey: .todoId)
+        todoId = try container.decode(UUID.self, forKey: .todoId)
         title = try container.decode(String.self, forKey: .title)
         content = try container.decode(String.self, forKey: .content)
         docType = try container.decode(DocumentType.self, forKey: .docType)

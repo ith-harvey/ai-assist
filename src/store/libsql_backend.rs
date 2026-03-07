@@ -2052,7 +2052,7 @@ impl Database for LibSqlBackend {
     async fn create_document(&self, doc: &Document) -> Result<(), DatabaseError> {
         let conn = self.conn();
         let id = doc.id.to_string();
-        let todo_id = doc.todo_id.map(|id| id.to_string());
+        let todo_id = doc.todo_id.to_string();
         let doc_type = doc_type_to_str(&doc.doc_type);
         let created_at = doc.created_at.to_rfc3339();
         let updated_at = doc.updated_at.to_rfc3339();
@@ -2188,7 +2188,7 @@ fn row_to_document(row: &libsql::Row) -> Result<Document, DatabaseError> {
     let r = RowReader::new(row, "doc");
     Ok(Document {
         id: r.uuid(0, "id")?,
-        todo_id: r.optional_uuid(1),
+        todo_id: r.uuid(1, "todo_id")?,
         title: r.string(2, "title")?,
         content: r.string(3, "content")?,
         doc_type: r.enum_or(4, DocumentType::Other),
