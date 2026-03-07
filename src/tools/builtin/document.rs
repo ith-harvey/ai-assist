@@ -66,6 +66,18 @@ impl Tool for CreateDocumentTool {
         })
     }
 
+    fn summarize(&self, params: &serde_json::Value) -> crate::tools::summary::ToolSummary {
+        let raw = serde_json::to_string_pretty(params).unwrap_or_default();
+        let title = params.get("title").and_then(|v| v.as_str()).unwrap_or("untitled");
+        let doc_type = params.get("doc_type").and_then(|v| v.as_str()).unwrap_or("document");
+        crate::tools::summary::ToolSummary::new(
+            "Create",
+            title,
+            format!("Create {} document: {}", doc_type, title),
+            raw,
+        )
+    }
+
     async fn execute(
         &self,
         params: serde_json::Value,
@@ -165,6 +177,18 @@ impl Tool for UpdateDocumentTool {
         })
     }
 
+    fn summarize(&self, params: &serde_json::Value) -> crate::tools::summary::ToolSummary {
+        let raw = serde_json::to_string_pretty(params).unwrap_or_default();
+        let title = params.get("title").and_then(|v| v.as_str());
+        let id = params.get("id").and_then(|v| v.as_str()).unwrap_or("unknown");
+        let id_short = &id[..id.len().min(8)];
+        let headline = match title {
+            Some(t) => format!("Update document: {}", t),
+            None => format!("Update document {}", id_short),
+        };
+        crate::tools::summary::ToolSummary::new("Update", id_short, headline, raw)
+    }
+
     async fn execute(
         &self,
         params: serde_json::Value,
@@ -261,6 +285,18 @@ impl Tool for ListDocumentsTool {
             },
             "required": []
         })
+    }
+
+    fn summarize(&self, params: &serde_json::Value) -> crate::tools::summary::ToolSummary {
+        let raw = serde_json::to_string_pretty(params).unwrap_or_default();
+        let headline = match params.get("todo_id").and_then(|v| v.as_str()) {
+            Some(tid) => {
+                let short = &tid[..tid.len().min(8)];
+                format!("List documents for todo {}", short)
+            }
+            None => "List documents".to_string(),
+        };
+        crate::tools::summary::ToolSummary::new("List", "documents", headline, raw)
     }
 
     async fn execute(
