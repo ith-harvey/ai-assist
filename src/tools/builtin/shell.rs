@@ -348,7 +348,12 @@ impl Tool for ShellTool {
         let (verb, target, headline) = match base {
             "curl" | "wget" => {
                 let url = words.iter().find(|w| w.starts_with("http")).copied().unwrap_or("URL");
-                ("Fetch", url.to_string(), format!("Fetch {}", url))
+                // Extract hostname: "https://www.southwest.com/path" → "southwest.com"
+                let after_scheme = url.split("://").nth(1).unwrap_or(url);
+                let host_port = after_scheme.split('/').next().unwrap_or(after_scheme);
+                let host_only = host_port.split(':').next().unwrap_or(host_port);
+                let host = host_only.strip_prefix("www.").unwrap_or(host_only);
+                ("Fetch", host.to_string(), format!("Fetch {}", host))
             }
             "cat" | "head" | "tail" | "less" | "more" => {
                 let file = arg1.unwrap_or("file");
@@ -582,7 +587,33 @@ mod tests {
         let tool = ShellTool::new();
         let s = tool.summarize(&serde_json::json!({"command": "curl https://api.example.com/data"}));
         assert_eq!(s.verb, "Fetch");
-        assert!(s.headline.contains("https://api.example.com/data"));
+        assert_eq!(s.target, "api.example.com");
+        assert_eq!(s.headline, "Fetch api.example.com");
+    }
+
+    #[test]
+    fn summarize_curl_strips_www() {
+        let tool = ShellTool::new();
+        let s = tool.summarize(&serde_json::json!({"command": "curl https://www.southwest.com/air/booking/"}));
+        assert_eq!(s.target, "southwest.com");
+        assert_eq!(s.headline, "Fetch southwest.com");
+    }
+
+    #[test]
+    fn summarize_curl_with_port() {
+        let tool = ShellTool::new();
+        let s = tool.summarize(&serde_json::json!({"command": "curl http://localhost:8080/api/health"}));
+        assert_eq!(s.target, "localhost");
+        assert_eq!(s.headline, "Fetch localhost");
+    }
+
+    #[test]
+    fn summarize_wget() {
+        let tool = ShellTool::new();
+        let s = tool.summarize(&serde_json::json!({"command": "wget https://downloads.example.org/file.tar.gz"}));
+        assert_eq!(s.verb, "Fetch");
+        assert_eq!(s.target, "downloads.example.org");
+        assert_eq!(s.headline, "Fetch downloads.example.org");
     }
 
     #[test]
