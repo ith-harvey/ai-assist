@@ -28,7 +28,7 @@
 
 ### 1.1 Vision
 
-AI Assist is a personal AI agent that manages tasks, drafts communications, and takes actions on your behalf — with human-in-the-loop approval for anything outward-facing.
+AI Assist is a personal AI agent that manages tasks, drafts communications, and takes actions on your behalf — with human-in-the-loop approval for anything outward-facing. The interaction model is frictionless: you never type — just swipe.
 
 ### 1.2 Problem Statement
 
@@ -673,39 +673,54 @@ MainTabView (root)
 - WebSocket connect/disconnect on appear/disappear
 
 #### TodoListView (Home tab)
+- **Next Steps**: `NextStepsButton` at top showing pending approval count; taps open first card in approval modal
 - **Search**: NavigationBarDrawer search with 300ms debounce
-- **Sections**: Active (priority-sorted), Snoozed, Completed (collapsed by default)
-- **Gestures**: Swipe right = complete, swipe left = delete
-- **Navigation**: Tap → push `TodoDetailView`
+- **Sections**: Active (priority-sorted), Snoozed, Completed (collapsed by default) — each with `SectionHeaderView` (uppercase label, count badge, collapsible chevron)
+- **Todo rows**: Each todo rendered as `TodoCardView` (card with left status-color stripe, orange glow when awaiting approval) wrapping `TodoRowView` (status icon/spinner, title with strikethrough if completed, type tag, due date, bucket tag, chevron)
+- **Gestures**: Swipe right = complete (green), swipe left = delete (red)
+- **Navigation**: Tap → push `TodoDetailView`; double-tap → open approval card modal (if status is awaiting approval)
 - **Badge**: Approval count in toolbar via `ApprovalBellBadge`
 
 #### TodoDetailView
-- **Header**: Collapsible header with metadata (type, bucket, status, priority, due date)
-- **Description**: Expandable text with truncation detection
-- **Documents**: `DocumentListSection` showing agent-generated documents
-- **Activity Feed**: Live activity stream via `TodoActivitySocket`
-  - Renders thinking, tool use, reasoning, responses
-  - Auto-scrolls when user is near bottom
-- **Input**: Follow-up message bar (transitions todo back to in-progress)
-- **Completion banner**: Shown when todo is completed, with documents and collapsed activity
+- **Header**: Collapsible header with metadata (type, bucket, status, priority, due date) via `TagView` pills — auto-collapses on scroll (offset-based)
+- **Connection badge**: Top-right badge showing "Live" (green), "Finished" (green), or "Disconnected" (red)
+- **Description**: Expandable text with truncation detection ("See more" / "See less")
+- **Documents**: `DocumentListSection` showing agent-generated documents; tap opens `DocumentDetailView` (full-screen modal with Markdown rendering and creator metadata)
+- **Activity Feed**: Live activity stream via `TodoActivitySocket` (agent-startable todos only)
+  - Renders events: started, thinking, tool_completed, reasoning, agent_response, completed, failed, transcript, approval_needed, approval_resolved, user_message
+  - Auto-scrolls when user is near bottom; pauses when user scrolls up
+  - In-progress todos: live stream; completed todos: collapsible history section
+- **Input**: Follow-up message bar via `SharedInputBar` (agent-startable todos only; transitions completed todo back to in-progress)
+- **Completion banner**: `StatusBannerView` shown when todo is completed/failed/transcript, with documents and collapsed activity
 
 #### ContentView (Messages tab)
-- **Card queue**: Full-screen swipe-to-approve container
-- **Empty state**: When no pending cards
+- **Card queue**: Full-screen swipe-to-approve container via `SwipeCardContainer`
+- **Card count**: Toolbar shows "N Left" count
+- **Connection dot**: Toolbar connection status indicator (green/red)
+- **Refine bar**: `SharedInputBar` below card content for text refinement before approve
+- **Multiple choice**: Special handling — left-swipe-only with `SwipeOptionRow` for option selection (swipe right on individual option to select)
+- **Color overlay**: Green tint on right-swipe (approve), red tint on left-swipe (reject)
+- **Empty state**: `EmptyStateView` when no pending cards
 - **Settings**: Sheet with host/port configuration
 - **Card rendering**: Delegated to `CardBodyView`
 
 #### BrainChatView (Brain tab)
-- **Message list**: LazyVStack with terminal-style formatting
+- **Message list**: LazyVStack with terminal-style formatting (not bubbles, full-width)
 - **Labels**: "you" (blue) vs "brain" (green)
 - **Rendering**: User messages in monospaced plain text, AI messages via `MarkdownBodyView`
+- **Streaming**: Chunks append to in-progress AI message
 - **Auto-scroll**: On message count or content changes
+- **Connection banner**: `ConnectionBannerView` at top when disconnected
 - **No input field**: Uses shared `AIInputBar` from `MainTabView`
 
 #### AIInputBar (shared across all tabs)
-- **Status indicator**: Shows thinking, tool activity, errors
-- **Input**: TextField (monospaced, 1-5 lines) or VoiceMicButton (swaps when text is empty)
-- **Send**: Delegates to `ChatWebSocket`
+- **Status indicator**: Shows thinking, tool activity, errors with status-specific icons/text
+- **Input**: Wraps `SharedInputBar` — delegates to `ChatWebSocket`
+
+#### SharedInputBar (reusable input component)
+- **Text field**: Monospaced, grows vertically (1–5 lines)
+- **Mic/send swap**: `VoiceMicButton` shows when text is empty; send button shows when text is present — smooth animated swap
+- **Usage**: Used by AIInputBar (global), ContentView (refine), TodoDetailView (follow-up)
 
 ### 9.3 Key Components
 
@@ -713,22 +728,32 @@ MainTabView (root)
 |---|---|
 | SwipeCardContainer | Generic swipe-to-approve/reject gesture wrapper; 100pt threshold, rotation effect, fly-off animation |
 | CardBodyView | Renders card content by type (reply, compose, action, decision, multipleChoice) with channel-specific styling |
-| DocumentListSection | Fetches and displays documents for a todo; loading/error states |
-| MarkdownBodyView | Renders Markdown content |
-| MessageThreadView | Renders email/chat thread context for reply cards |
-| ChannelStyle | Channel-specific colors and icons |
-| ApprovalBellBadge | Toolbar badge showing pending approval count |
-| NextStepsButton | Action button component |
-| VoiceMicButton | Dramatic mic button with recording animations |
-| ConnectionBanner | Shows WebSocket connection status |
+| TodoCardView | Card-style todo row wrapper with left status-color stripe (4pt), orange glow when awaiting approval, 20pt rounded corners, shadow |
+| TodoRowView | Compact todo row: status icon (spinner if agent working), title, type tag, due date, bucket tag, chevron |
+| SharedInputBar | Reusable text input with mic/send swap animation; used across AIInputBar, refine bar, follow-up bar |
+| DocumentListSection | Fetches and displays documents for a todo; loading/error states; tap opens DocumentDetailView |
+| MarkdownBodyView | Lightweight Markdown renderer: headings, code blocks, inline formatting via AttributedString |
+| MessageThreadView | Renders email/chat thread context for reply cards; incoming (gray, left) vs outgoing (blue, right) bubbles |
+| ChannelStyle | Channel-specific colors and icons (Telegram blue, WhatsApp green, Slack purple, email gray) |
+| ApprovalBellBadge | Toolbar bell icon with red circular badge showing pending approval count |
+| NextStepsButton | Orange outline button showing pending approval count; opens first approval card |
+| VoiceMicButton | Dramatic mic button: 44pt idle, 3× scale when recording, pulsing rings, long-press gesture (500ms), haptic feedback |
+| SectionHeaderView | List section headers: uppercase label, optional count badge, optional collapsible chevron |
+| StatusBannerView | Colored status banner (icon + title + summary) for completed/failed/transcript states |
+| TagView | Reusable tag: capsule style (colored pill) or inline style (icon + text); convenience extensions on TodoType, TodoBucket |
+| ConnectionBannerView | Shows "Connecting to host:port..." with spinner when WebSocket is disconnected |
+| EmptyStateView | Centered placeholder: icon, title, optional subtitle |
+| ViewModifiers | `.cardBackground()`, `.plainCardListRow()`, `.secondaryBackground()`, `.secondaryFill()` |
 
 ### 9.4 Design Conventions
 
-- **Font**: Monospaced throughout (terminal aesthetic)
-- **Colors**: Channel-specific via `ChannelStyle`; blue for user, green for AI
-- **Status icons**: Per-TodoStatus icons and colors defined in `TodoStatus` enum
+- **Font**: Monospaced throughout (terminal aesthetic); headers in title2/title3 bold; captions for tags/metadata
+- **Colors**: Channel-specific via `ChannelStyle`; blue for user, green for AI; status colors (blue=created, orange=agent working/awaiting approval, green=ready for review/completed, purple=waiting on you, gray=snoozed); type colors (blue=deliverable, purple=research, orange=errand, green=learning, gray=administrative, pink=creative, yellow=review)
+- **Status icons**: Per-TodoStatus SF Symbol icons and colors defined in `TodoStatus` enum
 - **TodoType colors**: Per-type colors defined in `TodoType` enum
-- **Haptics**: Used for voice recording start/stop and swipe gestures
+- **Haptics**: Heavy impact on mic start, success notification on stop; haptics on swipe gestures
+- **Animations**: Spring animations throughout (response 0.3–0.35, damping 0.6–0.8); opacity + move transitions; scale transitions for mic button; pulsing rings on recording
+- **Text selection**: Enabled in markdown/transcript views
 
 ---
 
