@@ -343,8 +343,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut channels = ChannelManager::new();
     let mut active_channels = vec!["cli", "ios"];
 
-    // Always add CLI
-    channels.add(Box::new(CliChannel::new()));
+    // Note: CLI may be removed from active_channels below if DISABLE_CLI is set
+
+    // Add CLI unless DISABLE_CLI=true (headless/Docker mode)
+    let disable_cli = std::env::var("DISABLE_CLI")
+        .map(|v| v.eq_ignore_ascii_case("true") || v == "1")
+        .unwrap_or(false);
+    if disable_cli {
+        active_channels.retain(|&c| c != "cli");
+    } else {
+        channels.add(Box::new(CliChannel::new()));
+    }
 
     // Always add iOS (WebSocket chat at /ws/chat)
     channels.add(Box::new(ios_channel));

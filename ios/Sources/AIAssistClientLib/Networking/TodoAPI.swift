@@ -14,7 +14,10 @@ public final class TodoAPI: @unchecked Sendable {
         return d
     }
 
-    public init(host: String, port: Int) {
+    public init(
+        host: String = UserDefaults.standard.string(forKey: "ai_assist_host") ?? "localhost",
+        port: Int = UserDefaults.standard.object(forKey: "ai_assist_port") as? Int ?? 8080
+    ) {
         self.host = host
         self.port = port
     }

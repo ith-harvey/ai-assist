@@ -10,7 +10,7 @@ public struct TodoListView: View {
     @State private var todoSocket = TodoWebSocket()
     @State private var showCompleted = false
     @State private var selectedTodo: TodoItem?
-    @State private var approvalCard: ApprovalCard?
+    @State private var approvalSheetMode: ApprovalSheetMode?
     @State private var searchText: String = ""
     @State private var searchTask: Task<Void, Never>?
     let cardSocket: CardWebSocket
@@ -59,20 +59,18 @@ public struct TodoListView: View {
         .navigationDestination(item: $selectedTodo) { todo in
             TodoDetailView(todo: todo, cardSocket: cardSocket)
         }
-        .sheet(item: $approvalCard) { card in
-            SwipeCardContainer(
-                onApprove: {
-                    cardSocket.approve(cardId: card.id)
-                    approvalCard = nil
-                },
-                onReject: {
-                    cardSocket.dismiss(cardId: card.id)
-                    approvalCard = nil
-                }
-            ) {
-                CardBodyView(card: card)
+        .sheet(isPresented: Binding(
+            get: { approvalSheetMode != nil },
+            set: { if !$0 { approvalSheetMode = nil } }
+        )) {
+            if let mode = approvalSheetMode {
+                ApprovalQueueView(
+                    cardSocket: cardSocket,
+                    mode: mode,
+                    onDismiss: { approvalSheetMode = nil }
+                )
+                .presentationDetents([.medium, .large])
             }
-            .presentationDetents([.medium, .large])
         }
         .onAppear {
             todoSocket.connect()
@@ -89,7 +87,8 @@ public struct TodoListView: View {
             // Next Steps — opens approval card queue one at a time
             if !cardSocket.cards.isEmpty {
                 NextStepsButton(count: cardSocket.cards.count) {
-                    approvalCard = cardSocket.cards.first
+                    guard !cardSocket.cards.isEmpty else { return }
+                    approvalSheetMode = .queue
                 }
                 .plainCardListRow()
             }
@@ -156,7 +155,9 @@ public struct TodoListView: View {
             onTap: { selectedTodo = todo },
             onDoubleTap: {
                 if todo.status == .awaitingApproval {
-                    approvalCard = cardSocket.cards.first(where: { $0.todoId == todo.id })
+                    if let card = cardSocket.cards.first(where: { $0.todoId == todo.id }) {
+                        approvalSheetMode = .single(card)
+                    }
                 }
             },
             onComplete: { todoSocket.complete(todoId: todo.id) },
