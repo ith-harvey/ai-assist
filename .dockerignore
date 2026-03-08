@@ -1,0 +1,9 @@
+target/
+data/
+ios/
+.claude/
+.git/
+*.png
+docs/
+.env
+.dev-port

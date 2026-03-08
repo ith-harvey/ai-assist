@@ -35,11 +35,25 @@ public final class TodoActivitySocket: @unchecked Sendable {
     private var isIntentionalDisconnect = false
     private var initialLoadDebounceItem: DispatchWorkItem?
 
-    public init(todoId: UUID, host: String = "localhost", port: Int = 8080) {
+    public init(
+        todoId: UUID,
+        host: String = UserDefaults.standard.string(forKey: "ai_assist_host") ?? "localhost",
+        port: Int = UserDefaults.standard.object(forKey: "ai_assist_port") as? Int ?? 8080
+    ) {
         self.todoId = todoId
         self.host = host
         self.port = port
         self.session = URLSession(configuration: .default)
+    }
+
+    public func updateServer(host: String, port: Int) {
+        let wasConnected = isConnected
+        disconnect()
+        self.host = host
+        self.port = port
+        if wasConnected {
+            connect()
+        }
     }
 
     // MARK: - Computed
