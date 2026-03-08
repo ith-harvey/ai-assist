@@ -83,18 +83,9 @@ private struct DocumentRow: View {
                     .foregroundStyle(.primary)
                     .lineLimit(1)
 
-                HStack(spacing: 6) {
-                    Text(document.docType.label)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-
-                    Text("·")
-                        .foregroundStyle(.secondary)
-
-                    Text(document.createdAt, style: .relative)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
+                Text(document.docType.label)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
             }
 
             Spacer()
