@@ -207,11 +207,7 @@ public struct TodoDetailView: View {
         #if os(iOS)
         .scrollDismissesKeyboard(.interactively)
         #endif
-        #if os(iOS)
-        .background(Color(uiColor: .secondarySystemBackground).ignoresSafeArea())
-        #else
-        .background(Color.gray.opacity(0.08).ignoresSafeArea())
-        #endif
+        .secondaryBackground()
         .navigationTitle("")
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
@@ -385,13 +381,7 @@ public struct TodoDetailView: View {
 
                         HStack(spacing: 8) {
                             // Type badge
-                            Text(todo.todoType.label)
-                                .font(.system(size: 11, weight: .medium))
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 3)
-                                .background(badgeColor.opacity(0.15))
-                                .foregroundStyle(badgeColor)
-                                .clipShape(Capsule())
+                            BadgeView(label: todo.todoType.label, color: todo.todoType.badgeColor)
 
                             // Priority
                             if todo.priority <= 2 {
@@ -667,74 +657,29 @@ public struct TodoDetailView: View {
             MarkdownBodyView(content: content)
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
-                #if os(iOS)
-                .background(Color(uiColor: .systemBackground))
-                #else
-                .background(Color.white)
-                #endif
-                .clipShape(RoundedRectangle(cornerRadius: 12))
-                .shadow(color: .black.opacity(0.06), radius: 4, y: 2)
+                .cardBackground(cornerRadius: 12, shadowRadius: 4, shadowY: 2)
         }
         .padding(.vertical, 2)
     }
 
     private func completedBanner(summary: String) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 8) {
-                Image(systemName: "checkmark.circle.fill")
-                    .font(.system(size: 20))
-                    .foregroundStyle(.green)
-                Text("Completed")
-                    .font(.headline)
-                    .foregroundStyle(.green)
-            }
-            if !summary.isEmpty {
-                Text(summary)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(3)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(14)
-        .background(
-            RoundedRectangle(cornerRadius: 14)
-                .fill(.green.opacity(0.1))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 14)
-                        .strokeBorder(.green.opacity(0.3), lineWidth: 1)
-                )
+        StatusBannerView(
+            icon: "checkmark.circle.fill",
+            title: "Completed",
+            summary: summary,
+            color: .green,
+            summaryLineLimit: 3
         )
-        .padding(.top, 4)
     }
 
     private func failedBanner(error: String) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 8) {
-                Image(systemName: "xmark.circle.fill")
-                    .font(.system(size: 20))
-                    .foregroundStyle(.red)
-                Text("Failed")
-                    .font(.headline)
-                    .foregroundStyle(.red)
-            }
-            if !error.isEmpty {
-                Text(error)
-                    .font(.subheadline)
-                    .foregroundStyle(.primary)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(14)
-        .background(
-            RoundedRectangle(cornerRadius: 14)
-                .fill(.red.opacity(0.1))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 14)
-                        .strokeBorder(.red.opacity(0.3), lineWidth: 1)
-                )
+        StatusBannerView(
+            icon: "xmark.circle.fill",
+            title: "Failed",
+            summary: error,
+            color: .red,
+            summaryLineLimit: nil
         )
-        .padding(.top, 4)
     }
 
     // MARK: - Transcript View
@@ -855,14 +800,7 @@ public struct TodoDetailView: View {
                 .foregroundStyle(.orange.opacity(0.6))
         }
         .padding(12)
-        .background(
-            RoundedRectangle(cornerRadius: 12)
-                #if os(iOS)
-                .fill(Color(uiColor: .systemBackground))
-                #else
-                .fill(Color.white)
-                #endif
-        )
+        .cardBackground(cornerRadius: 12, shadowRadius: 0, shadowY: 0)
         .overlay(
             RoundedRectangle(cornerRadius: 12)
                 .strokeBorder(.orange.opacity(0.5), lineWidth: 1.5)
@@ -919,11 +857,7 @@ public struct TodoDetailView: View {
                 .font(.subheadline)
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
-                #if os(iOS)
-                .background(Color(uiColor: .systemGray6))
-                #else
-                .background(Color.gray.opacity(0.1))
-                #endif
+                .secondaryFill()
                 .clipShape(RoundedRectangle(cornerRadius: 18))
 
             if !inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -1008,17 +942,7 @@ public struct TodoDetailView: View {
         }
     }
 
-    private var badgeColor: Color {
-        switch todo.todoType {
-        case .deliverable: .blue
-        case .research: .purple
-        case .errand: .orange
-        case .learning: .green
-        case .administrative: .gray
-        case .creative: .pink
-        case .review: .yellow
-        }
-    }
+    // Badge color now comes from todo.todoType.badgeColor
 
     // MARK: - Formatting
 
@@ -1053,11 +977,7 @@ private struct ToolCompletedRowView: View {
                     .font(.system(size: 11, weight: .semibold, design: .monospaced))
                     .padding(.horizontal, 8)
                     .padding(.vertical, 3)
-                    #if os(iOS)
-                    .background(Color(uiColor: .systemGray5))
-                    #else
-                    .background(Color.gray.opacity(0.15))
-                    #endif
+                    .secondaryFill()
                     .clipShape(Capsule())
 
                 Spacer()
@@ -1081,11 +1001,7 @@ private struct ToolCompletedRowView: View {
                     .font(.system(size: 12, design: .monospaced))
                     .foregroundStyle(.secondary)
                     .padding(10)
-                    #if os(iOS)
-                    .background(Color(uiColor: .systemGray6))
-                    #else
-                    .background(Color.gray.opacity(0.08))
-                    #endif
+                    .secondaryFill()
                     .clipShape(RoundedRectangle(cornerRadius: 8))
                     .transition(.asymmetric(
                         insertion: .opacity.combined(with: .move(edge: .top)),

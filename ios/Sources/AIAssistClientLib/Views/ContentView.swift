@@ -23,14 +23,6 @@ public struct ContentView: View {
     public var body: some View {
         NavigationStack {
             ZStack {
-                #if os(iOS)
-                Color(uiColor: .secondarySystemBackground)
-                    .ignoresSafeArea()
-                #else
-                Color.gray.opacity(0.08)
-                    .ignoresSafeArea()
-                #endif
-
                 if let card = socket.cards.first {
                     cardContent(for: card)
                 } else {
@@ -40,6 +32,7 @@ public struct ContentView: View {
                     }
                 }
             }
+            .secondaryBackground()
             .toolbar {
                 ToolbarItem(placement: .navigation) {
                     connectionDot
@@ -142,11 +135,7 @@ public struct ContentView: View {
                 .lineLimit(1...3)
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
-                #if os(iOS)
-                .background(Color(uiColor: .systemGray6))
-                #else
-                .background(Color.gray.opacity(0.12))
-                #endif
+                .secondaryFill()
                 .clipShape(RoundedRectangle(cornerRadius: 18))
                 .onSubmit {
                     sendRefine(for: card)
@@ -211,36 +200,21 @@ public struct ContentView: View {
     // MARK: - Empty State
 
     private var emptyState: some View {
-        VStack(spacing: 16) {
-            Image(systemName: "tray")
-                .font(.system(size: 48))
-                .foregroundStyle(.secondary)
-            Text("All caught up")
-                .font(.title3)
-                .foregroundStyle(.secondary)
-            Text("New reply suggestions will appear here")
-                .font(.subheadline)
-                .foregroundStyle(.tertiary)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        EmptyStateView(
+            icon: "tray",
+            title: "All caught up",
+            subtitle: "New reply suggestions will appear here"
+        )
     }
 
     // MARK: - Connection
 
     private var connectionBanner: some View {
-        Group {
-            if !socket.isConnected {
-                HStack(spacing: 6) {
-                    ProgressView()
-                        .controlSize(.small)
-                    Text("Connecting to \(socket.host):\(socket.port)...")
-                        .font(.caption)
-                }
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 6)
-                .background(Color.orange.opacity(0.15))
-            }
-        }
+        ConnectionBannerView(
+            isConnected: socket.isConnected,
+            host: socket.host,
+            port: socket.port
+        )
     }
 
     private var connectionDot: some View {

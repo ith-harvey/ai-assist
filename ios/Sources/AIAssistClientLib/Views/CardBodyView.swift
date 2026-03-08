@@ -134,11 +134,7 @@ struct ActionCardBody: View {
                             .font(.system(size: 12, design: .monospaced))
                             .foregroundStyle(.secondary)
                             .padding(10)
-                            #if os(iOS)
-                            .background(Color(uiColor: .systemGray6))
-                            #else
-                            .background(Color.gray.opacity(0.08))
-                            #endif
+                            .secondaryFill()
                             .clipShape(RoundedRectangle(cornerRadius: 8))
                             .transition(.asymmetric(
                                 insertion: .opacity.combined(with: .move(edge: .top)),
@@ -152,13 +148,7 @@ struct ActionCardBody: View {
     }
 
     private var siloTag: some View {
-        Text(card.silo.rawValue.capitalized)
-            .font(.system(size: 10, weight: .semibold))
-            .padding(.horizontal, 8)
-            .padding(.vertical, 3)
-            .background(Color.orange.opacity(0.15))
-            .foregroundStyle(.orange)
-            .clipShape(Capsule())
+        BadgeView(label: card.silo.rawValue.capitalized, color: .orange, fontSize: 10)
     }
 }
 

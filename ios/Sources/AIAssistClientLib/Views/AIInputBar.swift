@@ -95,11 +95,7 @@ public struct AIInputBar: View {
                 .lineLimit(1...5)
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
-                #if os(iOS)
-                .background(Color(uiColor: .systemGray6))
-                #else
-                .background(Color.gray.opacity(0.12))
-                #endif
+                .secondaryFill()
                 .clipShape(RoundedRectangle(cornerRadius: 18))
                 .onSubmit {
                     sendMessage()

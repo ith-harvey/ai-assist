@@ -21,14 +21,6 @@ public struct TodoListView: View {
 
     public var body: some View {
         ZStack {
-            #if os(iOS)
-            Color(uiColor: .secondarySystemBackground)
-                .ignoresSafeArea()
-            #else
-            Color.gray.opacity(0.08)
-                .ignoresSafeArea()
-            #endif
-
             if let results = todoSocket.searchResults {
                 searchResultsList(results)
             } else if todoSocket.activeTodos.isEmpty && todoSocket.completedTodos.isEmpty {
@@ -37,6 +29,7 @@ public struct TodoListView: View {
                 todoList
             }
         }
+        .secondaryBackground()
         .navigationTitle("To-Dos")
         #if os(iOS)
         .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .automatic), prompt: "Search todos...")
@@ -98,9 +91,7 @@ public struct TodoListView: View {
                 NextStepsButton(count: cardSocket.cards.count) {
                     approvalCard = cardSocket.cards.first
                 }
-                .listRowSeparator(.hidden)
-                .listRowBackground(Color.clear)
-                .listRowInsets(EdgeInsets(top: 5, leading: 14, bottom: 5, trailing: 14))
+                .plainCardListRow()
             }
 
             // Active section
@@ -108,12 +99,10 @@ public struct TodoListView: View {
                 Section {
                     ForEach(todoSocket.activeTodos) { todo in
                         todoCard(todo)
-                            .listRowSeparator(.hidden)
-                            .listRowBackground(Color.clear)
-                            .listRowInsets(EdgeInsets(top: 5, leading: 14, bottom: 5, trailing: 14))
+                            .plainCardListRow()
                     }
                 } header: {
-                    sectionHeader("Active")
+                    SectionHeaderView(label: "Active")
                 }
             }
 
@@ -122,12 +111,10 @@ public struct TodoListView: View {
                 Section {
                     ForEach(todoSocket.snoozedTodos) { todo in
                         todoCard(todo)
-                            .listRowSeparator(.hidden)
-                            .listRowBackground(Color.clear)
-                            .listRowInsets(EdgeInsets(top: 5, leading: 14, bottom: 5, trailing: 14))
+                            .plainCardListRow()
                     }
                 } header: {
-                    sectionHeader("Snoozed")
+                    SectionHeaderView(label: "Snoozed")
                 }
             }
 
@@ -137,13 +124,20 @@ public struct TodoListView: View {
                     if showCompleted {
                         ForEach(todoSocket.completedTodos) { todo in
                             todoCard(todo)
-                                .listRowSeparator(.hidden)
-                                .listRowBackground(Color.clear)
-                                .listRowInsets(EdgeInsets(top: 5, leading: 14, bottom: 5, trailing: 14))
+                                .plainCardListRow()
                         }
                     }
                 } header: {
-                    completedSectionHeader
+                    SectionHeaderView(
+                        label: "Completed",
+                        count: todoSocket.completedTodos.count,
+                        isExpanded: showCompleted,
+                        onTap: {
+                            withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                                showCompleted.toggle()
+                            }
+                        }
+                    )
                 }
             }
         }
@@ -154,41 +148,7 @@ public struct TodoListView: View {
         #endif
     }
 
-    // MARK: - Section Headers
-
-    private func sectionHeader(_ title: String) -> some View {
-        HStack {
-            Text(title)
-                .font(.caption)
-                .textCase(.uppercase)
-                .foregroundStyle(.secondary)
-            Spacer()
-        }
-        .padding(.horizontal, 6)
-    }
-
-    private var completedSectionHeader: some View {
-        HStack {
-            Text("Completed")
-                .font(.caption)
-                .textCase(.uppercase)
-                .foregroundStyle(.secondary)
-            Spacer()
-            Text("\(todoSocket.completedTodos.count)")
-                .font(.caption)
-                .foregroundStyle(.tertiary)
-            Image(systemName: showCompleted ? "chevron.up" : "chevron.down")
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
-        }
-        .padding(.horizontal, 6)
-        .contentShape(Rectangle())
-        .onTapGesture {
-            withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
-                showCompleted.toggle()
-            }
-        }
-    }
+    // MARK: - Section Headers (now using SectionHeaderView)
 
     // MARK: - Todo Card (compact, tappable → pushes detail)
 
@@ -257,22 +217,12 @@ public struct TodoListView: View {
     private func searchResultsList(_ results: [TodoItem]) -> some View {
         Group {
             if results.isEmpty {
-                VStack(spacing: 16) {
-                    Image(systemName: "magnifyingglass")
-                        .font(.system(size: 48))
-                        .foregroundStyle(.secondary)
-                    Text("No results found")
-                        .font(.title3)
-                        .foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                EmptyStateView(icon: "magnifyingglass", title: "No results found")
             } else {
                 List {
                     ForEach(results) { todo in
                         todoCard(todo)
-                            .listRowSeparator(.hidden)
-                            .listRowBackground(Color.clear)
-                            .listRowInsets(EdgeInsets(top: 5, leading: 14, bottom: 5, trailing: 14))
+                            .plainCardListRow()
                     }
                 }
                 .listStyle(.plain)
@@ -287,21 +237,15 @@ public struct TodoListView: View {
     // MARK: - Empty State
 
     private var emptyState: some View {
-        VStack(spacing: 16) {
-            Image(systemName: "checklist")
-                .font(.system(size: 48))
-                .foregroundStyle(.secondary)
-            Text("No to-dos yet")
-                .font(.title3)
-                .foregroundStyle(.secondary)
-            #if os(iOS)
-            Text("Use the Brain tab to create todos with your voice")
-                .font(.subheadline)
-                .foregroundStyle(.tertiary)
-                .multilineTextAlignment(.center)
-            #endif
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        #if os(iOS)
+        EmptyStateView(
+            icon: "checklist",
+            title: "No to-dos yet",
+            subtitle: "Use the Brain tab to create todos with your voice"
+        )
+        #else
+        EmptyStateView(icon: "checklist", title: "No to-dos yet")
+        #endif
     }
 }
 
@@ -335,13 +279,7 @@ struct TodoRowView: View {
 
                 HStack(spacing: 6) {
                     // Type badge
-                    Text(todo.todoType.label)
-                        .font(.system(size: 10, weight: .medium))
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(badgeColor.opacity(0.15))
-                        .foregroundStyle(badgeColor)
-                        .clipShape(Capsule())
+                    BadgeView(label: todo.todoType.label, color: todo.todoType.badgeColor, fontSize: 10)
 
                     // Due date
                     if let due = todo.dueDate {
@@ -380,17 +318,7 @@ struct TodoRowView: View {
         todo.status.color
     }
 
-    private var badgeColor: Color {
-        switch todo.todoType {
-        case .deliverable: .blue
-        case .research: .purple
-        case .errand: .orange
-        case .learning: .green
-        case .administrative: .gray
-        case .creative: .pink
-        case .review: .yellow
-        }
-    }
+    // Badge color now comes from todo.todoType.badgeColor
 
     // MARK: - Formatting
 
