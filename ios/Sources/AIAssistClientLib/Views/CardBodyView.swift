@@ -148,7 +148,7 @@ struct ActionCardBody: View {
     }
 
     private var siloTag: some View {
-        BadgeView(label: card.silo.rawValue.capitalized, color: .orange, fontSize: 10)
+        TagView.capsule(card.silo.rawValue.capitalized, color: .orange, fontSize: 10)
     }
 }
 

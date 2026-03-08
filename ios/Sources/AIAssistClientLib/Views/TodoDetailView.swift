@@ -380,28 +380,13 @@ public struct TodoDetailView: View {
                             .lineLimit(3)
 
                         HStack(spacing: 8) {
-                            // Type badge
-                            BadgeView(label: todo.todoType.label, color: todo.todoType.badgeColor)
+                            todo.todoType.tag()
 
-                            // Priority
-                            if todo.priority <= 2 {
-                                HStack(spacing: 2) {
-                                    Image(systemName: "exclamationmark.circle.fill")
-                                        .font(.system(size: 11))
-                                    Text(todo.priority == 1 ? "High" : "Medium")
-                                        .font(.system(size: 11, weight: .medium))
-                                }
-                                .foregroundStyle(todo.priority == 1 ? .red : .orange)
+                            if let priorityTag = todo.priorityTag() {
+                                priorityTag
                             }
 
-                            // Bucket
-                            HStack(spacing: 3) {
-                                Image(systemName: todo.bucket == .agentStartable ? "cpu" : "person.fill")
-                                    .font(.system(size: 10))
-                                Text(todo.bucket == .agentStartable ? "Agent" : "Human")
-                                    .font(.system(size: 11, weight: .medium))
-                            }
-                            .foregroundStyle(todo.bucket == .agentStartable ? .blue : .purple)
+                            todo.bucket.tag()
                         }
                     }
                 }
