@@ -247,6 +247,7 @@ public struct TodoDetailView: View {
             if finished {
                 withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
                     isActivityExpanded = false
+                    fetchedTodo?.status = .completed
                 }
             }
         }
@@ -851,10 +852,38 @@ public struct TodoDetailView: View {
                 // Send over WebSocket
                 activitySocket.send(text: text)
 
+                // Transition UI back to in-progress if completed
+                if isCompletedState {
+                    transitionToInProgress()
+                }
+
                 // Clear input
                 inputText = ""
+            },
+            onVoiceTranscript: { transcript in
+                let msg = ActivityMessage.userMessage(todoId: todo.id, content: transcript)
+                activitySocket.messages.append(msg)
+                activitySocket.send(text: transcript)
+                if isCompletedState {
+                    transitionToInProgress()
+                }
             }
         )
+    }
+
+    /// Optimistically flip the UI from completed → in-progress so the live
+    /// activity feed is shown immediately after a follow-up message.
+    private func transitionToInProgress() {
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+            if fetchedTodo == nil {
+                var t = todo
+                t.status = .agentWorking
+                fetchedTodo = t
+            } else {
+                fetchedTodo?.status = .agentWorking
+            }
+            isActivityExpanded = true
+        }
     }
 
     // MARK: - Connection Badge

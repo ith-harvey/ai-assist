@@ -81,7 +81,7 @@ async fn poll_once(config: &EmailConfig, db: &Arc<dyn Database>) {
     let mut uids_to_mark: Vec<String> = Vec::new();
     let from_addr = &config.from_address;
 
-    for (uid, msg_id, sender, content, _subject, ts, _reply_meta) in &messages {
+    for (uid, msg_id, sender, content, _subject, ts, reply_meta) in &messages {
         // Self-loop prevention
         if sender.eq_ignore_ascii_case(from_addr) {
             debug!(sender = %sender, "Skipping self-sent email");
@@ -112,8 +112,11 @@ async fn poll_once(config: &EmailConfig, db: &Arc<dyn Database>) {
         let received_at = chrono::DateTime::from_timestamp(*ts as i64, 0)
             .unwrap_or_else(chrono::Utc::now);
 
+        // Wrap reply_metadata so email_processor can extract it via metadata["reply_metadata"]
+        let metadata = serde_json::json!({ "reply_metadata": reply_meta }).to_string();
+
         match db
-            .insert_message(msg_id, "email", sender, Some(_subject.as_str()), content, received_at, None)
+            .insert_message(msg_id, "email", sender, Some(_subject.as_str()), content, received_at, Some(&metadata))
             .await
         {
             Ok(id) => {
