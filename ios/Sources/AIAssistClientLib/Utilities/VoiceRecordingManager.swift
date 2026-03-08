@@ -18,16 +18,15 @@ import UIKit
 /// // Start recording (with haptic)
 /// voiceManager.startRecording()
 ///
-/// // Stop with trailing buffer — transcript delivered via callback
-/// voiceManager.stopRecordingWithBuffer { transcript in
-///     send(transcript)
-/// }
+/// // Stop and get transcript
+/// let transcript = voiceManager.stopRecording()
 /// ```
 @Observable
 public final class VoiceRecordingManager {
     // MARK: - Public State
 
-    /// Whether voice is currently being recorded (drives UI — false during trailing buffer).
+    /// Whether voice is currently being recorded (drives UI — goes false immediately on stop,
+    /// even while the trailing audio buffer is still capturing).
     public private(set) var isRecording: Bool = false
 
     /// Live transcript (updated as speech is recognized).
@@ -40,30 +39,12 @@ public final class VoiceRecordingManager {
 
     private let speechRecognizer = SpeechRecognizer()
 
-    /// Duration (seconds) to keep the speech recognizer running after the user releases the button.
-    private let trailingBufferDuration: TimeInterval = 2.0
-
-    /// Whether the trailing buffer is active (audio still capturing after visual stop).
-    private var isBuffering: Bool = false
-
-    /// Scheduled work item that finalizes the trailing buffer.
-    private var bufferWorkItem: DispatchWorkItem?
-
-    /// Completion handler stored for the active buffer (called with final transcript).
-    private var bufferCompletion: ((String) -> Void)?
+    /// Pending trailing buffer stop. Cancelled if a new recording starts during the buffer.
+    private var trailingStopWork: DispatchWorkItem?
 
     // MARK: - Init
 
     public init() {}
-
-    deinit {
-        // Clean up any active buffer on deallocation
-        bufferWorkItem?.cancel()
-        bufferWorkItem = nil
-        if speechRecognizer.isRecording {
-            speechRecognizer.stopRecording()
-        }
-    }
 
     // MARK: - Permissions
 
@@ -76,12 +57,13 @@ public final class VoiceRecordingManager {
 
     /// Start recording with haptic feedback.
     ///
-    /// If a trailing buffer is active from a previous recording, it is finalized first.
     /// Returns early if not authorized (requests permissions instead).
     public func startRecording() {
-        // Finalize any in-flight trailing buffer before starting a new recording
-        if isBuffering {
-            finalizeBuffer()
+        // If a trailing buffer is still running, stop it now before starting fresh
+        if let work = trailingStopWork {
+            work.cancel()
+            trailingStopWork = nil
+            speechRecognizer.stopRecording()
         }
 
         guard speechRecognizer.isAuthorized else {
@@ -100,69 +82,31 @@ public final class VoiceRecordingManager {
         }
     }
 
-    /// Stop recording and return the trimmed transcript (immediate, no buffer).
+    /// Stop recording with a 2-second trailing buffer to capture final words.
     ///
-    /// Fires a success haptic. Returns empty string if nothing was recognized.
-    @discardableResult
-    public func stopRecording() -> String {
-        guard isRecording else { return "" }
-
-        speechRecognizer.stopRecording()
-        isRecording = false
-
-        let notification = UINotificationFeedbackGenerator()
-        notification.notificationOccurred(.success)
-
-        return speechRecognizer.transcript.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    /// Stop the visible recording immediately but keep the speech recognizer running
-    /// for a trailing buffer period (~2s) to capture final words.
-    ///
-    /// The button returns to idle state right away. After the buffer expires,
-    /// `onComplete` is called with the final transcript (including trailing audio).
-    ///
-    /// - Parameter onComplete: Called with the trimmed transcript once the buffer finishes.
-    public func stopRecordingWithBuffer(onComplete: @escaping (String) -> Void) {
+    /// `isRecording` goes false immediately (UI returns to idle). The speech recognizer
+    /// keeps running for 2 more seconds in the background, then the final transcript
+    /// is delivered via `onTranscript`.
+    public func stopRecording(onTranscript: @escaping (String) -> Void) {
         guard isRecording else { return }
 
-        // Visual stop — UI goes idle immediately
         isRecording = false
 
-        // Haptic feedback on release
         let notification = UINotificationFeedbackGenerator()
         notification.notificationOccurred(.success)
 
-        // Start trailing buffer — audio engine keeps running
-        isBuffering = true
-        bufferCompletion = onComplete
-
-        let workItem = DispatchWorkItem { [weak self] in
-            self?.finalizeBuffer()
+        // Keep the speech recognizer running for 2 more seconds, then stop and deliver
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.trailingStopWork = nil
+            self.speechRecognizer.stopRecording()
+            let transcript = self.speechRecognizer.transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !transcript.isEmpty {
+                onTranscript(transcript)
+            }
         }
-        bufferWorkItem = workItem
-        DispatchQueue.main.asyncAfter(deadline: .now() + trailingBufferDuration, execute: workItem)
-    }
-
-    // MARK: - Private
-
-    /// Immediately stop the speech recognizer, deliver the transcript, and reset buffer state.
-    private func finalizeBuffer() {
-        guard isBuffering else { return }
-
-        bufferWorkItem?.cancel()
-        bufferWorkItem = nil
-
-        speechRecognizer.stopRecording()
-        isBuffering = false
-
-        let transcript = speechRecognizer.transcript.trimmingCharacters(in: .whitespacesAndNewlines)
-        let completion = bufferCompletion
-        bufferCompletion = nil
-
-        if let completion {
-            completion(transcript)
-        }
+        trailingStopWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0, execute: work)
     }
 }
 #endif
