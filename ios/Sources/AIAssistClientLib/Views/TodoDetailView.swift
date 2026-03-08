@@ -911,6 +911,10 @@ public struct TodoDetailView: View {
 
     // MARK: - Input Bar
 
+    private var canSendInstruction: Bool {
+        !inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     private var inputBar: some View {
         HStack(alignment: .bottom, spacing: 8) {
             TextField("Send instructions...", text: $inputText, axis: .vertical)
@@ -926,15 +930,37 @@ public struct TodoDetailView: View {
                 #endif
                 .clipShape(RoundedRectangle(cornerRadius: 18))
 
-            if !inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                Button {
-                    sendMessage()
-                } label: {
-                    Image(systemName: "arrow.up.circle.fill")
-                        .font(.system(size: 28))
-                        .foregroundStyle(.blue)
+            // Telegram-style swap: send button when text entered, mic when empty
+            ZStack {
+                if canSendInstruction {
+                    Button {
+                        sendMessage()
+                    } label: {
+                        Image(systemName: "arrow.up.circle.fill")
+                            .font(.system(size: 28))
+                            .foregroundStyle(.blue)
+                    }
+                    .transition(.scale.combined(with: .opacity))
+                } else {
+                    #if os(iOS)
+                    VoiceMicButton { transcript in
+                        let msg = ActivityMessage.userMessage(todoId: todo.id, content: transcript)
+                        activitySocket.messages.append(msg)
+                        activitySocket.send(text: transcript)
+                    }
+                    .zIndex(1)
+                    .transition(.scale.combined(with: .opacity))
+                    #else
+                    Button {} label: {
+                        Image(systemName: "arrow.up.circle.fill")
+                            .font(.system(size: 28))
+                            .foregroundStyle(.gray.opacity(0.4))
+                    }
+                    .disabled(true)
+                    #endif
                 }
             }
+            .animation(.spring(response: 0.3, dampingFraction: 0.7), value: canSendInstruction)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 8)
