@@ -2,8 +2,8 @@ import SwiftUI
 
 /// Global AI input bar with Telegram-style mic/send swap.
 ///
-/// Floats at the bottom of every tab. TextField for typing,
-/// send button when text is entered, mic button when empty.
+/// Floats at the bottom of every tab. Wraps `SharedInputBar` with
+/// a Brain-specific status indicator showing tool use, thinking, etc.
 /// Wired to a shared `ChatWebSocket` for conversation continuity.
 public struct AIInputBar: View {
     let chatSocket: ChatWebSocket
@@ -14,10 +14,29 @@ public struct AIInputBar: View {
         self._inputText = inputText
     }
 
+    private var canSend: Bool {
+        !inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && chatSocket.currentStatus == nil
+    }
+
     public var body: some View {
         VStack(spacing: 0) {
             statusIndicator
-            inputBar
+
+            SharedInputBar(
+                text: $inputText,
+                placeholder: "Message your AI...",
+                font: .system(.body, design: .monospaced),
+                canSend: canSend,
+                onSend: {
+                    guard canSend else { return }
+                    chatSocket.send(text: inputText)
+                    inputText = ""
+                },
+                onVoiceTranscript: { transcript in
+                    chatSocket.send(text: transcript)
+                }
+            )
         }
     }
 
@@ -83,69 +102,5 @@ public struct AIInputBar: View {
         case .status(let msg):
             Text(msg)
         }
-    }
-
-    // MARK: - Input Bar
-
-    private var inputBar: some View {
-        HStack(spacing: 8) {
-            TextField("Message your AI...", text: $inputText, axis: .vertical)
-                .textFieldStyle(.plain)
-                .font(.system(.body, design: .monospaced))
-                .lineLimit(1...5)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .secondaryFill()
-                .clipShape(RoundedRectangle(cornerRadius: 18))
-                .onSubmit {
-                    sendMessage()
-                }
-
-            // Telegram-style swap: send button when text entered, mic when empty
-            ZStack {
-                if canSend {
-                    Button {
-                        sendMessage()
-                    } label: {
-                        Image(systemName: "arrow.up.circle.fill")
-                            .font(.system(size: 30))
-                            .foregroundStyle(.blue)
-                    }
-                    .transition(.scale.combined(with: .opacity))
-                } else {
-                    #if os(iOS)
-                    VoiceMicButton { transcript in
-                        chatSocket.send(text: transcript)
-                    }
-                    .zIndex(1)
-                    .transition(.scale.combined(with: .opacity))
-                    #else
-                    Button {} label: {
-                        Image(systemName: "arrow.up.circle.fill")
-                            .font(.system(size: 30))
-                            .foregroundStyle(.gray.opacity(0.4))
-                    }
-                    .disabled(true)
-                    #endif
-                }
-            }
-            .animation(.spring(response: 0.3, dampingFraction: 0.7), value: canSend)
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background(.bar)
-    }
-
-    // MARK: - Helpers
-
-    private var canSend: Bool {
-        !inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            && chatSocket.currentStatus == nil
-    }
-
-    private func sendMessage() {
-        guard canSend else { return }
-        chatSocket.send(text: inputText)
-        inputText = ""
     }
 }

@@ -122,62 +122,23 @@ public struct ContentView: View {
 
     // MARK: - Refine Input Bar
 
-    private var canRefine: Bool {
-        !refineText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
-
     @ViewBuilder
     private func refineInputBar(for card: ApprovalCard) -> some View {
-        HStack(spacing: 8) {
-            TextField("Refine this reply...", text: $refineText, axis: .vertical)
-                .textFieldStyle(.plain)
-                .font(.body)
-                .lineLimit(1...3)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .secondaryFill()
-                .clipShape(RoundedRectangle(cornerRadius: 18))
-                .onSubmit {
-                    sendRefine(for: card)
-                }
-
-            ZStack {
-                if canRefine {
-                    Button {
-                        sendRefine(for: card)
-                    } label: {
-                        Image(systemName: "arrow.up.circle.fill")
-                            .font(.system(size: 30))
-                            .foregroundStyle(.blue)
-                    }
-                    .transition(.scale.combined(with: .opacity))
-                } else {
-                    #if os(iOS)
-                    VoiceMicButton { transcript in
-                        socket.refine(cardId: card.id, instruction: transcript)
-                    }
-                    .zIndex(1)
-                    .transition(.scale.combined(with: .opacity))
-                    #else
-                    Button {} label: {
-                        Image(systemName: "arrow.up.circle.fill")
-                            .font(.system(size: 30))
-                            .foregroundStyle(.gray.opacity(0.4))
-                    }
-                    .disabled(true)
-                    #endif
-                }
+        SharedInputBar(
+            text: $refineText,
+            placeholder: "Refine this reply...",
+            lineLimit: 1...3,
+            showBackground: false,
+            onSend: {
+                let text = refineText.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !text.isEmpty else { return }
+                socket.refine(cardId: card.id, instruction: text)
+                refineText = ""
+            },
+            onVoiceTranscript: { transcript in
+                socket.refine(cardId: card.id, instruction: transcript)
             }
-            .animation(.spring(response: 0.3, dampingFraction: 0.7), value: canRefine)
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
-    }
-
-    private func sendRefine(for card: ApprovalCard) {
-        guard canRefine else { return }
-        socket.refine(cardId: card.id, instruction: refineText)
-        refineText = ""
+        )
     }
 
     // MARK: - Refining Bar

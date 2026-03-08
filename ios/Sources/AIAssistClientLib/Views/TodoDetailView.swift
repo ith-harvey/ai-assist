@@ -850,44 +850,26 @@ public struct TodoDetailView: View {
     // MARK: - Input Bar
 
     private var inputBar: some View {
-        HStack(alignment: .bottom, spacing: 8) {
-            TextField("Send instructions...", text: $inputText, axis: .vertical)
-                .lineLimit(1...5)
-                .textFieldStyle(.plain)
-                .font(.subheadline)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .secondaryFill()
-                .clipShape(RoundedRectangle(cornerRadius: 18))
+        SharedInputBar(
+            text: $inputText,
+            placeholder: "Send instructions...",
+            font: .subheadline,
+            sendIconSize: 28,
+            onSend: {
+                let text = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !text.isEmpty else { return }
 
-            if !inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                Button {
-                    sendMessage()
-                } label: {
-                    Image(systemName: "arrow.up.circle.fill")
-                        .font(.system(size: 28))
-                        .foregroundStyle(.blue)
-                }
+                // Optimistic: add user message to local activity feed
+                let msg = ActivityMessage.userMessage(todoId: todo.id, content: text)
+                activitySocket.messages.append(msg)
+
+                // Send over WebSocket
+                activitySocket.send(text: text)
+
+                // Clear input
+                inputText = ""
             }
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 8)
-        .background(.bar)
-    }
-
-    private func sendMessage() {
-        let text = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
-
-        // Optimistic: add user message to local activity feed
-        let msg = ActivityMessage.userMessage(todoId: todo.id, content: text)
-        activitySocket.messages.append(msg)
-
-        // Send over WebSocket
-        activitySocket.send(text: text)
-
-        // Clear input
-        inputText = ""
+        )
     }
 
     // MARK: - Connection Badge
