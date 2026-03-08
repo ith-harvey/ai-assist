@@ -19,15 +19,7 @@ public struct BrainChatView: View {
                 emptyState
             }
         }
-        .background {
-            #if os(iOS)
-            Color(uiColor: .secondarySystemBackground)
-                .ignoresSafeArea()
-            #else
-            Color.gray.opacity(0.08)
-                .ignoresSafeArea()
-            #endif
-        }
+        .secondaryBackground()
         #if os(iOS)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
@@ -101,19 +93,12 @@ public struct BrainChatView: View {
 
     // MARK: - Connection Banner
 
-    @ViewBuilder
     private var connectionBanner: some View {
-        if !chatSocket.isConnected {
-            HStack(spacing: 6) {
-                ProgressView()
-                    .controlSize(.small)
-                Text("Connecting to \(chatSocket.host):\(chatSocket.port)...")
-                    .font(.caption)
-            }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 6)
-            .background(Color.orange.opacity(0.15))
-        }
+        ConnectionBannerView(
+            isConnected: chatSocket.isConnected,
+            host: chatSocket.host,
+            port: chatSocket.port
+        )
     }
 
     // MARK: - Empty State
@@ -121,18 +106,11 @@ public struct BrainChatView: View {
     @ViewBuilder
     private var emptyState: some View {
         if chatSocket.messages.isEmpty && !chatSocket.isThinking {
-            VStack(spacing: 16) {
-                Image(systemName: "brain.head.profile")
-                    .font(.system(size: 48))
-                    .foregroundStyle(.secondary)
-                Text("Start a conversation")
-                    .font(.title3)
-                    .foregroundStyle(.secondary)
-                Text("Type a message below to chat with your AI")
-                    .font(.subheadline)
-                    .foregroundStyle(.tertiary)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            EmptyStateView(
+                icon: "brain.head.profile",
+                title: "Start a conversation",
+                subtitle: "Type a message below to chat with your AI"
+            )
         }
     }
 }

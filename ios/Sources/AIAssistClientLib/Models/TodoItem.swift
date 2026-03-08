@@ -26,7 +26,7 @@ public enum TodoType: String, Codable, Sendable, CaseIterable {
         }
     }
 
-    /// Badge color for the type pill.
+    /// Badge color for the type pill (string representation for serialization).
     public var color: String {
         switch self {
         case .deliverable: "blue"
@@ -36,6 +36,19 @@ public enum TodoType: String, Codable, Sendable, CaseIterable {
         case .administrative: "gray"
         case .creative: "pink"
         case .review: "yellow"
+        }
+    }
+
+    /// SwiftUI Color for the type badge pill.
+    public var badgeColor: Color {
+        switch self {
+        case .deliverable: .blue
+        case .research: .purple
+        case .errand: .orange
+        case .learning: .green
+        case .administrative: .gray
+        case .creative: .pink
+        case .review: .yellow
         }
     }
 }
