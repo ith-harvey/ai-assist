@@ -331,6 +331,80 @@ impl Tool for ShellTool {
         true
     }
 
+    fn summarize(&self, params: &serde_json::Value) -> crate::tools::summary::ToolSummary {
+        let raw = serde_json::to_string_pretty(params).unwrap_or_default();
+        let cmd = params
+            .get("command")
+            .and_then(|v| v.as_str())
+            .unwrap_or("(unknown)");
+
+        // Split into effective words, stripping leading env assignments (FOO=bar)
+        let words: Vec<&str> = cmd.split_whitespace().collect();
+        let skip = words.iter().take_while(|w| w.contains('=')).count();
+        let effective = &words[skip..]; // words starting from the actual command
+        let base = effective.first().copied().unwrap_or("(unknown)");
+        let arg1 = effective.get(1).copied();
+
+        let (verb, target, headline) = match base {
+            "curl" | "wget" => {
+                let url = words
+                    .iter()
+                    .map(|w| w.trim_matches(|c: char| c == '"' || c == '\''))
+                    .find(|w| w.starts_with("http"))
+                    .unwrap_or("URL");
+                // Extract hostname: "https://www.southwest.com/path" → "southwest.com"
+                let after_scheme = url.split("://").nth(1).unwrap_or(url);
+                let host_port = after_scheme.split('/').next().unwrap_or(after_scheme);
+                let host_only = host_port.split(':').next().unwrap_or(host_port);
+                let host = host_only.strip_prefix("www.").unwrap_or(host_only);
+                ("Fetch", host.to_string(), format!("Fetch {}", host))
+            }
+            "cat" | "head" | "tail" | "less" | "more" => {
+                let file = arg1.unwrap_or("file");
+                ("Read", file.to_string(), format!("Read {}", file))
+            }
+            "git" => {
+                let sub = arg1.unwrap_or("command");
+                ("Git", sub.to_string(), format!("Git: {}", sub))
+            }
+            "cd" => {
+                let dir = arg1.unwrap_or("directory");
+                ("Navigate", dir.to_string(), format!("Navigate to {}", dir))
+            }
+            "mkdir" => {
+                let dir = arg1.unwrap_or("directory");
+                ("Create", dir.to_string(), format!("Create directory {}", dir))
+            }
+            "rm" => {
+                let target = effective.last().unwrap_or(&"file");
+                ("Delete", target.to_string(), format!("Delete {}", target))
+            }
+            "cp" | "mv" => {
+                let verb_str = if base == "cp" { "Copy" } else { "Move" };
+                let target = effective.last().unwrap_or(&"file");
+                (verb_str, target.to_string(), format!("{} to {}", verb_str, target))
+            }
+            "cargo" => {
+                let sub = arg1.unwrap_or("command");
+                ("Cargo", sub.to_string(), format!("Cargo {}", sub))
+            }
+            "npm" | "npx" | "yarn" | "pnpm" => {
+                let sub = arg1.unwrap_or("command");
+                ("Node", sub.to_string(), format!("{} {}", base, sub))
+            }
+            "ls" | "find" | "fd" | "rg" | "grep" => {
+                let target = arg1.unwrap_or(".");
+                ("Search", target.to_string(), format!("{} {}", base, target))
+            }
+            _ => {
+                let short_cmd: String = cmd.chars().take(80).collect();
+                ("Run", base.to_string(), format!("Run: {}", short_cmd))
+            }
+        };
+
+        crate::tools::summary::ToolSummary::new(verb, target, headline, raw)
+    }
+
     fn domain(&self) -> ToolDomain {
         ToolDomain::Container
     }
@@ -510,5 +584,112 @@ mod tests {
         assert_eq!(floor_char_boundary(s2, 5), 5); // past end → len
         assert_eq!(floor_char_boundary(s2, 4), 3); // byte 4 is continuation → back to 3
         assert_eq!(floor_char_boundary(s2, 3), 3); // start of é, valid
+    }
+
+    #[test]
+    fn summarize_curl() {
+        let tool = ShellTool::new();
+        let s = tool.summarize(&serde_json::json!({"command": "curl https://api.example.com/data"}));
+        assert_eq!(s.verb, "Fetch");
+        assert_eq!(s.target, "api.example.com");
+        assert_eq!(s.headline, "Fetch api.example.com");
+    }
+
+    #[test]
+    fn summarize_curl_strips_www() {
+        let tool = ShellTool::new();
+        let s = tool.summarize(&serde_json::json!({"command": "curl https://www.southwest.com/air/booking/"}));
+        assert_eq!(s.target, "southwest.com");
+        assert_eq!(s.headline, "Fetch southwest.com");
+    }
+
+    #[test]
+    fn summarize_curl_quoted_url() {
+        let tool = ShellTool::new();
+        let s = tool.summarize(&serde_json::json!({"command": "curl -s \"https://www.southwest.com\" > /dev/null && echo ok"}));
+        assert_eq!(s.target, "southwest.com");
+        assert_eq!(s.headline, "Fetch southwest.com");
+    }
+
+    #[test]
+    fn summarize_curl_single_quoted_url() {
+        let tool = ShellTool::new();
+        let s = tool.summarize(&serde_json::json!({"command": "curl -s 'https://api.example.com/data'"}));
+        assert_eq!(s.target, "api.example.com");
+        assert_eq!(s.headline, "Fetch api.example.com");
+    }
+
+    #[test]
+    fn summarize_curl_with_port() {
+        let tool = ShellTool::new();
+        let s = tool.summarize(&serde_json::json!({"command": "curl http://localhost:8080/api/health"}));
+        assert_eq!(s.target, "localhost");
+        assert_eq!(s.headline, "Fetch localhost");
+    }
+
+    #[test]
+    fn summarize_wget() {
+        let tool = ShellTool::new();
+        let s = tool.summarize(&serde_json::json!({"command": "wget https://downloads.example.org/file.tar.gz"}));
+        assert_eq!(s.verb, "Fetch");
+        assert_eq!(s.target, "downloads.example.org");
+        assert_eq!(s.headline, "Fetch downloads.example.org");
+    }
+
+    #[test]
+    fn summarize_git() {
+        let tool = ShellTool::new();
+        let s = tool.summarize(&serde_json::json!({"command": "git status"}));
+        assert_eq!(s.verb, "Git");
+        assert_eq!(s.target, "status");
+        assert_eq!(s.headline, "Git: status");
+    }
+
+    #[test]
+    fn summarize_cargo() {
+        let tool = ShellTool::new();
+        let s = tool.summarize(&serde_json::json!({"command": "cargo test --lib"}));
+        assert_eq!(s.verb, "Cargo");
+        assert_eq!(s.target, "test");
+        assert_eq!(s.headline, "Cargo test");
+    }
+
+    #[test]
+    fn summarize_cat() {
+        let tool = ShellTool::new();
+        let s = tool.summarize(&serde_json::json!({"command": "cat /etc/hosts"}));
+        assert_eq!(s.verb, "Read");
+        assert!(s.headline.contains("/etc/hosts"));
+    }
+
+    #[test]
+    fn summarize_rm() {
+        let tool = ShellTool::new();
+        let s = tool.summarize(&serde_json::json!({"command": "rm -rf /tmp/build"}));
+        assert_eq!(s.verb, "Delete");
+        assert!(s.headline.contains("/tmp/build"));
+    }
+
+    #[test]
+    fn summarize_env_prefix() {
+        let tool = ShellTool::new();
+        let s = tool.summarize(&serde_json::json!({"command": "FOO=bar cargo build"}));
+        assert_eq!(s.verb, "Cargo");
+        assert_eq!(s.target, "build");
+    }
+
+    #[test]
+    fn summarize_unknown_command() {
+        let tool = ShellTool::new();
+        let s = tool.summarize(&serde_json::json!({"command": "mycustomtool --flag"}));
+        assert_eq!(s.verb, "Run");
+        assert!(s.headline.starts_with("Run: "));
+    }
+
+    #[test]
+    fn summarize_missing_command() {
+        let tool = ShellTool::new();
+        let s = tool.summarize(&serde_json::json!({}));
+        assert!(s.headline.contains("(unknown)"));
     }
 }

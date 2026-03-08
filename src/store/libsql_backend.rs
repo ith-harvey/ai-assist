@@ -13,6 +13,7 @@ use tracing::{debug, info};
 use uuid::Uuid;
 
 use crate::cards::model::{ApprovalCard, CardPayload, CardSilo, CardStatus, SiloCounts};
+use crate::documents::model::{Document, DocumentType};
 use crate::error::DatabaseError;
 use crate::store::migrations;
 use crate::store::traits::{ConversationMessage, Database, MessageStatus, StoredMessage};
@@ -79,6 +80,109 @@ impl LibSqlBackend {
     /// Get the connection.
     fn conn(&self) -> &Connection {
         &self.conn
+    }
+}
+
+// ── Row reader helper ──────────────────────────────────────────────
+
+/// Typed column extractor that produces consistent error messages.
+///
+/// Eliminates repeated `.get(N).map_err(|e| DatabaseError::Query(...))` chains
+/// in every `row_to_*` function.
+struct RowReader<'a> {
+    row: &'a libsql::Row,
+    entity: &'static str,
+}
+
+impl<'a> RowReader<'a> {
+    fn new(row: &'a libsql::Row, entity: &'static str) -> Self {
+        Self { row, entity }
+    }
+
+    /// Required string column.
+    fn string(&self, idx: i32, col: &str) -> Result<String, DatabaseError> {
+        self.row
+            .get(idx)
+            .map_err(|e| DatabaseError::Query(format!("{}.{}: {}", self.entity, col, e)))
+    }
+
+    /// Optional string column (returns None on error or empty).
+    fn optional_string(&self, idx: i32) -> Option<String> {
+        self.row
+            .get::<String>(idx)
+            .ok()
+            .filter(|s| !s.is_empty())
+    }
+
+    /// Required UUID column.
+    fn uuid(&self, idx: i32, col: &str) -> Result<Uuid, DatabaseError> {
+        let s = self.string(idx, col)?;
+        Uuid::parse_str(&s)
+            .map_err(|e| DatabaseError::Query(format!("{}.{} parse: {}", self.entity, col, e)))
+    }
+
+    /// Optional UUID column.
+    fn optional_uuid(&self, idx: i32) -> Option<Uuid> {
+        self.optional_string(idx)
+            .and_then(|s| Uuid::parse_str(&s).ok())
+    }
+
+    /// Required datetime column (RFC 3339).
+    fn datetime(&self, idx: i32, col: &str) -> Result<DateTime<Utc>, DatabaseError> {
+        let s = self.string(idx, col)?;
+        DateTime::parse_from_rfc3339(&s)
+            .map(|dt| dt.with_timezone(&Utc))
+            .map_err(|e| DatabaseError::Query(format!("{}.{} parse: {}", self.entity, col, e)))
+    }
+
+    /// Optional datetime column.
+    fn optional_datetime(&self, idx: i32) -> Option<DateTime<Utc>> {
+        self.optional_string(idx).map(|s| parse_datetime(&s))
+    }
+
+    /// Datetime column with fallback to parse_datetime (handles SQLite formats).
+    fn datetime_lenient(&self, idx: i32) -> DateTime<Utc> {
+        self.row
+            .get::<String>(idx)
+            .map(|s| parse_datetime(&s))
+            .unwrap_or_else(|_| Utc::now())
+    }
+
+    /// i64 column with default.
+    fn i64_or(&self, idx: i32, default: i64) -> i64 {
+        self.row.get::<i64>(idx).unwrap_or(default)
+    }
+
+    /// Boolean stored as i64 (0 = false).
+    fn bool_at(&self, idx: i32) -> bool {
+        self.row.get::<i64>(idx).unwrap_or(0) != 0
+    }
+
+    /// String column with default.
+    fn string_or(&self, idx: i32, default: &str) -> String {
+        self.row
+            .get::<String>(idx)
+            .unwrap_or_else(|_| default.to_string())
+    }
+
+    /// Optional JSON column.
+    fn optional_json(&self, idx: i32) -> Option<serde_json::Value> {
+        self.optional_string(idx)
+            .and_then(|s| serde_json::from_str(&s).ok())
+    }
+
+    /// JSON column with default empty object.
+    fn json_or_empty(&self, idx: i32) -> serde_json::Value {
+        self.optional_json(idx).unwrap_or(serde_json::json!({}))
+    }
+
+    /// Deserialize a string column into an enum via serde, with a default.
+    fn enum_or<T: serde::de::DeserializeOwned>(&self, idx: i32, default: T) -> T {
+        self.row
+            .get::<String>(idx)
+            .ok()
+            .and_then(|s| serde_json::from_value(serde_json::Value::String(s)).ok())
+            .unwrap_or(default)
     }
 }
 
@@ -291,6 +395,12 @@ fn serialize_payload_inner(payload: &CardPayload) -> String {
                 "options": options,
             }).to_string()
         }
+        CardPayload::MultipleChoice { question, options } => {
+            serde_json::json!({
+                "question": question,
+                "options": options,
+            }).to_string()
+        }
     }
 }
 
@@ -401,6 +511,9 @@ impl Database for LibSqlBackend {
                     String::new(), String::new(), String::new(), description.clone(), 0.0, String::new(), None, None, None,
                 ),
                 CardPayload::Decision { question, .. } => (
+                    String::new(), String::new(), String::new(), question.clone(), 0.0, String::new(), None, None, None,
+                ),
+                CardPayload::MultipleChoice { question, .. } => (
                     String::new(), String::new(), String::new(), question.clone(), 0.0, String::new(), None, None, None,
                 ),
             };
@@ -1942,6 +2055,156 @@ impl Database for LibSqlBackend {
         .map_err(|e| DatabaseError::Query(format!("record_tool_failure: {e}")))?;
         Ok(())
     }
+
+    // ── Documents ───────────────────────────────────────────────────
+
+    async fn create_document(&self, doc: &Document) -> Result<(), DatabaseError> {
+        let conn = self.conn();
+        let id = doc.id.to_string();
+        let todo_id = doc.todo_id.to_string();
+        let doc_type = doc_type_to_str(&doc.doc_type);
+        let created_at = doc.created_at.to_rfc3339();
+        let updated_at = doc.updated_at.to_rfc3339();
+        conn.execute(
+            "INSERT INTO documents (id, todo_id, title, content, doc_type, created_by, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![id, todo_id, doc.title.clone(), doc.content.clone(), doc_type, doc.created_by.clone(), created_at, updated_at],
+        )
+        .await
+        .map_err(|e| DatabaseError::Query(format!("create_document: {e}")))?;
+        Ok(())
+    }
+
+    async fn get_document(&self, id: Uuid) -> Result<Option<Document>, DatabaseError> {
+        let conn = self.conn();
+        let mut rows = conn
+            .query(
+                "SELECT id, todo_id, title, content, doc_type, created_by, created_at, updated_at FROM documents WHERE id = ?1",
+                params![id.to_string()],
+            )
+            .await
+            .map_err(|e| DatabaseError::Query(format!("get_document: {e}")))?;
+
+        match rows.next().await.map_err(|e| DatabaseError::Query(format!("get_document next: {e}")))? {
+            Some(row) => Ok(Some(row_to_document(&row)?)),
+            None => Ok(None),
+        }
+    }
+
+    async fn update_document(&self, doc: &Document) -> Result<(), DatabaseError> {
+        let conn = self.conn();
+        let doc_type = doc_type_to_str(&doc.doc_type);
+        let updated_at = doc.updated_at.to_rfc3339();
+        let id = doc.id.to_string();
+        conn.execute(
+            "UPDATE documents SET title = ?1, content = ?2, doc_type = ?3, updated_at = ?4 WHERE id = ?5",
+            params![doc.title.clone(), doc.content.clone(), doc_type, updated_at, id],
+        )
+        .await
+        .map_err(|e| DatabaseError::Query(format!("update_document: {e}")))?;
+        Ok(())
+    }
+
+    async fn delete_document(&self, id: Uuid) -> Result<bool, DatabaseError> {
+        let conn = self.conn();
+        let affected = conn
+            .execute(
+                "DELETE FROM documents WHERE id = ?1",
+                params![id.to_string()],
+            )
+            .await
+            .map_err(|e| DatabaseError::Query(format!("delete_document: {e}")))?;
+        Ok(affected > 0)
+    }
+
+    async fn list_documents(&self, limit: u32) -> Result<Vec<Document>, DatabaseError> {
+        let conn = self.conn();
+        let mut rows = conn
+            .query(
+                "SELECT id, todo_id, title, content, doc_type, created_by, created_at, updated_at FROM documents ORDER BY created_at DESC LIMIT ?1",
+                params![limit as i64],
+            )
+            .await
+            .map_err(|e| DatabaseError::Query(format!("list_documents: {e}")))?;
+
+        let mut docs = Vec::new();
+        while let Some(row) = rows.next().await.map_err(|e| DatabaseError::Query(format!("list_documents next: {e}")))? {
+            docs.push(row_to_document(&row)?);
+        }
+        Ok(docs)
+    }
+
+    async fn list_documents_by_todo(&self, todo_id: Uuid) -> Result<Vec<Document>, DatabaseError> {
+        let conn = self.conn();
+        let mut rows = conn
+            .query(
+                "SELECT id, todo_id, title, content, doc_type, created_by, created_at, updated_at FROM documents WHERE todo_id = ?1 ORDER BY created_at DESC",
+                params![todo_id.to_string()],
+            )
+            .await
+            .map_err(|e| DatabaseError::Query(format!("list_documents_by_todo: {e}")))?;
+
+        let mut docs = Vec::new();
+        while let Some(row) = rows.next().await.map_err(|e| DatabaseError::Query(format!("list_documents_by_todo next: {e}")))? {
+            docs.push(row_to_document(&row)?);
+        }
+        Ok(docs)
+    }
+
+    async fn search_documents(
+        &self,
+        query: &str,
+        doc_type: Option<&DocumentType>,
+        limit: u32,
+    ) -> Result<Vec<Document>, DatabaseError> {
+        let conn = self.conn();
+        let pattern = format!("%{}%", query);
+
+        let mut rows = if let Some(dt) = doc_type {
+            let dt_str = serde_json::to_value(dt).unwrap();
+            let dt_str = dt_str.as_str().unwrap_or("other").to_string();
+            conn.query(
+                "SELECT id, todo_id, title, content, doc_type, created_by, created_at, updated_at FROM documents WHERE (title LIKE ?1 COLLATE NOCASE OR content LIKE ?1 COLLATE NOCASE) AND doc_type = ?2 ORDER BY created_at DESC LIMIT ?3",
+                params![pattern, dt_str, limit as i64],
+            )
+            .await
+        } else {
+            conn.query(
+                "SELECT id, todo_id, title, content, doc_type, created_by, created_at, updated_at FROM documents WHERE (title LIKE ?1 COLLATE NOCASE OR content LIKE ?1 COLLATE NOCASE) ORDER BY created_at DESC LIMIT ?2",
+                params![pattern, limit as i64],
+            )
+            .await
+        }
+        .map_err(|e| DatabaseError::Query(format!("search_documents: {e}")))?;
+
+        let mut docs = Vec::new();
+        while let Some(row) = rows.next().await.map_err(|e| DatabaseError::Query(format!("search_documents next: {e}")))? {
+            docs.push(row_to_document(&row)?);
+        }
+        Ok(docs)
+    }
+}
+
+// ── Row mapping helpers for documents ───────────────────────────────
+
+fn doc_type_to_str(dt: &DocumentType) -> String {
+    serde_json::to_value(dt)
+        .ok()
+        .and_then(|v| v.as_str().map(String::from))
+        .unwrap_or_else(|| "other".into())
+}
+
+fn row_to_document(row: &libsql::Row) -> Result<Document, DatabaseError> {
+    let r = RowReader::new(row, "doc");
+    Ok(Document {
+        id: r.uuid(0, "id")?,
+        todo_id: r.uuid(1, "todo_id")?,
+        title: r.string(2, "title")?,
+        content: r.string(3, "content")?,
+        doc_type: r.enum_or(4, DocumentType::Other),
+        created_by: r.string(5, "created_by")?,
+        created_at: r.datetime(6, "created_at")?,
+        updated_at: r.datetime(7, "updated_at")?,
+    })
 }
 
 // ── Row mapping helpers for todos ───────────────────────────────────
@@ -1950,96 +2213,26 @@ impl Database for LibSqlBackend {
 const TODO_COLUMNS: &str = "id, user_id, title, description, todo_type, bucket, status, priority, due_date, context, source_card_id, snoozed_until, parent_id, is_agent_internal, agent_progress, thread_id, created_at, updated_at";
 
 fn row_to_todo(row: &libsql::Row) -> Result<TodoItem, DatabaseError> {
-    let id_str: String = row.get(0).map_err(|e| DatabaseError::Query(format!("todo.id: {e}")))?;
-    let id = Uuid::parse_str(&id_str).map_err(|e| DatabaseError::Query(format!("todo.id parse: {e}")))?;
-
-    let user_id: String = row.get(1).map_err(|e| DatabaseError::Query(format!("todo.user_id: {e}")))?;
-    let title: String = row.get(2).map_err(|e| DatabaseError::Query(format!("todo.title: {e}")))?;
-
-    let desc_raw: String = row.get(3).unwrap_or_default();
-    let description = if desc_raw.is_empty() { None } else { Some(desc_raw) };
-
-    let todo_type_str: String = row.get(4).unwrap_or_else(|_| "errand".to_string());
-    let todo_type: TodoType = serde_json::from_value(serde_json::Value::String(todo_type_str))
-        .unwrap_or(TodoType::Errand);
-
-    let bucket_str: String = row.get(5).unwrap_or_else(|_| "human_only".to_string());
-    let bucket: TodoBucket = serde_json::from_value(serde_json::Value::String(bucket_str))
-        .unwrap_or(TodoBucket::HumanOnly);
-
-    let status_str: String = row.get(6).unwrap_or_else(|_| "created".to_string());
-    let status: TodoStatus = serde_json::from_value(serde_json::Value::String(status_str))
-        .unwrap_or(TodoStatus::Created);
-
-    let priority: i64 = row.get(7).unwrap_or(0);
-
-    let due_date_str: Option<String> = row.get(8).ok();
-    let due_date = due_date_str
-        .filter(|s| !s.is_empty())
-        .and_then(|s| DateTime::parse_from_rfc3339(&s).ok())
-        .map(|d| d.with_timezone(&Utc));
-
-    let context_str: Option<String> = row.get(9).ok();
-    let context = context_str
-        .filter(|s| !s.is_empty())
-        .and_then(|s| serde_json::from_str(&s).ok());
-
-    let source_card_str: Option<String> = row.get(10).ok();
-    let source_card_id = source_card_str
-        .filter(|s| !s.is_empty())
-        .and_then(|s| Uuid::parse_str(&s).ok());
-
-    let snoozed_str: Option<String> = row.get(11).ok();
-    let snoozed_until = snoozed_str
-        .filter(|s| !s.is_empty())
-        .and_then(|s| DateTime::parse_from_rfc3339(&s).ok())
-        .map(|d| d.with_timezone(&Utc));
-
-    // New subtask columns at positions 12-15
-    let parent_id_str: Option<String> = row.get(12).ok();
-    let parent_id = parent_id_str
-        .filter(|s| !s.is_empty())
-        .and_then(|s| Uuid::parse_str(&s).ok());
-
-    let is_agent_internal: bool = row.get::<i64>(13).unwrap_or(0) != 0;
-
-    let agent_progress: Option<String> = row.get(14).ok();
-    let agent_progress = agent_progress.filter(|s| !s.is_empty());
-
-    let thread_id_str: Option<String> = row.get(15).ok();
-    let thread_id = thread_id_str
-        .filter(|s| !s.is_empty())
-        .and_then(|s| Uuid::parse_str(&s).ok());
-
-    let created_at_str: String = row.get(16).unwrap_or_default();
-    let created_at = DateTime::parse_from_rfc3339(&created_at_str)
-        .map(|d| d.with_timezone(&Utc))
-        .unwrap_or_else(|_| Utc::now());
-
-    let updated_at_str: String = row.get(17).unwrap_or_default();
-    let updated_at = DateTime::parse_from_rfc3339(&updated_at_str)
-        .map(|d| d.with_timezone(&Utc))
-        .unwrap_or_else(|_| Utc::now());
-
+    let r = RowReader::new(row, "todo");
     Ok(TodoItem {
-        id,
-        user_id,
-        title,
-        description,
-        todo_type,
-        bucket,
-        status,
-        priority: priority as i32,
-        due_date,
-        context,
-        source_card_id,
-        snoozed_until,
-        parent_id,
-        is_agent_internal,
-        agent_progress,
-        thread_id,
-        created_at,
-        updated_at,
+        id: r.uuid(0, "id")?,
+        user_id: r.string(1, "user_id")?,
+        title: r.string(2, "title")?,
+        description: r.optional_string(3),
+        todo_type: r.enum_or(4, TodoType::Errand),
+        bucket: r.enum_or(5, TodoBucket::HumanOnly),
+        status: r.enum_or(6, TodoStatus::Created),
+        priority: r.i64_or(7, 0) as i32,
+        due_date: r.optional_datetime(8),
+        context: r.optional_json(9),
+        source_card_id: r.optional_uuid(10),
+        snoozed_until: r.optional_datetime(11),
+        parent_id: r.optional_uuid(12),
+        is_agent_internal: r.bool_at(13),
+        agent_progress: r.optional_string(14),
+        thread_id: r.optional_uuid(15),
+        created_at: r.datetime_lenient(16),
+        updated_at: r.datetime_lenient(17),
     })
 }
 
@@ -2079,64 +2272,47 @@ async fn parse_cost_summary_row(
 fn row_to_routine(row: &libsql::Row) -> Result<crate::agent::routine::Routine, DatabaseError> {
     use crate::agent::routine::*;
 
-    let trigger_type: String = row.get(5).unwrap_or_default();
-    let trigger_config_str: String = row.get(6).unwrap_or_else(|_| "{}".to_string());
-    let trigger_config: serde_json::Value =
-        serde_json::from_str(&trigger_config_str).unwrap_or(serde_json::json!({}));
-    let action_type: String = row.get(7).unwrap_or_default();
-    let action_config_str: String = row.get(8).unwrap_or_else(|_| "{}".to_string());
-    let action_config: serde_json::Value =
-        serde_json::from_str(&action_config_str).unwrap_or(serde_json::json!({}));
+    let r = RowReader::new(row, "routine");
 
-    let cooldown_secs: i64 = row.get(9).unwrap_or(300);
-    let max_concurrent: i64 = row.get(10).unwrap_or(1);
-    let dedup_window_secs: Option<i64> = row.get::<i64>(11).ok();
+    let trigger_type = r.string_or(5, "");
+    let trigger_config = r.json_or_empty(6);
+    let action_type = r.string_or(7, "");
+    let action_config = r.json_or_empty(8);
 
     let trigger =
         Trigger::from_db(&trigger_type, trigger_config).map_err(DatabaseError::Serialization)?;
     let action = RoutineAction::from_db(&action_type, action_config)
         .map_err(DatabaseError::Serialization)?;
 
-    let state_str: String = row.get(17).unwrap_or_else(|_| "{}".to_string());
-    let state: serde_json::Value =
-        serde_json::from_str(&state_str).unwrap_or(serde_json::json!({}));
-
-    let last_run_str: Option<String> = row.get(18).ok();
-    let next_fire_str: Option<String> = row.get(19).ok();
-    let created_str: String = row.get(22).unwrap_or_default();
-    let updated_str: String = row.get(23).unwrap_or_default();
+    let dedup_window_secs: Option<i64> = row.get::<i64>(11).ok();
 
     Ok(Routine {
-        id: row
-            .get::<String>(0)
-            .unwrap_or_default()
-            .parse()
-            .unwrap_or_default(),
-        name: row.get(1).unwrap_or_default(),
-        description: row.get(2).unwrap_or_default(),
-        user_id: row.get(3).unwrap_or_default(),
-        enabled: row.get::<i64>(4).unwrap_or(0) != 0,
+        id: r.optional_string(0).and_then(|s| s.parse().ok()).unwrap_or_default(),
+        name: r.string_or(1, ""),
+        description: r.string_or(2, ""),
+        user_id: r.string_or(3, ""),
+        enabled: r.bool_at(4),
         trigger,
         action,
         guardrails: RoutineGuardrails {
-            cooldown: std::time::Duration::from_secs(cooldown_secs as u64),
-            max_concurrent: max_concurrent as u32,
+            cooldown: std::time::Duration::from_secs(r.i64_or(9, 300) as u64),
+            max_concurrent: r.i64_or(10, 1) as u32,
             dedup_window: dedup_window_secs.map(|s| std::time::Duration::from_secs(s as u64)),
         },
         notify: NotifyConfig {
-            channel: row.get::<String>(12).ok(),
-            user: row.get(13).unwrap_or_else(|_| "default".to_string()),
-            on_success: row.get::<i64>(14).unwrap_or(0) != 0,
-            on_failure: row.get::<i64>(15).unwrap_or(1) != 0,
-            on_attention: row.get::<i64>(16).unwrap_or(1) != 0,
+            channel: r.optional_string(12),
+            user: r.string_or(13, "default"),
+            on_success: r.bool_at(14),
+            on_failure: r.i64_or(15, 1) != 0,
+            on_attention: r.i64_or(16, 1) != 0,
         },
-        state,
-        last_run_at: last_run_str.map(|s| parse_datetime(&s)),
-        next_fire_at: next_fire_str.map(|s| parse_datetime(&s)),
-        run_count: row.get::<i64>(20).unwrap_or(0) as u64,
-        consecutive_failures: row.get::<i64>(21).unwrap_or(0) as u32,
-        created_at: parse_datetime(&created_str),
-        updated_at: parse_datetime(&updated_str),
+        state: r.json_or_empty(17),
+        last_run_at: r.optional_datetime(18),
+        next_fire_at: r.optional_datetime(19),
+        run_count: r.i64_or(20, 0) as u64,
+        consecutive_failures: r.i64_or(21, 0) as u32,
+        created_at: r.datetime_lenient(22),
+        updated_at: r.datetime_lenient(23),
     })
 }
 
@@ -2145,35 +2321,25 @@ fn row_to_routine_run(
 ) -> Result<crate::agent::routine::RoutineRun, DatabaseError> {
     use crate::agent::routine::*;
 
-    let status_str: String = row.get(5).unwrap_or_else(|_| "running".to_string());
+    let r = RowReader::new(row, "routine_run");
+
+    let status_str = r.string_or(5, "running");
     let status: RunStatus = status_str
         .parse()
         .map_err(|e: String| DatabaseError::Serialization(e))?;
 
-    let started_str: String = row.get(4).unwrap_or_default();
-    let completed_str: Option<String> = row.get(6).ok();
-    let created_str: String = row.get(10).unwrap_or_default();
-
     Ok(RoutineRun {
-        id: row
-            .get::<String>(0)
-            .unwrap_or_default()
-            .parse()
-            .unwrap_or_default(),
-        routine_id: row
-            .get::<String>(1)
-            .unwrap_or_default()
-            .parse()
-            .unwrap_or_default(),
-        trigger_type: row.get(2).unwrap_or_default(),
-        trigger_detail: row.get::<String>(3).ok(),
-        started_at: parse_datetime(&started_str),
-        completed_at: completed_str.map(|s| parse_datetime(&s)),
+        id: r.optional_string(0).and_then(|s| s.parse().ok()).unwrap_or_default(),
+        routine_id: r.optional_string(1).and_then(|s| s.parse().ok()).unwrap_or_default(),
+        trigger_type: r.string_or(2, ""),
+        trigger_detail: r.optional_string(3),
+        started_at: r.datetime_lenient(4),
+        completed_at: r.optional_datetime(6),
         status,
-        result_summary: row.get::<String>(7).ok(),
+        result_summary: r.optional_string(7),
         tokens_used: row.get::<i64>(8).ok().map(|v| v as i32),
-        job_id: row.get::<String>(9).ok().and_then(|s| s.parse().ok()),
-        created_at: parse_datetime(&created_str),
+        job_id: r.optional_uuid(9),
+        created_at: r.datetime_lenient(10),
     })
 }
 
@@ -3913,5 +4079,186 @@ mod tests {
 
         let results = db.search_todos("u", "zebra", 20).await.unwrap();
         assert!(results.is_empty());
+    }
+
+    // ── Document tests ──────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn document_create_and_get() {
+        let db = test_db().await;
+        let doc = Document::new("Research: AI", "# Overview\nContent here.", DocumentType::Research, "agent");
+        let id = doc.id;
+        db.create_document(&doc).await.unwrap();
+
+        let fetched = db.get_document(id).await.unwrap().unwrap();
+        assert_eq!(fetched.title, "Research: AI");
+        assert_eq!(fetched.content, "# Overview\nContent here.");
+        assert_eq!(fetched.doc_type, DocumentType::Research);
+        assert_eq!(fetched.created_by, "agent");
+        assert!(fetched.todo_id.is_none());
+    }
+
+    #[tokio::test]
+    async fn document_get_not_found() {
+        let db = test_db().await;
+        let result = db.get_document(uuid::Uuid::new_v4()).await.unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn document_with_todo_id() {
+        let db = test_db().await;
+        let todo_id = uuid::Uuid::new_v4();
+        let doc = Document::new("Notes", "Some notes", DocumentType::Notes, "agent")
+            .with_todo(todo_id);
+        db.create_document(&doc).await.unwrap();
+
+        let fetched = db.get_document(doc.id).await.unwrap().unwrap();
+        assert_eq!(fetched.todo_id, Some(todo_id));
+    }
+
+    #[tokio::test]
+    async fn document_update() {
+        let db = test_db().await;
+        let mut doc = Document::new("Draft", "Initial", DocumentType::Notes, "agent");
+        db.create_document(&doc).await.unwrap();
+
+        doc.title = "Final".into();
+        doc.content = "Updated content".into();
+        doc.doc_type = DocumentType::Report;
+        doc.updated_at = chrono::Utc::now();
+        db.update_document(&doc).await.unwrap();
+
+        let fetched = db.get_document(doc.id).await.unwrap().unwrap();
+        assert_eq!(fetched.title, "Final");
+        assert_eq!(fetched.content, "Updated content");
+        assert_eq!(fetched.doc_type, DocumentType::Report);
+    }
+
+    #[tokio::test]
+    async fn document_delete() {
+        let db = test_db().await;
+        let doc = Document::new("Temp", "Content", DocumentType::Other, "agent");
+        let id = doc.id;
+        db.create_document(&doc).await.unwrap();
+
+        assert!(db.delete_document(id).await.unwrap());
+        assert!(db.get_document(id).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn document_delete_not_found() {
+        let db = test_db().await;
+        assert!(!db.delete_document(uuid::Uuid::new_v4()).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn document_list_ordered_by_created_desc() {
+        let db = test_db().await;
+        let d1 = Document::new("First", "A", DocumentType::Notes, "agent");
+        let d2 = Document::new("Second", "B", DocumentType::Notes, "agent");
+        db.create_document(&d1).await.unwrap();
+        // Slight delay so created_at differs
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        db.create_document(&d2).await.unwrap();
+
+        let docs = db.list_documents(10).await.unwrap();
+        assert_eq!(docs.len(), 2);
+        assert_eq!(docs[0].title, "Second"); // most recent first
+        assert_eq!(docs[1].title, "First");
+    }
+
+    #[tokio::test]
+    async fn document_list_respects_limit() {
+        let db = test_db().await;
+        for i in 0..5 {
+            let doc = Document::new(format!("Doc {i}"), "Content", DocumentType::Notes, "agent");
+            db.create_document(&doc).await.unwrap();
+        }
+
+        let docs = db.list_documents(3).await.unwrap();
+        assert_eq!(docs.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn document_list_by_todo() {
+        let db = test_db().await;
+        let todo_id = uuid::Uuid::new_v4();
+        let d1 = Document::new("Linked", "A", DocumentType::Notes, "agent").with_todo(todo_id);
+        let d2 = Document::new("Unlinked", "B", DocumentType::Notes, "agent");
+        db.create_document(&d1).await.unwrap();
+        db.create_document(&d2).await.unwrap();
+
+        let docs = db.list_documents_by_todo(todo_id).await.unwrap();
+        assert_eq!(docs.len(), 1);
+        assert_eq!(docs[0].title, "Linked");
+    }
+
+    #[tokio::test]
+    async fn document_search_by_title() {
+        let db = test_db().await;
+        let d1 = Document::new("Rust concurrency guide", "Content about threads", DocumentType::Research, "agent");
+        let d2 = Document::new("Python basics", "Intro to Python", DocumentType::Notes, "agent");
+        db.create_document(&d1).await.unwrap();
+        db.create_document(&d2).await.unwrap();
+
+        let results = db.search_documents("rust", None, 10).await.unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].title, "Rust concurrency guide");
+    }
+
+    #[tokio::test]
+    async fn document_search_by_content() {
+        let db = test_db().await;
+        let doc = Document::new("Untitled", "The tokio runtime provides async IO", DocumentType::Notes, "agent");
+        db.create_document(&doc).await.unwrap();
+
+        let results = db.search_documents("tokio", None, 10).await.unwrap();
+        assert_eq!(results.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn document_search_with_type_filter() {
+        let db = test_db().await;
+        let d1 = Document::new("Research: AI", "Machine learning overview", DocumentType::Research, "agent");
+        let d2 = Document::new("Notes: AI", "Quick notes about AI", DocumentType::Notes, "agent");
+        db.create_document(&d1).await.unwrap();
+        db.create_document(&d2).await.unwrap();
+
+        let results = db.search_documents("AI", Some(&DocumentType::Research), 10).await.unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].doc_type, DocumentType::Research);
+    }
+
+    #[tokio::test]
+    async fn document_search_no_match() {
+        let db = test_db().await;
+        let doc = Document::new("Something", "Content", DocumentType::Notes, "agent");
+        db.create_document(&doc).await.unwrap();
+
+        let results = db.search_documents("nonexistent_xyz", None, 10).await.unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn document_search_case_insensitive() {
+        let db = test_db().await;
+        let doc = Document::new("Rust Guide", "Content about RUST", DocumentType::Research, "agent");
+        db.create_document(&doc).await.unwrap();
+
+        let results = db.search_documents("rust", None, 10).await.unwrap();
+        assert_eq!(results.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn document_search_respects_limit() {
+        let db = test_db().await;
+        for i in 0..5 {
+            let doc = Document::new(format!("Topic {i}"), "Shared keyword content", DocumentType::Notes, "agent");
+            db.create_document(&doc).await.unwrap();
+        }
+
+        let results = db.search_documents("keyword", None, 2).await.unwrap();
+        assert_eq!(results.len(), 2);
     }
 }

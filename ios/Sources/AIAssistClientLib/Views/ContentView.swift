@@ -6,9 +6,6 @@ import SwiftUI
 /// card rendering to CardBodyView, and channel styling to ChannelStyle.
 public struct ContentView: View {
     var socket: CardWebSocket
-    @State private var showSettings = false
-    @State private var hostInput = "localhost"
-    @State private var portInput = "8080"
 
     // Refine input state
     @State private var refineText = ""
@@ -23,14 +20,6 @@ public struct ContentView: View {
     public var body: some View {
         NavigationStack {
             ZStack {
-                #if os(iOS)
-                Color(uiColor: .secondarySystemBackground)
-                    .ignoresSafeArea()
-                #else
-                Color.gray.opacity(0.08)
-                    .ignoresSafeArea()
-                #endif
-
                 if let card = socket.cards.first {
                     cardContent(for: card)
                 } else {
@@ -40,6 +29,7 @@ public struct ContentView: View {
                     }
                 }
             }
+            .secondaryBackground()
             .toolbar {
                 ToolbarItem(placement: .navigation) {
                     connectionDot
@@ -57,24 +47,12 @@ public struct ContentView: View {
                 }
                 #endif
                 ToolbarItem(placement: .primaryAction) {
-                    HStack(spacing: 12) {
-                        ApprovalBellBadge(count: socket.cards.count)
-                        Button {
-                            hostInput = socket.host
-                            portInput = String(socket.port)
-                            showSettings = true
-                        } label: {
-                            Image(systemName: "gearshape")
-                        }
-                    }
+                    ApprovalBellBadge(count: socket.cards.count)
                 }
             }
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
             #endif
-            .sheet(isPresented: $showSettings) {
-                settingsSheet
-            }
             #if os(iOS)
             .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
                 isKeyboardVisible = true
@@ -93,85 +71,59 @@ public struct ContentView: View {
         VStack(spacing: 0) {
             connectionBanner
 
-            SwipeCardContainer(
-                onApprove: { socket.approve(cardId: card.id) },
-                onReject: { socket.dismiss(cardId: card.id) }
-            ) {
-                CardBodyView(card: card)
+            if case .multipleChoice = card.payload {
+                multipleChoiceCardContent(for: card)
+            } else {
+                SwipeCardContainer(
+                    onApprove: { socket.approve(cardId: card.id) },
+                    onReject: { socket.dismiss(cardId: card.id) }
+                ) {
+                    CardBodyView(card: card)
 
-                Divider()
+                    Divider()
 
-                refineInputBar(for: card)
+                    refineInputBar(for: card)
 
-                if socket.isRefining {
-                    refiningBar
+                    if socket.isRefining {
+                        refiningBar
+                    }
                 }
             }
+        }
+    }
+
+    // MARK: - Multiple Choice Card (left-swipe-to-dismiss only)
+
+    @ViewBuilder
+    private func multipleChoiceCardContent(for card: ApprovalCard) -> some View {
+        SwipeCardContainer(
+            onApprove: { /* no-op: options handle their own selection */ },
+            onReject: { socket.dismiss(cardId: card.id) },
+            approveDisabled: true
+        ) {
+            MultipleChoiceCardBody(card: card, socket: socket)
         }
     }
 
     // MARK: - Refine Input Bar
 
-    private var canRefine: Bool {
-        !refineText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
-
     @ViewBuilder
     private func refineInputBar(for card: ApprovalCard) -> some View {
-        HStack(spacing: 8) {
-            TextField("Refine this reply...", text: $refineText, axis: .vertical)
-                .textFieldStyle(.plain)
-                .font(.body)
-                .lineLimit(1...3)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                #if os(iOS)
-                .background(Color(uiColor: .systemGray6))
-                #else
-                .background(Color.gray.opacity(0.12))
-                #endif
-                .clipShape(RoundedRectangle(cornerRadius: 18))
-                .onSubmit {
-                    sendRefine(for: card)
-                }
-
-            ZStack {
-                if canRefine {
-                    Button {
-                        sendRefine(for: card)
-                    } label: {
-                        Image(systemName: "arrow.up.circle.fill")
-                            .font(.system(size: 30))
-                            .foregroundStyle(.blue)
-                    }
-                    .transition(.scale.combined(with: .opacity))
-                } else {
-                    #if os(iOS)
-                    VoiceMicButton { transcript in
-                        socket.refine(cardId: card.id, instruction: transcript)
-                    }
-                    .zIndex(1)
-                    .transition(.scale.combined(with: .opacity))
-                    #else
-                    Button {} label: {
-                        Image(systemName: "arrow.up.circle.fill")
-                            .font(.system(size: 30))
-                            .foregroundStyle(.gray.opacity(0.4))
-                    }
-                    .disabled(true)
-                    #endif
-                }
+        SharedInputBar(
+            text: $refineText,
+            placeholder: "Refine this reply...",
+            lineLimit: 1...3,
+            showBackground: false,
+            onSend: {
+                let text = refineText.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !text.isEmpty else { return }
+                socket.refine(cardId: card.id, instruction: text)
+                refineText = ""
+            },
+            onVoiceTranscript: { transcript in
+                socket.refine(cardId: card.id, instruction: transcript)
             }
-            .animation(.spring(response: 0.3, dampingFraction: 0.7), value: canRefine)
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
-    }
-
-    private func sendRefine(for card: ApprovalCard) {
-        guard canRefine else { return }
-        socket.refine(cardId: card.id, instruction: refineText)
-        refineText = ""
+        )
     }
 
     // MARK: - Refining Bar
@@ -194,36 +146,21 @@ public struct ContentView: View {
     // MARK: - Empty State
 
     private var emptyState: some View {
-        VStack(spacing: 16) {
-            Image(systemName: "tray")
-                .font(.system(size: 48))
-                .foregroundStyle(.secondary)
-            Text("All caught up")
-                .font(.title3)
-                .foregroundStyle(.secondary)
-            Text("New reply suggestions will appear here")
-                .font(.subheadline)
-                .foregroundStyle(.tertiary)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        EmptyStateView(
+            icon: "tray",
+            title: "All caught up",
+            subtitle: "New reply suggestions will appear here"
+        )
     }
 
     // MARK: - Connection
 
     private var connectionBanner: some View {
-        Group {
-            if !socket.isConnected {
-                HStack(spacing: 6) {
-                    ProgressView()
-                        .controlSize(.small)
-                    Text("Connecting to \(socket.host):\(socket.port)...")
-                        .font(.caption)
-                }
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 6)
-                .background(Color.orange.opacity(0.15))
-            }
-        }
+        ConnectionBannerView(
+            isConnected: socket.isConnected,
+            host: socket.host,
+            port: socket.port
+        )
     }
 
     private var connectionDot: some View {
@@ -232,54 +169,4 @@ public struct ContentView: View {
             .frame(width: 8, height: 8)
     }
 
-    // MARK: - Settings
-
-    private var settingsSheet: some View {
-        NavigationStack {
-            Form {
-                Section("Server") {
-                    TextField("Host", text: $hostInput)
-                        #if os(iOS)
-                        .textInputAutocapitalization(.never)
-                        .keyboardType(.default)
-                        #endif
-                        .autocorrectionDisabled()
-                    TextField("Port", text: $portInput)
-                        #if os(iOS)
-                        .keyboardType(.numberPad)
-                        #endif
-                }
-                Section {
-                    HStack {
-                        Text("Status")
-                        Spacer()
-                        Text(socket.isConnected ? "Connected" : "Disconnected")
-                            .foregroundStyle(socket.isConnected ? .green : .red)
-                    }
-                }
-            }
-            .navigationTitle("Settings")
-            #if os(iOS)
-            .navigationBarTitleDisplayMode(.inline)
-            #endif
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") {
-                        showSettings = false
-                    }
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") {
-                        if let port = Int(portInput) {
-                            socket.updateServer(host: hostInput, port: port)
-                            socket.connect()
-                        }
-                        showSettings = false
-                    }
-                    .fontWeight(.semibold)
-                }
-            }
-        }
-        .presentationDetents([.medium])
-    }
 }

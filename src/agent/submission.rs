@@ -297,6 +297,8 @@ pub enum SubmissionResult {
         description: String,
         /// Parameters being passed.
         parameters: serde_json::Value,
+        /// Human-readable summary (when available).
+        summary: Option<crate::tools::summary::ToolSummary>,
     },
 
     /// Successfully processed (for control commands).

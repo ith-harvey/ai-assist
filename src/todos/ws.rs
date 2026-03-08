@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use axum::{
     Json, Router,
-    extract::{State, ws::{Message, WebSocket, WebSocketUpgrade}},
+    extract::{Path, State, ws::{Message, WebSocket, WebSocketUpgrade}},
     http::StatusCode,
     response::IntoResponse,
     routing::{get, post},
@@ -53,11 +53,12 @@ impl TodoState {
     }
 }
 
-/// Build the Axum router for `/ws/todos` and `/api/todos/test`.
+/// Build the Axum router for `/ws/todos`, `/api/todos/{id}`, and `/api/todos/test`.
 pub fn todo_routes(state: TodoState) -> Router {
     Router::new()
         .route("/ws/todos", get(ws_handler))
         .route("/api/todos/test", post(create_test_todo))
+        .route("/api/todos/{id}", get(get_todo_detail))
         .with_state(state)
 }
 
@@ -392,6 +393,54 @@ async fn handle_client_action(text: &str, state: &TodoState) -> Option<TodoWsMes
             debug!(error = %e, text = text, "Unrecognized todo WS message");
             None
         }
+    }
+}
+
+// ── REST endpoint for fetching a single todo with documents ───────────
+
+/// GET /api/todos/{id} — returns the todo and, if completed, its documents.
+async fn get_todo_detail(
+    State(state): State<TodoState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let todo_id = match Uuid::parse_str(&id) {
+        Ok(id) => id,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "Invalid UUID"})),
+            )
+                .into_response();
+        }
+    };
+
+    match state.db.get_todo(todo_id).await {
+        Ok(Some(todo)) => {
+            let is_completed = todo.status == TodoStatus::Completed
+                || todo.status == TodoStatus::ReadyForReview;
+
+            let documents = if is_completed {
+                state.db.list_documents_by_todo(todo_id).await.unwrap_or_default()
+            } else {
+                vec![]
+            };
+
+            Json(serde_json::json!({
+                "todo": todo,
+                "documents": documents
+            }))
+            .into_response()
+        }
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "Todo not found"})),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response(),
     }
 }
 

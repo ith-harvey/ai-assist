@@ -28,22 +28,53 @@ private struct TruncatedTextHeightKey: PreferenceKey {
     }
 }
 
+/// Tracks the bottom anchor's Y position in global coordinates.
+private struct BottomAnchorGlobalKey: PreferenceKey {
+    static var defaultValue: CGFloat = .infinity
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
+/// Tracks the scroll view's visible frame height in global coordinates.
+private struct ScrollViewFrameKey: PreferenceKey {
+    static var defaultValue: CGRect = .zero
+    static func reduce(value: inout CGRect, nextValue: () -> CGRect) {
+        value = nextValue()
+    }
+}
+
 public struct TodoDetailView: View {
     let todo: TodoItem
     let cardSocket: CardWebSocket
     @State private var activitySocket: TodoActivitySocket
     @State private var isDescriptionExpanded = false
     @State private var isHeaderCollapsed = false
+    @State private var isActivityExpanded: Bool
     @State private var approvalCard: ApprovalCard?
+    /// Whether the user is near the bottom of the scroll view (for auto-scroll).
+    @State private var isNearBottom: Bool = true
+    /// Bottom edge of the scroll view's visible frame (global Y).
+    @State private var scrollViewMaxY: CGFloat = 0
+    /// Documents fetched via REST for completed todos.
+    @State private var deliverables: [Document] = []
+    /// Text input for follow-up messages.
+    @State private var inputText = ""
+    /// Todo fetched via REST — source of truth for current status.
+    @State private var fetchedTodo: TodoItem?
 
     public init(todo: TodoItem, cardSocket: CardWebSocket) {
         self.todo = todo
         self.cardSocket = cardSocket
         self._activitySocket = State(initialValue: TodoActivitySocket(todoId: todo.id))
+        // Collapse activity by default when completed/readyForReview
+        let isFinished = todo.status == .completed || todo.status == .readyForReview
+        self._isActivityExpanded = State(initialValue: !isFinished)
     }
 
     public var body: some View {
-        ScrollViewReader { proxy in
+        VStack(spacing: 0) {
+            ScrollViewReader { proxy in
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
                     // ── Header ──────────────────────────────────────
@@ -68,22 +99,50 @@ public struct TodoDetailView: View {
                             .transition(.opacity.combined(with: .move(edge: .top)))
                     }
 
-                    // ── Divider ─────────────────────────────────────
-                    if todo.bucket == .agentStartable {
-                        Rectangle()
-                            .fill(Color.gray.opacity(0.2))
-                            .frame(height: 1)
+                    // ── Content (layout varies by completion state) ─
+                    if isCompletedState {
+                        // Completed layout: banner → documents → collapsed activity
+                        completionBannerFromActivity
                             .padding(.horizontal, 20)
+                            .padding(.bottom, 12)
 
-                        // ── Activity Feed ───────────────────────────────
-                        activitySection
-                            .padding(.top, 12)
+                        DocumentListSection(todoId: todo.id, host: cardSocket.host, port: cardSocket.port)
+                            .padding(.horizontal, 20)
+                            .padding(.bottom, 12)
+
+                        if todo.bucket == .agentStartable {
+                            collapsibleActivitySection
+                                .padding(.top, 4)
+                        }
+                    } else {
+                        // In-progress layout: documents → divider → live activity
+                        DocumentListSection(todoId: todo.id, host: cardSocket.host, port: cardSocket.port)
+                            .padding(.horizontal, 20)
+                            .padding(.bottom, 8)
+
+                        if todo.bucket == .agentStartable {
+                            Rectangle()
+                                .fill(Color.gray.opacity(0.2))
+                                .frame(height: 1)
+                                .padding(.horizontal, 20)
+
+                            activitySection
+                                .padding(.top, 12)
+                        }
                     }
 
                     // Invisible bottom anchor for scroll-to-bottom
                     Color.clear
                         .frame(height: 1)
                         .id("activityBottom")
+                        .background(
+                            GeometryReader { geo in
+                                Color.clear.preference(
+                                    key: BottomAnchorGlobalKey.self,
+                                    value: geo.frame(in: .global).maxY
+                                )
+                            }
+                        )
                 }
                 .padding(.bottom, 20)
                 .background(
@@ -96,10 +155,29 @@ public struct TodoDetailView: View {
                 )
             }
             .coordinateSpace(name: "detailScroll")
-            .onAppear {
-                // Scroll to bottom after a brief delay to let content render
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                    proxy.scrollTo("activityBottom", anchor: .bottom)
+            .background(
+                GeometryReader { geo in
+                    Color.clear.preference(
+                        key: ScrollViewFrameKey.self,
+                        value: geo.frame(in: .global)
+                    )
+                }
+            )
+            .onChange(of: activitySocket.hasCompletedInitialLoad) { _, loaded in
+                // One-shot scroll to bottom after history replay finishes
+                if loaded && !isCompletedState {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                        proxy.scrollTo("activityBottom", anchor: .bottom)
+                    }
+                }
+            }
+            .onChange(of: activitySocket.messages.count) { _, _ in
+                // Auto-scroll for live messages (after initial load), only if user
+                // hasn't scrolled up and the todo is still in progress.
+                if !isCompletedState && activitySocket.hasCompletedInitialLoad && isNearBottom {
+                    withAnimation(.easeOut(duration: 0.15)) {
+                        proxy.scrollTo("activityBottom", anchor: .bottom)
+                    }
                 }
             }
         }
@@ -118,15 +196,19 @@ public struct TodoDetailView: View {
                 }
             }
         }
+        .onPreferenceChange(ScrollViewFrameKey.self) { frame in
+            scrollViewMaxY = frame.maxY
+        }
+        .onPreferenceChange(BottomAnchorGlobalKey.self) { bottomY in
+            // User is "near bottom" when the bottom anchor is within 150pt
+            // of the scroll view's visible bottom edge.
+            isNearBottom = bottomY <= scrollViewMaxY + 150
+        }
         #if os(iOS)
         .scrollDismissesKeyboard(.interactively)
         #endif
-        #if os(iOS)
-        .background(Color(uiColor: .secondarySystemBackground).ignoresSafeArea())
-        #else
-        .background(Color.gray.opacity(0.08).ignoresSafeArea())
-        #endif
-        .navigationTitle(todo.title)
+        .secondaryBackground()
+        .navigationTitle("")
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -135,6 +217,12 @@ public struct TodoDetailView: View {
             }
         }
         #endif
+        .task {
+            let api = TodoAPI(host: cardSocket.host, port: cardSocket.port)
+            if let detail = try? await api.fetchTodoDetail(id: todo.id) {
+                fetchedTodo = detail.todo
+            }
+        }
         .onAppear {
             if todo.bucket == .agentStartable {
                 activitySocket.connect()
@@ -142,6 +230,26 @@ public struct TodoDetailView: View {
         }
         .onDisappear {
             activitySocket.disconnect()
+        }
+        .onChange(of: isActivityExpanded) { _, expanded in
+            if expanded && !activitySocket.isConnected {
+                activitySocket.connect()
+            }
+        }
+        .onChange(of: fetchedTodo?.status) { _, newStatus in
+            if newStatus == .completed || newStatus == .readyForReview {
+                withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                    isActivityExpanded = false
+                }
+            }
+        }
+        .onChange(of: activitySocket.isFinished) { _, finished in
+            if finished {
+                withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                    isActivityExpanded = false
+                    fetchedTodo?.status = .completed
+                }
+            }
         }
         .sheet(item: $approvalCard) { card in
             SwipeCardContainer(
@@ -158,6 +266,11 @@ public struct TodoDetailView: View {
             }
             .presentationDetents([.medium, .large])
         }
+
+        if todo.bucket == .agentStartable {
+            inputBar
+        }
+        } // VStack
     }
 
     // MARK: - Collapsible Description
@@ -268,34 +381,13 @@ public struct TodoDetailView: View {
                             .lineLimit(3)
 
                         HStack(spacing: 8) {
-                            // Type badge
-                            Text(todo.todoType.label)
-                                .font(.system(size: 11, weight: .medium))
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 3)
-                                .background(badgeColor.opacity(0.15))
-                                .foregroundStyle(badgeColor)
-                                .clipShape(Capsule())
+                            todo.todoType.tag()
 
-                            // Priority
-                            if todo.priority <= 2 {
-                                HStack(spacing: 2) {
-                                    Image(systemName: "exclamationmark.circle.fill")
-                                        .font(.system(size: 11))
-                                    Text(todo.priority == 1 ? "High" : "Medium")
-                                        .font(.system(size: 11, weight: .medium))
-                                }
-                                .foregroundStyle(todo.priority == 1 ? .red : .orange)
+                            if let priorityTag = todo.priorityTag() {
+                                priorityTag
                             }
 
-                            // Bucket
-                            HStack(spacing: 3) {
-                                Image(systemName: todo.bucket == .agentStartable ? "cpu" : "person.fill")
-                                    .font(.system(size: 10))
-                                Text(todo.bucket == .agentStartable ? "Agent" : "Human")
-                                    .font(.system(size: 11, weight: .medium))
-                            }
-                            .foregroundStyle(todo.bucket == .agentStartable ? .blue : .purple)
+                            todo.bucket.tag()
                         }
                     }
                 }
@@ -372,28 +464,93 @@ public struct TodoDetailView: View {
             .foregroundStyle(.secondary)
             .padding(.horizontal, 20)
 
-            if activitySocket.isFinished {
-                // Show all messages when finished (includes failed + transcript)
+            if !activitySocket.messages.isEmpty {
+                // Always show full activity history
                 ForEach(activitySocket.messages) { msg in
-                    activityRow(msg)
-                        .padding(.horizontal, 20)
-                }
-            } else if let latest = activitySocket.latestActivity {
-                // Show only the latest event while running
-                HStack(alignment: .top, spacing: 8) {
-                    if !latest.isTerminal {
-                        ProgressView()
-                            .controlSize(.mini)
-                            .padding(.top, 4)
+                    let isLast = msg.id == activitySocket.messages.last?.id
+                    let showSpinner = isLast && !activitySocket.isFinished && !msg.isTerminal
+
+                    HStack(alignment: .top, spacing: 8) {
+                        if showSpinner {
+                            ProgressView()
+                                .controlSize(.mini)
+                                .padding(.top, 4)
+                        }
+                        activityRow(msg)
                     }
-                    activityRow(latest)
-                }
-                    .id(latest.id)
                     .padding(.horizontal, 20)
-                    .animation(.easeInOut(duration: 0.2), value: latest.id)
+                }
             } else {
                 activityEmptyState
                     .padding(.horizontal, 20)
+            }
+        }
+    }
+
+    // MARK: - Completion State Helpers
+
+    /// Whether the todo is in a completed/review state (prefers API-fetched status).
+    private var isCompletedState: Bool {
+        let status = fetchedTodo?.status ?? todo.status
+        return status == .completed || status == .readyForReview
+    }
+
+    /// Completion banner driven by todo status from the API.
+    @ViewBuilder
+    private var completionBannerFromActivity: some View {
+        let status = fetchedTodo?.status ?? todo.status
+        if status == .completed {
+            completedBanner(summary: "")
+        } else if status == .readyForReview {
+            completedBanner(summary: "Ready for your review")
+        }
+    }
+
+    // MARK: - Collapsible Activity
+
+    /// Activity feed wrapped in a collapsible disclosure section.
+    private var collapsibleActivitySection: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            // Tappable header
+            Button {
+                withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                    isActivityExpanded.toggle()
+                }
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "waveform.path.ecg")
+                        .font(.system(size: 13))
+                    Text("Agent Activity")
+                        .font(.system(size: 13, weight: .semibold))
+
+                    let stepCount = activitySocket.messages.count
+                    if stepCount > 0 {
+                        Text("(\(stepCount) steps)")
+                            .font(.system(size: 12))
+                            .foregroundStyle(.tertiary)
+                    }
+
+                    Spacer()
+
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 12, weight: .semibold))
+                        .rotationEffect(.degrees(isActivityExpanded ? 90 : 0))
+                }
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 20)
+                .padding(.vertical, 10)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if isActivityExpanded {
+                // Filter out the terminal banner (already shown above)
+                let nonTerminal = activitySocket.messages.filter { !$0.isTerminal }
+                ForEach(nonTerminal) { msg in
+                    activityRow(msg)
+                        .padding(.horizontal, 20)
+                }
+                .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
     }
@@ -407,8 +564,6 @@ public struct TodoDetailView: View {
             startedRow()
         case .thinking(_, let iteration):
             thinkingRow(iteration: iteration)
-        case .toolStarted(_, let toolName):
-            toolStartedRow(toolName: toolName)
         case .toolCompleted(_, let toolName, let success, let summary):
             ToolCompletedRowView(toolName: toolName, success: success, summary: summary)
         case .reasoning(_, let content):
@@ -425,6 +580,8 @@ public struct TodoDetailView: View {
             approvalPendingRow(cardId: cardId, toolName: toolName, description: description)
         case .approvalResolved(_, _, let approved):
             approvalResolvedRow(approved: approved)
+        case .userMessage(_, let content):
+            userMessageRow(content: content)
         }
     }
 
@@ -458,16 +615,6 @@ public struct TodoDetailView: View {
         .padding(.vertical, 2)
     }
 
-    private func toolStartedRow(toolName: String) -> some View {
-        HStack(spacing: 8) {
-            toolBadge(toolName)
-            Text("running...")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-        }
-        .padding(.vertical, 2)
-    }
-
     private func reasoningRow(content: String) -> some View {
         HStack(spacing: 8) {
             Image(systemName: "brain.head.profile")
@@ -493,78 +640,32 @@ public struct TodoDetailView: View {
                     .foregroundStyle(.blue)
             }
 
-            Text(content)
-                .font(.subheadline)
-                .foregroundStyle(.primary)
+            MarkdownBodyView(content: content)
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
-                #if os(iOS)
-                .background(Color(uiColor: .systemBackground))
-                #else
-                .background(Color.white)
-                #endif
-                .clipShape(RoundedRectangle(cornerRadius: 12))
-                .shadow(color: .black.opacity(0.06), radius: 4, y: 2)
+                .cardBackground(cornerRadius: 12, shadowRadius: 4, shadowY: 2)
         }
         .padding(.vertical, 2)
     }
 
     private func completedBanner(summary: String) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 8) {
-                Image(systemName: "checkmark.circle.fill")
-                    .font(.system(size: 20))
-                    .foregroundStyle(.green)
-                Text("Completed")
-                    .font(.headline)
-                    .foregroundStyle(.green)
-            }
-            if !summary.isEmpty {
-                Text(summary)
-                    .font(.subheadline)
-                    .foregroundStyle(.primary)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(14)
-        .background(
-            RoundedRectangle(cornerRadius: 14)
-                .fill(.green.opacity(0.1))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 14)
-                        .strokeBorder(.green.opacity(0.3), lineWidth: 1)
-                )
+        StatusBannerView(
+            icon: "checkmark.circle.fill",
+            title: "Completed",
+            summary: summary,
+            color: .green,
+            summaryLineLimit: 3
         )
-        .padding(.top, 4)
     }
 
     private func failedBanner(error: String) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 8) {
-                Image(systemName: "xmark.circle.fill")
-                    .font(.system(size: 20))
-                    .foregroundStyle(.red)
-                Text("Failed")
-                    .font(.headline)
-                    .foregroundStyle(.red)
-            }
-            if !error.isEmpty {
-                Text(error)
-                    .font(.subheadline)
-                    .foregroundStyle(.primary)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(14)
-        .background(
-            RoundedRectangle(cornerRadius: 14)
-                .fill(.red.opacity(0.1))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 14)
-                        .strokeBorder(.red.opacity(0.3), lineWidth: 1)
-                )
+        StatusBannerView(
+            icon: "xmark.circle.fill",
+            title: "Failed",
+            summary: error,
+            color: .red,
+            summaryLineLimit: nil
         )
-        .padding(.top, 4)
     }
 
     // MARK: - Transcript View
@@ -685,14 +786,7 @@ public struct TodoDetailView: View {
                 .foregroundStyle(.orange.opacity(0.6))
         }
         .padding(12)
-        .background(
-            RoundedRectangle(cornerRadius: 12)
-                #if os(iOS)
-                .fill(Color(uiColor: .systemBackground))
-                #else
-                .fill(Color.white)
-                #endif
-        )
+        .cardBackground(cornerRadius: 12, shadowRadius: 0, shadowY: 0)
         .overlay(
             RoundedRectangle(cornerRadius: 12)
                 .strokeBorder(.orange.opacity(0.5), lineWidth: 1.5)
@@ -716,19 +810,80 @@ public struct TodoDetailView: View {
         .padding(.vertical, 4)
     }
 
-    // MARK: - Shared Components
+    // MARK: - User Message Row
 
-    private func toolBadge(_ name: String) -> some View {
-        Text(name)
-            .font(.system(size: 11, weight: .semibold, design: .monospaced))
-            .padding(.horizontal, 8)
-            .padding(.vertical, 3)
-            #if os(iOS)
-            .background(Color(uiColor: .systemGray5))
-            #else
-            .background(Color.gray.opacity(0.15))
-            #endif
-            .clipShape(Capsule())
+    private func userMessageRow(content: String) -> some View {
+        VStack(alignment: .trailing, spacing: 4) {
+            HStack(spacing: 6) {
+                Spacer()
+                Text("You")
+                    .font(.caption)
+                    .fontWeight(.semibold)
+                    .foregroundStyle(.blue)
+            }
+            Text(content)
+                .font(.subheadline)
+                .foregroundStyle(.white)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 8)
+                .background(.blue)
+                .clipShape(RoundedRectangle(cornerRadius: 16))
+        }
+        .frame(maxWidth: .infinity, alignment: .trailing)
+        .padding(.vertical, 2)
+    }
+
+    // MARK: - Input Bar
+
+    private var inputBar: some View {
+        SharedInputBar(
+            text: $inputText,
+            placeholder: "Send instructions...",
+            font: .subheadline,
+            sendIconSize: 28,
+            onSend: {
+                let text = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !text.isEmpty else { return }
+
+                // Optimistic: add user message to local activity feed
+                let msg = ActivityMessage.userMessage(todoId: todo.id, content: text)
+                activitySocket.messages.append(msg)
+
+                // Send over WebSocket
+                activitySocket.send(text: text)
+
+                // Transition UI back to in-progress if completed
+                if isCompletedState {
+                    transitionToInProgress()
+                }
+
+                // Clear input
+                inputText = ""
+            },
+            onVoiceTranscript: { transcript in
+                let msg = ActivityMessage.userMessage(todoId: todo.id, content: transcript)
+                activitySocket.messages.append(msg)
+                activitySocket.send(text: transcript)
+                if isCompletedState {
+                    transitionToInProgress()
+                }
+            }
+        )
+    }
+
+    /// Optimistically flip the UI from completed → in-progress so the live
+    /// activity feed is shown immediately after a follow-up message.
+    private func transitionToInProgress() {
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+            if fetchedTodo == nil {
+                var t = todo
+                t.status = .agentWorking
+                fetchedTodo = t
+            } else {
+                fetchedTodo?.status = .agentWorking
+            }
+            isActivityExpanded = true
+        }
     }
 
     // MARK: - Connection Badge
@@ -783,17 +938,7 @@ public struct TodoDetailView: View {
         }
     }
 
-    private var badgeColor: Color {
-        switch todo.todoType {
-        case .deliverable: .blue
-        case .research: .purple
-        case .errand: .orange
-        case .learning: .green
-        case .administrative: .gray
-        case .creative: .pink
-        case .review: .yellow
-        }
-    }
+    // Badge color now comes from todo.todoType.badgeColor
 
     // MARK: - Formatting
 
@@ -828,11 +973,7 @@ private struct ToolCompletedRowView: View {
                     .font(.system(size: 11, weight: .semibold, design: .monospaced))
                     .padding(.horizontal, 8)
                     .padding(.vertical, 3)
-                    #if os(iOS)
-                    .background(Color(uiColor: .systemGray5))
-                    #else
-                    .background(Color.gray.opacity(0.15))
-                    #endif
+                    .secondaryFill()
                     .clipShape(Capsule())
 
                 Spacer()
@@ -856,11 +997,7 @@ private struct ToolCompletedRowView: View {
                     .font(.system(size: 12, design: .monospaced))
                     .foregroundStyle(.secondary)
                     .padding(10)
-                    #if os(iOS)
-                    .background(Color(uiColor: .systemGray6))
-                    #else
-                    .background(Color.gray.opacity(0.08))
-                    #endif
+                    .secondaryFill()
                     .clipShape(RoundedRectangle(cornerRadius: 8))
                     .transition(.asymmetric(
                         insertion: .opacity.combined(with: .move(edge: .top)),

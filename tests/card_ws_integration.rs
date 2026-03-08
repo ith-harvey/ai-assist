@@ -16,7 +16,7 @@ use tokio_tungstenite::tungstenite::Message;
 use async_trait::async_trait;
 use rust_decimal::Decimal;
 
-use ai_assist::cards::generator::{CardGenerator, GeneratorConfig};
+use ai_assist::cards::reply_drafter::{GeneratorConfig, ReplyDrafter};
 use ai_assist::cards::model::{ApprovalCard, CardAction, CardSilo};
 use ai_assist::cards::queue::CardQueue;
 use ai_assist::cards::ws::card_routes;
@@ -64,18 +64,19 @@ async fn start_server() -> (u16, Arc<CardQueue>, TodoApprovalRegistry) {
     let queue = CardQueue::new();
     let registry = TodoApprovalRegistry::new();
     let llm: Arc<dyn LlmProvider> = Arc::new(StubLlm);
-    let generator = Arc::new(CardGenerator::new(
+    let reply_drafter = Arc::new(ReplyDrafter::new(
         llm,
-        Arc::clone(&queue),
         GeneratorConfig::default(),
     ));
     let (activity_tx, _activity_rx) = tokio::sync::broadcast::channel::<TodoActivityMessage>(16);
+    let choice_registry = ai_assist::cards::choice_registry::ChoiceRegistry::new();
     let app = card_routes(
         Arc::clone(&queue),
         None,
-        generator,
+        reply_drafter,
         registry.clone(),
         activity_tx,
+        choice_registry,
     );
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

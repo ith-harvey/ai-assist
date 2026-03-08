@@ -14,7 +14,7 @@ use async_trait::async_trait;
 use tokio::sync::{Mutex, broadcast, mpsc};
 use uuid::Uuid;
 
-use crate::cards::model::{ApprovalCard, CardSilo};
+use crate::cards::model::{ApprovalCard, CardPayload, CardSilo};
 use crate::cards::queue::CardQueue;
 use crate::channels::channel::{
     Channel, IncomingMessage, MessageStream, OutgoingResponse, StatusUpdate,
@@ -32,6 +32,8 @@ pub struct TodoChannel {
     job_id: Uuid,
     todo_title: String,
     todo_description: String,
+    /// If set, `start()` uses this instead of title+description.
+    override_content: Option<String>,
     activity_tx: broadcast::Sender<TodoActivityMessage>,
     db: Arc<dyn Database>,
     todo_tx: broadcast::Sender<TodoWsMessage>,
@@ -41,6 +43,8 @@ pub struct TodoChannel {
     responded: AtomicBool,
     /// Structured per-run logger.
     logger: AgentLogger,
+    /// Buffered ToolCompleted message waiting to be merged with a ToolResult.
+    pending_tool_completed: Mutex<Option<TodoActivityMessage>>,
     /// Sender half of the mpsc channel feeding the message stream.
     /// Wrapped in Mutex<Option<>> so we can take/drop it to close the stream.
     msg_tx: Mutex<Option<mpsc::Sender<IncomingMessage>>>,
@@ -61,6 +65,21 @@ impl TodoChannel {
         card_queue: Arc<CardQueue>,
         approval_registry: TodoApprovalRegistry,
     ) -> Self {
+        Self::with_override(todo_id, job_id, todo_title, todo_description, None, activity_tx, db, todo_tx, card_queue, approval_registry)
+    }
+
+    pub fn with_override(
+        todo_id: Uuid,
+        job_id: Uuid,
+        todo_title: String,
+        todo_description: String,
+        override_content: Option<String>,
+        activity_tx: broadcast::Sender<TodoActivityMessage>,
+        db: Arc<dyn Database>,
+        todo_tx: broadcast::Sender<TodoWsMessage>,
+        card_queue: Arc<CardQueue>,
+        approval_registry: TodoApprovalRegistry,
+    ) -> Self {
         let logger = AgentLogger::new(todo_id, job_id, &todo_title);
         // Bounded channel: 1 message at a time (approval response)
         let (tx, rx) = mpsc::channel(8);
@@ -69,6 +88,7 @@ impl TodoChannel {
             job_id,
             todo_title,
             todo_description,
+            override_content,
             activity_tx,
             db,
             todo_tx,
@@ -76,6 +96,7 @@ impl TodoChannel {
             approval_registry,
             responded: AtomicBool::new(false),
             logger,
+            pending_tool_completed: Mutex::new(None),
             msg_tx: Mutex::new(Some(tx)),
             msg_rx: Mutex::new(Some(rx)),
         }
@@ -110,6 +131,13 @@ impl TodoChannel {
         });
     }
 
+    /// Flush any buffered ToolCompleted message (emits it with empty summary).
+    async fn flush_pending_tool(&self) {
+        if let Some(msg) = self.pending_tool_completed.lock().await.take() {
+            self.emit(msg);
+        }
+    }
+
     /// Broadcast a todo update to the iOS todo list WebSocket.
     async fn broadcast_todo_update(&self) {
         if let Ok(Some(updated)) = self.db.get_todo(self.todo_id).await {
@@ -125,10 +153,16 @@ impl Channel for TodoChannel {
     }
 
     async fn start(&self) -> Result<MessageStream, ChannelError> {
-        let content = if self.todo_description.is_empty() {
-            self.todo_title.clone()
+        let todo_id_str = self.todo_id.to_string();
+        let content = if let Some(ref override_content) = self.override_content {
+            override_content.clone()
+        } else if self.todo_description.is_empty() {
+            format!("[todo_id: {}]\n\n{}", todo_id_str, self.todo_title)
         } else {
-            format!("{}\n\n{}", self.todo_title, self.todo_description)
+            format!(
+                "[todo_id: {}]\n\n{}\n\n{}",
+                todo_id_str, self.todo_title, self.todo_description
+            )
         };
 
         // Record the task prompt in logger
@@ -176,7 +210,7 @@ impl Channel for TodoChannel {
         // Emit completed
         self.emit(TodoActivityMessage::Completed {
             job_id: self.job_id,
-            summary: response.content.chars().take(200).collect(),
+            summary: condense_summary(&response.content),
         });
 
         // Update todo status to ready_for_review
@@ -202,65 +236,99 @@ impl Channel for TodoChannel {
         status: StatusUpdate,
         _metadata: &serde_json::Value,
     ) -> Result<(), ChannelError> {
-        let msg = match status {
+        match status {
             StatusUpdate::Thinking(ref content) => {
+                self.flush_pending_tool().await;
                 self.logger.system(content).await;
-                TodoActivityMessage::Reasoning {
+                self.emit(TodoActivityMessage::Reasoning {
                     job_id: self.job_id,
                     content: content.clone(),
-                }
+                });
             }
             StatusUpdate::ToolStarted { ref name } => {
+                // Log only — no activity message emitted.
+                // The ToolCompleted+ToolResult merge will produce a single event.
+                self.flush_pending_tool().await;
                 self.logger.tool_start(name).await;
-                TodoActivityMessage::ToolStarted {
-                    job_id: self.job_id,
-                    tool_name: name.clone(),
-                }
             }
             StatusUpdate::ToolCompleted { ref name, success } => {
                 self.logger.tool_end(name, success).await;
-                TodoActivityMessage::ToolCompleted {
-                    job_id: self.job_id,
-                    tool_name: name.clone(),
-                    success,
-                    summary: String::new(),
-                }
+                // Buffer — wait for ToolResult to merge summary.
+                *self.pending_tool_completed.lock().await = Some(
+                    TodoActivityMessage::ToolCompleted {
+                        job_id: self.job_id,
+                        tool_name: name.clone(),
+                        success,
+                        summary: String::new(),
+                    },
+                );
             }
             StatusUpdate::ToolResult { ref name, ref preview } => {
                 self.logger.tool_result(name, preview).await;
-                TodoActivityMessage::ToolCompleted {
-                    job_id: self.job_id,
-                    tool_name: name.clone(),
-                    success: true,
-                    summary: preview.clone(),
-                }
+                // Merge with buffered ToolCompleted if present.
+                let merged = if let Some(buffered) = self.pending_tool_completed.lock().await.take()
+                {
+                    match buffered {
+                        TodoActivityMessage::ToolCompleted {
+                            job_id, success, ..
+                        } => TodoActivityMessage::ToolCompleted {
+                            job_id,
+                            tool_name: name.clone(),
+                            success,
+                            summary: preview.clone(),
+                        },
+                        _ => TodoActivityMessage::ToolCompleted {
+                            job_id: self.job_id,
+                            tool_name: name.clone(),
+                            success: true,
+                            summary: preview.clone(),
+                        },
+                    }
+                } else {
+                    TodoActivityMessage::ToolCompleted {
+                        job_id: self.job_id,
+                        tool_name: name.clone(),
+                        success: true,
+                        summary: preview.clone(),
+                    }
+                };
+                self.emit(merged);
             }
             StatusUpdate::ApprovalNeeded {
                 ref request_id,
                 ref tool_name,
                 ref description,
                 ref parameters,
+                ref summary,
             } => {
+                self.flush_pending_tool().await;
+
+                let headline = summary
+                    .as_ref()
+                    .map(|s| s.headline.clone())
+                    .unwrap_or_else(|| format!("{}: {}", tool_name, description));
+
                 self.logger
-                    .system(&format!(
-                        "⚠️ Tool '{}' requires approval: {}",
-                        tool_name, description
-                    ))
+                    .system(&format!("⚠️ Approval needed: {}", headline))
                     .await;
 
-                // Create an Action card for the user to approve/dismiss
-                let action_detail = serde_json::to_string_pretty(parameters).ok();
-                let card = ApprovalCard::new_action(
-                    format!("Tool approval: {} — {}", tool_name, description),
-                    action_detail,
+                let action_detail = summary
+                    .as_ref()
+                    .map(|s| s.raw_params.clone())
+                    .or_else(|| serde_json::to_string_pretty(parameters).ok());
+
+                let card = ApprovalCard::new(
+                    CardPayload::Action {
+                        description: headline.clone(),
+                        action_detail,
+                    },
                     CardSilo::Todos,
-                    60, // fallback expiry (overridden by without_expiry)
+                    60,
                 )
                 .without_expiry()
                 .with_todo_id(self.todo_id);
-                let card_id = card.id;
 
-                // Push to card queue
+                let card_id = card.id;
                 self.card_queue.push(card).await;
 
                 // Register in approval registry so card WS can route back to us
@@ -296,18 +364,17 @@ impl Channel for TodoChannel {
                 );
 
                 // Emit structured activity event for iOS
-                TodoActivityMessage::ApprovalNeeded {
+                self.emit(TodoActivityMessage::ApprovalNeeded {
                     job_id: self.job_id,
                     card_id,
                     tool_name: tool_name.clone(),
-                    description: description.clone(),
-                }
+                    description: headline,
+                });
             }
             // StreamChunk and other variants — ignore for now
             _ => return Ok(()),
         };
 
-        self.emit(msg);
         Ok(())
     }
 
@@ -316,6 +383,9 @@ impl Channel for TodoChannel {
     }
 
     async fn shutdown(&self) -> Result<(), ChannelError> {
+        // Flush any buffered ToolCompleted before emitting terminal events
+        self.flush_pending_tool().await;
+
         // If respond() was never called, the agent errored out
         if !self.responded.load(Ordering::SeqCst) {
             self.emit(TodoActivityMessage::Failed {
@@ -362,6 +432,33 @@ impl Channel for TodoChannel {
     }
 }
 
+/// Strip markdown syntax and extract a short, clean summary from the agent's response.
+fn condense_summary(content: &str) -> String {
+    let line = content
+        .lines()
+        .map(|l| {
+            l.trim()
+                .trim_start_matches('#')
+                .replace("**", "")
+                .replace("__", "")
+                .trim()
+                .to_string()
+        })
+        .find(|l| !l.is_empty())
+        .unwrap_or_default();
+
+    if line.len() <= 120 {
+        return line;
+    }
+    // Truncate at word boundary
+    let truncated: String = line.chars().take(120).collect();
+    if let Some(pos) = truncated.rfind(' ') {
+        format!("{}…", &truncated[..pos])
+    } else {
+        format!("{}…", truncated)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -370,5 +467,39 @@ mod tests {
     fn todo_channel_name() {
         fn assert_channel<T: Channel>() {}
         assert_channel::<TodoChannel>();
+    }
+
+    #[test]
+    fn condense_summary_strips_markdown_heading() {
+        let input = "## Research Complete ✅\n\nI've researched Nashville flight options";
+        let result = condense_summary(input);
+        assert_eq!(result, "Research Complete ✅");
+    }
+
+    #[test]
+    fn condense_summary_strips_bold() {
+        let input = "**Key Findings:** Southwest has direct flights";
+        let result = condense_summary(input);
+        assert_eq!(result, "Key Findings: Southwest has direct flights");
+    }
+
+    #[test]
+    fn condense_summary_truncates_long_line() {
+        let input = "This is a very long line that goes on and on and on and on and on and on and on and on and on and on and on and on and on and on forever";
+        let result = condense_summary(input);
+        assert!(result.len() <= 125); // 120 + room for ellipsis
+        assert!(result.ends_with('…'));
+    }
+
+    #[test]
+    fn condense_summary_skips_blank_lines() {
+        let input = "\n\n  \nActual content here";
+        let result = condense_summary(input);
+        assert_eq!(result, "Actual content here");
+    }
+
+    #[test]
+    fn condense_summary_empty_input() {
+        assert_eq!(condense_summary(""), "");
     }
 }

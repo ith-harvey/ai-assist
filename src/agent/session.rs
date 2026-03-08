@@ -148,6 +148,9 @@ pub struct PendingApproval {
     pub tool_call_id: String,
     /// Context messages at the time of the request (to resume from).
     pub context_messages: Vec<ChatMessage>,
+    /// Human-readable summary of the tool invocation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<crate::tools::summary::ToolSummary>,
 }
 
 /// A conversation thread within a session.
@@ -946,6 +949,7 @@ mod tests {
             description: "dangerous command".to_string(),
             tool_call_id: "call_123".to_string(),
             context_messages: vec![ChatMessage::user("do it")],
+            summary: None,
         };
 
         thread.await_approval(approval);
@@ -969,6 +973,7 @@ mod tests {
             description: "test".to_string(),
             tool_call_id: "call_456".to_string(),
             context_messages: vec![],
+            summary: None,
         };
 
         thread.await_approval(approval);

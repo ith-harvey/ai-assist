@@ -11,6 +11,8 @@ public struct TodoListView: View {
     @State private var showCompleted = false
     @State private var selectedTodo: TodoItem?
     @State private var approvalCard: ApprovalCard?
+    @State private var searchText: String = ""
+    @State private var searchTask: Task<Void, Never>?
     let cardSocket: CardWebSocket
 
     public init(cardSocket: CardWebSocket) {
@@ -19,21 +21,34 @@ public struct TodoListView: View {
 
     public var body: some View {
         ZStack {
-            #if os(iOS)
-            Color(uiColor: .secondarySystemBackground)
-                .ignoresSafeArea()
-            #else
-            Color.gray.opacity(0.08)
-                .ignoresSafeArea()
-            #endif
-
-            if todoSocket.activeTodos.isEmpty && todoSocket.completedTodos.isEmpty {
+            if let results = todoSocket.searchResults {
+                searchResultsList(results)
+            } else if todoSocket.activeTodos.isEmpty && todoSocket.completedTodos.isEmpty {
                 emptyState
             } else {
                 todoList
             }
         }
+        .secondaryBackground()
         .navigationTitle("To-Dos")
+        #if os(iOS)
+        .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .automatic), prompt: "Search todos...")
+        #else
+        .searchable(text: $searchText, prompt: "Search todos...")
+        #endif
+        .onChange(of: searchText) { _, newValue in
+            searchTask?.cancel()
+            let trimmed = newValue.trimmingCharacters(in: .whitespaces)
+            if trimmed.isEmpty {
+                todoSocket.clearSearch()
+                return
+            }
+            searchTask = Task {
+                try? await Task.sleep(for: .milliseconds(300))
+                guard !Task.isCancelled else { return }
+                todoSocket.search(query: trimmed)
+            }
+        }
         #if os(iOS)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
@@ -71,17 +86,23 @@ public struct TodoListView: View {
 
     private var todoList: some View {
         List {
+            // Next Steps — opens approval card queue one at a time
+            if !cardSocket.cards.isEmpty {
+                NextStepsButton(count: cardSocket.cards.count) {
+                    approvalCard = cardSocket.cards.first
+                }
+                .plainCardListRow()
+            }
+
             // Active section
             if !todoSocket.activeTodos.isEmpty {
                 Section {
                     ForEach(todoSocket.activeTodos) { todo in
                         todoCard(todo)
-                            .listRowSeparator(.hidden)
-                            .listRowBackground(Color.clear)
-                            .listRowInsets(EdgeInsets(top: 5, leading: 14, bottom: 5, trailing: 14))
+                            .plainCardListRow()
                     }
                 } header: {
-                    sectionHeader("Active")
+                    SectionHeaderView(label: "Active")
                 }
             }
 
@@ -90,12 +111,10 @@ public struct TodoListView: View {
                 Section {
                     ForEach(todoSocket.snoozedTodos) { todo in
                         todoCard(todo)
-                            .listRowSeparator(.hidden)
-                            .listRowBackground(Color.clear)
-                            .listRowInsets(EdgeInsets(top: 5, leading: 14, bottom: 5, trailing: 14))
+                            .plainCardListRow()
                     }
                 } header: {
-                    sectionHeader("Snoozed")
+                    SectionHeaderView(label: "Snoozed")
                 }
             }
 
@@ -105,13 +124,20 @@ public struct TodoListView: View {
                     if showCompleted {
                         ForEach(todoSocket.completedTodos) { todo in
                             todoCard(todo)
-                                .listRowSeparator(.hidden)
-                                .listRowBackground(Color.clear)
-                                .listRowInsets(EdgeInsets(top: 5, leading: 14, bottom: 5, trailing: 14))
+                                .plainCardListRow()
                         }
                     }
                 } header: {
-                    completedSectionHeader
+                    SectionHeaderView(
+                        label: "Completed",
+                        count: todoSocket.completedTodos.count,
+                        isExpanded: showCompleted,
+                        onTap: {
+                            withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                                showCompleted.toggle()
+                            }
+                        }
+                    )
                 }
             }
         }
@@ -122,100 +148,40 @@ public struct TodoListView: View {
         #endif
     }
 
-    // MARK: - Section Headers
-
-    private func sectionHeader(_ title: String) -> some View {
-        HStack {
-            Text(title)
-                .font(.caption)
-                .textCase(.uppercase)
-                .foregroundStyle(.secondary)
-            Spacer()
-        }
-        .padding(.horizontal, 6)
-    }
-
-    private var completedSectionHeader: some View {
-        HStack {
-            Text("Completed")
-                .font(.caption)
-                .textCase(.uppercase)
-                .foregroundStyle(.secondary)
-            Spacer()
-            Text("\(todoSocket.completedTodos.count)")
-                .font(.caption)
-                .foregroundStyle(.tertiary)
-            Image(systemName: showCompleted ? "chevron.up" : "chevron.down")
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
-        }
-        .padding(.horizontal, 6)
-        .contentShape(Rectangle())
-        .onTapGesture {
-            withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
-                showCompleted.toggle()
-            }
-        }
-    }
-
-    // MARK: - Todo Card (compact, tappable → pushes detail)
+    // MARK: - Todo Card
 
     private func todoCard(_ todo: TodoItem) -> some View {
-        HStack(spacing: 0) {
-            // Status color stripe
-            RoundedRectangle(cornerRadius: 2)
-                .fill(todo.status.color)
-                .frame(width: 4)
-                .padding(.vertical, 6)
-
-            TodoRowView(todo: todo)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
-        }
-        .background(
-            RoundedRectangle(cornerRadius: 20)
-                #if os(iOS)
-                .fill(Color(uiColor: .systemBackground))
-                #else
-                .fill(Color.white)
-                #endif
-        )
-        .clipShape(RoundedRectangle(cornerRadius: 20))
-        .overlay(
-            RoundedRectangle(cornerRadius: 20)
-                .strokeBorder(.orange.opacity(todo.status == .awaitingApproval ? 0.6 : 0), lineWidth: 1.5)
-        )
-        .shadow(
-            color: todo.status == .awaitingApproval ? .orange.opacity(0.25) : .black.opacity(0.1),
-            radius: todo.status == .awaitingApproval ? 8 : 12,
-            y: todo.status == .awaitingApproval ? 0 : 4
-        )
-        .contentShape(Rectangle())
-        .onTapGesture(count: 2) {
-            if todo.status == .awaitingApproval {
-                approvalCard = cardSocket.cards.first(where: { $0.todoId == todo.id })
-            }
-        }
-        .onTapGesture(count: 1) {
-            selectedTodo = todo
-        }
-        // Right swipe — complete (hide on already-completed todos)
-        .swipeActions(edge: .leading) {
-            if todo.status != .completed {
-                Button {
-                    todoSocket.complete(todoId: todo.id)
-                } label: {
-                    Label("Complete", systemImage: "checkmark.circle.fill")
+        TodoCardView(
+            todo: todo,
+            onTap: { selectedTodo = todo },
+            onDoubleTap: {
+                if todo.status == .awaitingApproval {
+                    approvalCard = cardSocket.cards.first(where: { $0.todoId == todo.id })
                 }
-                .tint(.green)
-            }
-        }
-        // Left swipe — delete
-        .swipeActions(edge: .trailing) {
-            Button(role: .destructive) {
-                todoSocket.delete(todoId: todo.id)
-            } label: {
-                Label("Delete", systemImage: "trash.fill")
+            },
+            onComplete: { todoSocket.complete(todoId: todo.id) },
+            onDelete: { todoSocket.delete(todoId: todo.id) }
+        )
+    }
+
+    // MARK: - Search Results
+
+    private func searchResultsList(_ results: [TodoItem]) -> some View {
+        Group {
+            if results.isEmpty {
+                EmptyStateView(icon: "magnifyingglass", title: "No results found")
+            } else {
+                List {
+                    ForEach(results) { todo in
+                        todoCard(todo)
+                            .plainCardListRow()
+                    }
+                }
+                .listStyle(.plain)
+                .scrollContentBackground(.hidden)
+                #if os(iOS)
+                .scrollDismissesKeyboard(.interactively)
+                #endif
             }
         }
     }
@@ -223,131 +189,16 @@ public struct TodoListView: View {
     // MARK: - Empty State
 
     private var emptyState: some View {
-        VStack(spacing: 16) {
-            Image(systemName: "checklist")
-                .font(.system(size: 48))
-                .foregroundStyle(.secondary)
-            Text("No to-dos yet")
-                .font(.title3)
-                .foregroundStyle(.secondary)
-            #if os(iOS)
-            Text("Use the Brain tab to create todos with your voice")
-                .font(.subheadline)
-                .foregroundStyle(.tertiary)
-                .multilineTextAlignment(.center)
-            #endif
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        #if os(iOS)
+        EmptyStateView(
+            icon: "checklist",
+            title: "No to-dos yet",
+            subtitle: "Use the Brain tab to create todos with your voice"
+        )
+        #else
+        EmptyStateView(icon: "checklist", title: "No to-dos yet")
+        #endif
     }
 }
 
-// MARK: - Todo Row (compact)
-
-/// A single compact row showing status, title, due date, and type badge.
-struct TodoRowView: View {
-    let todo: TodoItem
-
-    var body: some View {
-        HStack(spacing: 12) {
-            // Status icon (spinner for agentWorking)
-            if todo.status == .agentWorking {
-                ProgressView()
-                    .controlSize(.small)
-                    .frame(width: 24)
-            } else {
-                Image(systemName: todo.status.iconName)
-                    .font(.system(size: 18))
-                    .foregroundStyle(statusColor)
-                    .frame(width: 24)
-            }
-
-            // Content
-            VStack(alignment: .leading, spacing: 3) {
-                Text(todo.title)
-                    .font(.body)
-                    .foregroundStyle(todo.status == .completed ? .secondary : .primary)
-                    .strikethrough(todo.status == .completed)
-                    .lineLimit(2)
-
-                HStack(spacing: 6) {
-                    // Type badge
-                    Text(todo.todoType.label)
-                        .font(.system(size: 10, weight: .medium))
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(badgeColor.opacity(0.15))
-                        .foregroundStyle(badgeColor)
-                        .clipShape(Capsule())
-
-                    // Due date
-                    if let due = todo.dueDate {
-                        HStack(spacing: 2) {
-                            Image(systemName: "clock")
-                                .font(.system(size: 9))
-                            Text(formatDueDate(due))
-                                .font(.system(size: 11))
-                        }
-                        .foregroundStyle(todo.isOverdue ? .red : .secondary)
-                    }
-
-                    // Agent badge
-                    if todo.bucket == .agentStartable {
-                        HStack(spacing: 2) {
-                            Image(systemName: "cpu")
-                                .font(.system(size: 9))
-                            Text("Agent")
-                                .font(.system(size: 10))
-                        }
-                        .foregroundStyle(.blue.opacity(0.7))
-                    }
-                }
-            }
-
-            Spacer()
-
-            // Chevron to indicate pushable
-            Image(systemName: "chevron.right")
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(.tertiary)
-        }
-    }
-
-    // MARK: - Colors
-
-    private var statusColor: Color {
-        todo.status.color
-    }
-
-    private var badgeColor: Color {
-        switch todo.todoType {
-        case .deliverable: .blue
-        case .research: .purple
-        case .errand: .orange
-        case .learning: .green
-        case .administrative: .gray
-        case .creative: .pink
-        case .review: .yellow
-        }
-    }
-
-    // MARK: - Formatting
-
-    private func formatDueDate(_ date: Date) -> String {
-        let calendar = Calendar.current
-        if calendar.isDateInToday(date) {
-            let formatter = DateFormatter()
-            formatter.dateFormat = "h:mm a"
-            return "Today \(formatter.string(from: date))"
-        } else if calendar.isDateInTomorrow(date) {
-            let formatter = DateFormatter()
-            formatter.dateFormat = "h:mm a"
-            return "Tomorrow \(formatter.string(from: date))"
-        } else if calendar.isDateInYesterday(date) {
-            return "Yesterday"
-        } else {
-            let formatter = DateFormatter()
-            formatter.dateFormat = "MMM d"
-            return formatter.string(from: date)
-        }
-    }
-}
+// TodoRowView and TodoCardView are now in Views/Shared/

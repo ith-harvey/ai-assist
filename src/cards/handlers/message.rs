@@ -3,7 +3,7 @@
 use async_trait::async_trait;
 use tracing::{info, warn};
 
-use crate::cards::handler::{ApprovalHandler, CardActionContext};
+use super::{ApprovalHandler, CardActionContext};
 use crate::cards::model::{ApprovalCard, CardPayload};
 use crate::channels::email::{EmailConfig, send_reply_email};
 

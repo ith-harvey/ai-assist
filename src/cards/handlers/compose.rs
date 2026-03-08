@@ -3,7 +3,7 @@
 use async_trait::async_trait;
 use tracing::info;
 
-use crate::cards::handler::{ApprovalHandler, CardActionContext};
+use super::{ApprovalHandler, CardActionContext};
 use crate::cards::model::ApprovalCard;
 
 pub struct ComposeHandler;

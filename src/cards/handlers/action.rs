@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use tokio::sync::broadcast;
 use tracing::{info, warn};
 
-use crate::cards::handler::{ApprovalHandler, CardActionContext};
+use super::{ApprovalHandler, CardActionContext};
 use crate::cards::model::ApprovalCard;
 use crate::channels::IncomingMessage;
 use crate::todos::activity::TodoActivityMessage;
