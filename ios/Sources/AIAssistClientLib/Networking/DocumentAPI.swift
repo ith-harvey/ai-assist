@@ -23,10 +23,7 @@ public final class DocumentAPI: @unchecked Sendable {
         return d
     }
 
-    public init(
-        host: String = UserDefaults.standard.string(forKey: "ai_assist_host") ?? "localhost",
-        port: Int = UserDefaults.standard.object(forKey: "ai_assist_port") as? Int ?? 8080
-    ) {
+    public init(host: String = "localhost", port: Int = 3001) {
         self.host = host
         self.port = port
     }

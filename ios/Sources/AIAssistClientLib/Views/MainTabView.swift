@@ -13,11 +13,6 @@ public struct MainTabView: View {
     @State private var isInputBarVisible = true
     @State private var isKeyboardVisible = false
 
-    /// Settings sheet state
-    @State private var showSettings = false
-    @State private var hostInput = ""
-    @State private var portInput = ""
-
     public init() {}
 
     public var body: some View {
@@ -77,23 +72,6 @@ public struct MainTabView: View {
             cardSocket.disconnect()
             chatSocket.disconnect()
         }
-        .overlay(alignment: .topTrailing) {
-            Button {
-                hostInput = cardSocket.host
-                portInput = String(cardSocket.port)
-                showSettings = true
-            } label: {
-                Image(systemName: "gearshape")
-                    .font(.body)
-                    .padding(10)
-                    .background(.ultraThinMaterial, in: Circle())
-            }
-            .padding(.trailing, 16)
-            .padding(.top, 6)
-        }
-        .sheet(isPresented: $showSettings) {
-            settingsSheet
-        }
         #if os(iOS)
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
             isKeyboardVisible = true
@@ -103,69 +81,6 @@ public struct MainTabView: View {
             isKeyboardVisible = false
         }
         #endif
-    }
-
-    // MARK: - Settings Sheet
-
-    @AppStorage("ai_assist_onboarding_complete") private var onboardingComplete = true
-
-    private var settingsSheet: some View {
-        NavigationStack {
-            Form {
-                Section("Server") {
-                    TextField("Host", text: $hostInput)
-                        #if os(iOS)
-                        .textInputAutocapitalization(.never)
-                        .keyboardType(.default)
-                        #endif
-                        .autocorrectionDisabled()
-                    TextField("Port", text: $portInput)
-                        #if os(iOS)
-                        .keyboardType(.numberPad)
-                        #endif
-                }
-                Section {
-                    HStack {
-                        Text("Status")
-                        Spacer()
-                        Text(cardSocket.isConnected ? "Connected" : "Disconnected")
-                            .foregroundStyle(cardSocket.isConnected ? .green : .red)
-                    }
-                }
-                Section {
-                    Button("Change Server", role: .destructive) {
-                        showSettings = false
-                        onboardingComplete = false
-                    }
-                }
-            }
-            .navigationTitle("Settings")
-            #if os(iOS)
-            .navigationBarTitleDisplayMode(.inline)
-            #endif
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") {
-                        showSettings = false
-                    }
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") {
-                        if let port = Int(portInput) {
-                            UserDefaults.standard.set(hostInput, forKey: "ai_assist_host")
-                            UserDefaults.standard.set(port, forKey: "ai_assist_port")
-                            cardSocket.updateServer(host: hostInput, port: port)
-                            chatSocket.updateServer(host: hostInput, port: port)
-                            cardSocket.connect()
-                            chatSocket.connect()
-                        }
-                        showSettings = false
-                    }
-                    .fontWeight(.semibold)
-                }
-            }
-        }
-        .presentationDetents([.medium])
     }
 
     // MARK: - Shared AI Input Bar

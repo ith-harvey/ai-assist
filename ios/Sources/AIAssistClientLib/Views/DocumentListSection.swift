@@ -8,7 +8,7 @@ public struct DocumentListSection: View {
     @State private var api: DocumentAPI
     @State private var selectedDocument: Document?
 
-    public init(todoId: UUID, host: String = UserDefaults.standard.string(forKey: "ai_assist_host") ?? "localhost", port: Int = UserDefaults.standard.object(forKey: "ai_assist_port") as? Int ?? 8080) {
+    public init(todoId: UUID, host: String = "localhost", port: Int = 3001) {
         self.todoId = todoId
         self._api = State(initialValue: DocumentAPI(host: host, port: port))
     }

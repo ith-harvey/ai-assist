@@ -6,6 +6,9 @@ import SwiftUI
 /// card rendering to CardBodyView, and channel styling to ChannelStyle.
 public struct ContentView: View {
     var socket: CardWebSocket
+    @State private var showSettings = false
+    @State private var hostInput = "localhost"
+    @State private var portInput = "8080"
 
     // Refine input state
     @State private var refineText = ""
@@ -47,12 +50,24 @@ public struct ContentView: View {
                 }
                 #endif
                 ToolbarItem(placement: .primaryAction) {
-                    ApprovalBellBadge(count: socket.cards.count)
+                    HStack(spacing: 12) {
+                        ApprovalBellBadge(count: socket.cards.count)
+                        Button {
+                            hostInput = socket.host
+                            portInput = String(socket.port)
+                            showSettings = true
+                        } label: {
+                            Image(systemName: "gearshape")
+                        }
+                    }
                 }
             }
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
             #endif
+            .sheet(isPresented: $showSettings) {
+                settingsSheet
+            }
             #if os(iOS)
             .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
                 isKeyboardVisible = true
@@ -169,4 +184,54 @@ public struct ContentView: View {
             .frame(width: 8, height: 8)
     }
 
+    // MARK: - Settings
+
+    private var settingsSheet: some View {
+        NavigationStack {
+            Form {
+                Section("Server") {
+                    TextField("Host", text: $hostInput)
+                        #if os(iOS)
+                        .textInputAutocapitalization(.never)
+                        .keyboardType(.default)
+                        #endif
+                        .autocorrectionDisabled()
+                    TextField("Port", text: $portInput)
+                        #if os(iOS)
+                        .keyboardType(.numberPad)
+                        #endif
+                }
+                Section {
+                    HStack {
+                        Text("Status")
+                        Spacer()
+                        Text(socket.isConnected ? "Connected" : "Disconnected")
+                            .foregroundStyle(socket.isConnected ? .green : .red)
+                    }
+                }
+            }
+            .navigationTitle("Settings")
+            #if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
+            #endif
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") {
+                        showSettings = false
+                    }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") {
+                        if let port = Int(portInput) {
+                            socket.updateServer(host: hostInput, port: port)
+                            socket.connect()
+                        }
+                        showSettings = false
+                    }
+                    .fontWeight(.semibold)
+                }
+            }
+        }
+        .presentationDetents([.medium])
+    }
 }

@@ -10,15 +10,9 @@ import AIAssistClientLib
 
 @main
 struct AIAssistAppApp: App {
-    @AppStorage("ai_assist_onboarding_complete") private var onboarded = false
-
     var body: some Scene {
         WindowGroup {
-            if onboarded {
-                AIAssistClientLib.MainTabView()
-            } else {
-                AIAssistClientLib.OnboardingView()
-            }
+            AIAssistClientLib.MainTabView()
         }
     }
 }
