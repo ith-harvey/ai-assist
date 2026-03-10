@@ -58,8 +58,20 @@ echo "🌱 Seeding database..."
 
 # ── Step 5: Foreground the server ──────────────────────────────────
 echo ""
+LAN_IP=""
+for iface in en0 en1 en2 en3 en4 en5 en6 en7 en8; do
+  ip=$(ipconfig getifaddr "$iface" 2>/dev/null)
+  if [ -n "$ip" ]; then
+    LAN_IP="$ip"
+    break
+  fi
+done
+
 echo "════════════════════════════════════════════════════"
 echo "  AI Assist running on http://localhost:${PORT}"
+if [ -n "$LAN_IP" ]; then
+echo "  Remote:      http://${LAN_IP}:${PORT}"
+fi
 echo "  Cards WS:    ws://localhost:${PORT}/ws"
 echo "  Chat WS:     ws://localhost:${PORT}/ws/chat"
 echo "  Todos WS:    ws://localhost:${PORT}/ws/todos"

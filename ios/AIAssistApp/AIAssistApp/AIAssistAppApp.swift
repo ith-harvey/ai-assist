@@ -12,6 +12,12 @@ import AIAssistClientLib
 struct AIAssistAppApp: App {
     @AppStorage("ai_assist_onboarding_complete") private var onboarded = false
 
+    init() {
+        #if DEBUG
+        UserDefaults.standard.set(false, forKey: "ai_assist_onboarding_complete")
+        #endif
+    }
+
     var body: some Scene {
         WindowGroup {
             if onboarded {
