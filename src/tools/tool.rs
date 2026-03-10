@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::context::JobContext;
+use crate::tools::summary::ToolSummary;
 
 /// Where a tool should execute.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -38,6 +39,15 @@ pub enum ToolError {
 
     #[error("External service error: {0}")]
     ExternalService(String),
+}
+
+impl ToolError {
+    /// Create an ExecutionFailed error with context prefix.
+    ///
+    /// Usage: `.map_err(|e| ToolError::exec("Create document", e))`
+    pub fn exec(context: &str, err: impl std::fmt::Display) -> Self {
+        Self::ExecutionFailed(format!("{}: {}", context, err))
+    }
 }
 
 /// Output from a tool execution.
@@ -164,6 +174,12 @@ pub trait Tool: Send + Sync {
     /// Where this tool should execute.
     fn domain(&self) -> ToolDomain {
         ToolDomain::Orchestrator
+    }
+
+    /// Produce a human-readable summary of what this invocation will do.
+    /// Override for tool-specific headlines; default falls back to generic.
+    fn summarize(&self, params: &serde_json::Value) -> ToolSummary {
+        ToolSummary::fallback(self.name(), params)
     }
 
     /// Get the tool schema for LLM function calling.

@@ -185,6 +185,19 @@ const SCHEMA: &str = r#"
     CREATE INDEX IF NOT EXISTS idx_job_actions_job_id ON job_actions(job_id);
     CREATE INDEX IF NOT EXISTS idx_job_actions_todo_id ON job_actions(todo_id);
     CREATE INDEX IF NOT EXISTS idx_job_actions_created ON job_actions(created_at);
+
+    CREATE TABLE IF NOT EXISTS documents (
+        id TEXT PRIMARY KEY,
+        todo_id TEXT NOT NULL,
+        title TEXT NOT NULL,
+        content TEXT NOT NULL,
+        doc_type TEXT NOT NULL,
+        created_by TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_documents_todo_id ON documents(todo_id);
+    CREATE INDEX IF NOT EXISTS idx_documents_doc_type ON documents(doc_type);
 "#;
 
 /// Create all tables and indexes idempotently.
@@ -243,6 +256,7 @@ mod tests {
             "llm_calls",
             "todos",
             "job_actions",
+            "documents",
         ];
 
         for table in &expected_tables {
@@ -287,7 +301,7 @@ mod tests {
             .unwrap();
         let row = rows.next().await.unwrap().unwrap();
         let count: i64 = row.get(0).unwrap();
-        assert!(count >= 10, "Expected at least 10 tables, got {count}");
+        assert!(count >= 11, "Expected at least 11 tables, got {count}");
     }
 
     #[tokio::test]
@@ -316,6 +330,15 @@ mod tests {
             "created_at", "updated_at",
         ] {
             assert!(todo_cols.contains(&col.to_string()), "todos.{col} missing");
+        }
+
+        // Verify documents table columns
+        let doc_cols = get_column_names(&conn, "documents").await;
+        for col in &[
+            "id", "todo_id", "title", "content", "doc_type",
+            "created_by", "created_at", "updated_at",
+        ] {
+            assert!(doc_cols.contains(&col.to_string()), "documents.{col} missing");
         }
 
         // Verify llm_calls table columns

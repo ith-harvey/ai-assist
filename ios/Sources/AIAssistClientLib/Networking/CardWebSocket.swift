@@ -27,7 +27,10 @@ public final class CardWebSocket: @unchecked Sendable {
     private let maxReconnectDelay: TimeInterval = 30.0
     private var isIntentionalDisconnect = false
 
-    public init(host: String = "localhost", port: Int = 8080) {
+    public init(
+        host: String = UserDefaults.standard.string(forKey: "ai_assist_host") ?? "localhost",
+        port: Int = UserDefaults.standard.object(forKey: "ai_assist_port") as? Int ?? 8080
+    ) {
         self.host = host
         self.port = port
         self.session = URLSession(configuration: .default)
@@ -167,6 +170,11 @@ public final class CardWebSocket: @unchecked Sendable {
     public func refine(cardId: UUID, instruction: String) {
         isRefining = true
         send(action: .refine(cardId: cardId, instruction: instruction))
+    }
+
+    public func selectOption(cardId: UUID, selectedIndex: Int) {
+        send(action: .selectOption(cardId: cardId, selectedIndex: selectedIndex))
+        cards.removeAll { $0.id == cardId }
     }
 
     // MARK: - Reconnection

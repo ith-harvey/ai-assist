@@ -10,7 +10,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use crate::context::JobContext;
-use crate::tools::tool::{Tool, ToolError, ToolOutput, require_str};
+use crate::tools::params::Params;
+use crate::tools::tool::{Tool, ToolError, ToolOutput};
 use crate::workspace::{paths, Workspace};
 
 /// Identity files that the LLM must not overwrite via tool calls.
@@ -70,14 +71,15 @@ impl Tool for MemorySearchTool {
         _ctx: &JobContext,
     ) -> Result<ToolOutput, ToolError> {
         let start = std::time::Instant::now();
-        let query = require_str(&params, "query")?;
-        let limit = params.get("limit").and_then(|v| v.as_u64()).unwrap_or(5).min(20) as usize;
+        let p = Params::new(&params);
+        let query = p.require_str("query")?;
+        let limit = p.u64_or("limit", 5).min(20) as usize;
 
         let results = self
             .workspace
             .search(query, limit)
             .await
-            .map_err(|e| ToolError::ExecutionFailed(format!("Search failed: {}", e)))?;
+            .map_err(|e| ToolError::exec("Search memory", e))?;
 
         let output = serde_json::json!({
             "query": query,
@@ -95,6 +97,18 @@ impl Tool for MemorySearchTool {
 
     fn requires_sanitization(&self) -> bool {
         false
+    }
+
+    fn summarize(&self, params: &serde_json::Value) -> crate::tools::summary::ToolSummary {
+        let raw = serde_json::to_string_pretty(params).unwrap_or_default();
+        let query = params.get("query").and_then(|v| v.as_str()).unwrap_or("...");
+        let short_q: String = query.chars().take(60).collect();
+        crate::tools::summary::ToolSummary::new(
+            "Search",
+            "memory",
+            format!("Search memory for '{}'", short_q),
+            raw,
+        )
     }
 }
 
@@ -151,13 +165,14 @@ impl Tool for MemoryWriteTool {
         _ctx: &JobContext,
     ) -> Result<ToolOutput, ToolError> {
         let start = std::time::Instant::now();
-        let content = require_str(&params, "content")?;
+        let p = Params::new(&params);
+        let content = p.require_str("content")?;
 
         if content.trim().is_empty() {
             return Err(ToolError::InvalidParameters("content cannot be empty".into()));
         }
 
-        let target = params.get("target").and_then(|v| v.as_str()).unwrap_or("daily_log");
+        let target = p.optional_str("target").unwrap_or("daily_log");
 
         // Reject writes to identity files (prompt injection defense)
         if PROTECTED_IDENTITY_FILES.contains(&target) {
@@ -176,14 +191,14 @@ impl Tool for MemoryWriteTool {
                 } else {
                     self.workspace.write(paths::MEMORY, content).await
                 }
-                .map_err(|e| ToolError::ExecutionFailed(format!("Write failed: {}", e)))?;
+                .map_err(|e| ToolError::exec("Write memory", e))?;
                 paths::MEMORY.to_string()
             }
             "daily_log" => {
                 self.workspace
                     .append_daily_log(content)
                     .await
-                    .map_err(|e| ToolError::ExecutionFailed(format!("Write failed: {}", e)))?;
+                    .map_err(|e| ToolError::exec("Write memory", e))?;
                 format!("memory/{}.md", chrono::Utc::now().format("%Y-%m-%d"))
             }
             "heartbeat" => {
@@ -192,7 +207,7 @@ impl Tool for MemoryWriteTool {
                 } else {
                     self.workspace.write(paths::HEARTBEAT, content).await
                 }
-                .map_err(|e| ToolError::ExecutionFailed(format!("Write failed: {}", e)))?;
+                .map_err(|e| ToolError::exec("Write memory", e))?;
                 paths::HEARTBEAT.to_string()
             }
             path => {
@@ -211,7 +226,7 @@ impl Tool for MemoryWriteTool {
                 } else {
                     self.workspace.write(path, content).await
                 }
-                .map_err(|e| ToolError::ExecutionFailed(format!("Write failed: {}", e)))?;
+                .map_err(|e| ToolError::exec("Write memory", e))?;
                 path.to_string()
             }
         };
@@ -229,6 +244,12 @@ impl Tool for MemoryWriteTool {
 
     fn requires_sanitization(&self) -> bool {
         false
+    }
+
+    fn summarize(&self, params: &serde_json::Value) -> crate::tools::summary::ToolSummary {
+        let raw = serde_json::to_string_pretty(params).unwrap_or_default();
+        let path = params.get("path").and_then(|v| v.as_str()).unwrap_or("memory");
+        crate::tools::summary::ToolSummary::new("Write", path, format!("Write to {}", path), raw)
     }
 }
 
@@ -283,15 +304,16 @@ impl Tool for MemoryReadTool {
         _ctx: &JobContext,
     ) -> Result<ToolOutput, ToolError> {
         let start = std::time::Instant::now();
-        let path = require_str(&params, "path")?;
-        let offset = params.get("offset").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-        let limit = params.get("limit").and_then(|v| v.as_u64());
+        let p = Params::new(&params);
+        let path = p.require_str("path")?;
+        let offset = p.u64_or("offset", 0) as usize;
+        let limit = p.optional_u64("limit");
 
         let content = self
             .workspace
             .read(path)
             .await
-            .map_err(|e| ToolError::ExecutionFailed(format!("Read failed: {}", e)))?;
+            .map_err(|e| ToolError::exec("Read memory", e))?;
 
         let lines: Vec<&str> = content.lines().collect();
         let total_lines = lines.len();
@@ -319,6 +341,12 @@ impl Tool for MemoryReadTool {
 
     fn requires_sanitization(&self) -> bool {
         false
+    }
+
+    fn summarize(&self, params: &serde_json::Value) -> crate::tools::summary::ToolSummary {
+        let raw = serde_json::to_string_pretty(params).unwrap_or_default();
+        let path = params.get("path").and_then(|v| v.as_str()).unwrap_or("file");
+        crate::tools::summary::ToolSummary::new("Read", path, format!("Read {}", path), raw)
     }
 }
 
@@ -364,13 +392,14 @@ impl Tool for MemoryTreeTool {
         _ctx: &JobContext,
     ) -> Result<ToolOutput, ToolError> {
         let start = std::time::Instant::now();
-        let path = params.get("path").and_then(|v| v.as_str()).unwrap_or("");
+        let p = Params::new(&params);
+        let path = p.optional_str("path").unwrap_or("");
 
         let entries = self
             .workspace
             .list(path)
             .await
-            .map_err(|e| ToolError::ExecutionFailed(format!("List failed: {}", e)))?;
+            .map_err(|e| ToolError::exec("List memory", e))?;
 
         let tree: Vec<serde_json::Value> = entries
             .iter()
@@ -395,6 +424,12 @@ impl Tool for MemoryTreeTool {
 
     fn requires_sanitization(&self) -> bool {
         false
+    }
+
+    fn summarize(&self, params: &serde_json::Value) -> crate::tools::summary::ToolSummary {
+        let raw = serde_json::to_string_pretty(params).unwrap_or_default();
+        let path = params.get("path").and_then(|v| v.as_str()).unwrap_or(".");
+        crate::tools::summary::ToolSummary::new("List", path, format!("List files in {}", path), raw)
     }
 }
 
@@ -532,5 +567,42 @@ mod tests {
 
         let count = result.result["count"].as_i64().unwrap();
         assert!(count > 0);
+    }
+
+    #[test]
+    fn summarize_search() {
+        let (ws, _dir) = test_workspace();
+        let tool = MemorySearchTool::new(ws);
+        let s = tool.summarize(&serde_json::json!({"query": "Rust concurrency patterns"}));
+        assert_eq!(s.verb, "Search");
+        assert_eq!(s.target, "memory");
+        assert!(s.headline.contains("Rust concurrency"));
+    }
+
+    #[test]
+    fn summarize_write() {
+        let (ws, _dir) = test_workspace();
+        let tool = MemoryWriteTool::new(ws);
+        let s = tool.summarize(&serde_json::json!({"path": "notes/arch.md", "content": "..."}));
+        assert_eq!(s.verb, "Write");
+        assert_eq!(s.target, "notes/arch.md");
+    }
+
+    #[test]
+    fn summarize_read() {
+        let (ws, _dir) = test_workspace();
+        let tool = MemoryReadTool::new(ws);
+        let s = tool.summarize(&serde_json::json!({"path": "DECISIONS.md"}));
+        assert_eq!(s.verb, "Read");
+        assert_eq!(s.target, "DECISIONS.md");
+    }
+
+    #[test]
+    fn summarize_tree() {
+        let (ws, _dir) = test_workspace();
+        let tool = MemoryTreeTool::new(ws);
+        let s = tool.summarize(&serde_json::json!({"path": "notes"}));
+        assert_eq!(s.verb, "List");
+        assert_eq!(s.target, "notes");
     }
 }

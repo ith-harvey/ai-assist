@@ -52,6 +52,7 @@ impl Agent {
                 let tool_name = pending.tool_name.clone();
                 let description = pending.description.clone();
                 let parameters = pending.parameters.clone();
+                let summary = pending.summary.clone();
                 thread.await_approval(pending);
                 let _ = self
                     .channels
@@ -66,6 +67,7 @@ impl Agent {
                     tool_name,
                     description,
                     parameters,
+                    summary,
                 })
             }
             Err(e) => {

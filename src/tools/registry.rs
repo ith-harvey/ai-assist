@@ -30,6 +30,15 @@ const PROTECTED_TOOL_NAMES: &[&str] = &[
     "routine_update",
     "routine_delete",
     "routine_history",
+    "create_document",
+    "update_document",
+    "list_documents",
+    "find_document",
+    "create_todo",
+    "update_todo",
+    "delete_todo",
+    "list_todos",
+    "ask_user",
 ];
 
 /// Registry of available tools.
@@ -161,6 +170,49 @@ impl ToolRegistry {
         self.register_sync(Arc::new(RoutineUpdateTool::new(store.clone(), engine.clone())));
         self.register_sync(Arc::new(RoutineDeleteTool::new(store.clone(), engine)));
         self.register_sync(Arc::new(RoutineHistoryTool::new(store)));
+    }
+
+    /// Register all file and shell tools.
+    pub fn register_file_tools(&self) {
+        use crate::tools::builtin::file::*;
+        use crate::tools::builtin::shell::ShellTool;
+        self.register_sync(Arc::new(ShellTool::new()));
+        self.register_sync(Arc::new(ReadFileTool::new()));
+        self.register_sync(Arc::new(WriteFileTool::new()));
+        self.register_sync(Arc::new(ListDirTool::new()));
+        self.register_sync(Arc::new(ApplyPatchTool::new()));
+    }
+
+    /// Register all document tools.
+    pub fn register_document_tools(&self, db: Arc<dyn Database>) {
+        use crate::tools::builtin::document::*;
+        self.register_sync(Arc::new(CreateDocumentTool::new(db.clone())));
+        self.register_sync(Arc::new(UpdateDocumentTool::new(db.clone())));
+        self.register_sync(Arc::new(ListDocumentsTool::new(db.clone())));
+        self.register_sync(Arc::new(FindDocumentTool::new(db)));
+    }
+
+    /// Register all todo management tools.
+    pub fn register_todo_tools(
+        &self,
+        db: Arc<dyn Database>,
+        todo_tx: tokio::sync::broadcast::Sender<crate::todos::model::TodoWsMessage>,
+    ) {
+        use crate::tools::builtin::todo::*;
+        self.register_sync(Arc::new(CreateTodoTool::new(db.clone(), todo_tx.clone())));
+        self.register_sync(Arc::new(UpdateTodoTool::new(db.clone(), todo_tx.clone())));
+        self.register_sync(Arc::new(DeleteTodoTool::new(db.clone(), todo_tx)));
+        self.register_sync(Arc::new(ListTodosTool::new(db)));
+    }
+
+    /// Register the ask_user tool (multiple-choice question card).
+    pub fn register_ask_user_tool(
+        &self,
+        queue: Arc<crate::cards::queue::CardQueue>,
+        choice_registry: crate::cards::choice_registry::ChoiceRegistry,
+    ) {
+        use crate::tools::builtin::ask_user::AskUserTool;
+        self.register_sync(Arc::new(AskUserTool::new(queue, choice_registry)));
     }
 
     /// Register all memory/workspace tools.

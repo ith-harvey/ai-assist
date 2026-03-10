@@ -9,6 +9,7 @@ enum TodoWsMessage {
     case todoCreated(TodoItem)
     case todoUpdated(TodoItem)
     case todoDeleted(UUID)
+    case searchResults(query: String, results: [TodoItem])
     case ping
 
     static func decode(from data: Data) -> TodoWsMessage? {
@@ -36,6 +37,11 @@ enum TodoWsMessage {
             guard let idString = json["id"] as? String,
                   let id = UUID(uuidString: idString) else { return nil }
             return .todoDeleted(id)
+        case "search_results":
+            guard let query = json["query"] as? String,
+                  let resultsData = try? JSONSerialization.data(withJSONObject: json["results"] ?? []),
+                  let results = try? decoder.decode([TodoItem].self, from: resultsData) else { return nil }
+            return .searchResults(query: query, results: results)
         case "ping":
             return .ping
         default:
@@ -49,6 +55,7 @@ enum TodoWsAction: Encodable {
     case complete(todoId: UUID)
     case delete(todoId: UUID)
     case snooze(todoId: UUID, until: Date?)
+    case search(query: String, limit: Int = 20)
 
     func toData() throws -> Data {
         let encoder = JSONEncoder()
@@ -68,6 +75,8 @@ enum TodoWsAction: Encodable {
                 p["until"] = formatter.string(from: until)
             }
             payload = p
+        case .search(let query, let limit):
+            payload = ["action": "search", "query": query, "limit": limit]
         }
         return try JSONSerialization.data(withJSONObject: payload)
     }
@@ -85,6 +94,8 @@ public final class TodoWebSocket: @unchecked Sendable {
 
     public var todos: [TodoItem] = []
     public var isConnected: Bool = false
+    public var searchResults: [TodoItem]? = nil
+    public var searchQuery: String = ""
 
     // MARK: - Configuration
 
@@ -101,7 +112,10 @@ public final class TodoWebSocket: @unchecked Sendable {
     /// True when using hardcoded data (backend not available).
     private var usingSampleData = false
 
-    public init(host: String = "localhost", port: Int = 8080) {
+    public init(
+        host: String = UserDefaults.standard.string(forKey: "ai_assist_host") ?? "localhost",
+        port: Int = UserDefaults.standard.object(forKey: "ai_assist_port") as? Int ?? 8080
+    ) {
         self.host = host
         self.port = port
         self.session = URLSession(configuration: .default)
@@ -181,6 +195,8 @@ public final class TodoWebSocket: @unchecked Sendable {
         isConnected = true
         reconnectAttempt = 0
         usingSampleData = false
+        searchResults = nil
+        searchQuery = ""
         receiveMessage()
     }
 
@@ -235,8 +251,16 @@ public final class TodoWebSocket: @unchecked Sendable {
             if let index = todos.firstIndex(where: { $0.id == todo.id }) {
                 todos[index] = todo
             }
+            if let results = searchResults,
+               let index = results.firstIndex(where: { $0.id == todo.id }) {
+                searchResults?[index] = todo
+            }
         case .todoDeleted(let id):
             todos.removeAll { $0.id == id }
+            searchResults?.removeAll { $0.id == id }
+        case .searchResults(let query, let results):
+            guard query == searchQuery else { return }
+            searchResults = results
         case .ping:
             break
         }
@@ -266,6 +290,24 @@ public final class TodoWebSocket: @unchecked Sendable {
         }
         send(action: .delete(todoId: todoId))
         todos.removeAll { $0.id == todoId }
+    }
+
+    public func search(query: String) {
+        searchQuery = query
+        if usingSampleData {
+            let q = query.lowercased()
+            searchResults = todos.filter {
+                $0.title.lowercased().contains(q) ||
+                ($0.description?.lowercased().contains(q) ?? false)
+            }
+            return
+        }
+        send(action: .search(query: query))
+    }
+
+    public func clearSearch() {
+        searchResults = nil
+        searchQuery = ""
     }
 
     public func snooze(todoId: UUID, until: Date? = nil) {

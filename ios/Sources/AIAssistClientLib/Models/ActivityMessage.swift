@@ -33,7 +33,6 @@ public struct TranscriptMessage: Codable, Sendable, Identifiable {
 public enum ActivityMessage: Identifiable, Codable, Sendable {
     case started(jobId: UUID, todoId: UUID?)
     case thinking(jobId: UUID, iteration: UInt32)
-    case toolStarted(jobId: UUID, toolName: String)
     case toolCompleted(jobId: UUID, toolName: String, success: Bool, summary: String)
     case reasoning(jobId: UUID, content: String)
     case agentResponse(jobId: UUID, content: String)
@@ -42,6 +41,7 @@ public enum ActivityMessage: Identifiable, Codable, Sendable {
     case transcript(jobId: UUID, messages: [TranscriptMessage])
     case approvalNeeded(jobId: UUID, cardId: UUID, toolName: String, description: String)
     case approvalResolved(jobId: UUID, cardId: UUID, approved: Bool)
+    case userMessage(todoId: UUID, content: String)
 
     // MARK: - Identifiable
 
@@ -53,8 +53,6 @@ public enum ActivityMessage: Identifiable, Codable, Sendable {
             return "started-\(jobId.uuidString)"
         case .thinking(let jobId, let iteration):
             return "thinking-\(jobId.uuidString)-\(iteration)"
-        case .toolStarted(let jobId, let toolName):
-            return "tool_started-\(jobId.uuidString)-\(toolName)"
         case .toolCompleted(let jobId, let toolName, _, _):
             return "tool_completed-\(jobId.uuidString)-\(toolName)"
         case .reasoning(let jobId, let content):
@@ -71,6 +69,8 @@ public enum ActivityMessage: Identifiable, Codable, Sendable {
             return "approval_needed-\(jobId.uuidString)-\(cardId.uuidString)"
         case .approvalResolved(let jobId, let cardId, _):
             return "approval_resolved-\(jobId.uuidString)-\(cardId.uuidString)"
+        case .userMessage(let todoId, let content):
+            return "user_message-\(todoId.uuidString)-\(content.prefix(20).hashValue)"
         }
     }
 
@@ -81,7 +81,6 @@ public enum ActivityMessage: Identifiable, Codable, Sendable {
         switch self {
         case .started(let id, _),
              .thinking(let id, _),
-             .toolStarted(let id, _),
              .toolCompleted(let id, _, _, _),
              .reasoning(let id, _),
              .agentResponse(let id, _),
@@ -91,6 +90,8 @@ public enum ActivityMessage: Identifiable, Codable, Sendable {
              .approvalNeeded(let id, _, _, _),
              .approvalResolved(let id, _, _):
             return id
+        case .userMessage:
+            return UUID(uuidString: "00000000-0000-0000-0000-000000000000")!
         }
     }
 
@@ -98,7 +99,8 @@ public enum ActivityMessage: Identifiable, Codable, Sendable {
     public var isTerminal: Bool {
         switch self {
         case .completed, .failed, .transcript: return true
-        default: return false
+        case .started, .thinking, .toolCompleted, .reasoning, .agentResponse,
+             .approvalNeeded, .approvalResolved, .userMessage: return false
         }
     }
 
@@ -134,11 +136,6 @@ public enum ActivityMessage: Identifiable, Codable, Sendable {
             let jobId = try container.decode(UUID.self, forKey: .jobId)
             let iteration = try container.decode(UInt32.self, forKey: .iteration)
             self = .thinking(jobId: jobId, iteration: iteration)
-
-        case "tool_started":
-            let jobId = try container.decode(UUID.self, forKey: .jobId)
-            let toolName = try container.decode(String.self, forKey: .toolName)
-            self = .toolStarted(jobId: jobId, toolName: toolName)
 
         case "tool_completed":
             let jobId = try container.decode(UUID.self, forKey: .jobId)
@@ -185,6 +182,11 @@ public enum ActivityMessage: Identifiable, Codable, Sendable {
             let approved = try container.decode(Bool.self, forKey: .approved)
             self = .approvalResolved(jobId: jobId, cardId: cardId, approved: approved)
 
+        case "user_message":
+            let todoId = try container.decode(UUID.self, forKey: .todoId)
+            let content = try container.decode(String.self, forKey: .content)
+            self = .userMessage(todoId: todoId, content: content)
+
         default:
             throw DecodingError.dataCorruptedError(
                 forKey: .type,
@@ -207,11 +209,6 @@ public enum ActivityMessage: Identifiable, Codable, Sendable {
             try container.encode("thinking", forKey: .type)
             try container.encode(jobId, forKey: .jobId)
             try container.encode(iteration, forKey: .iteration)
-
-        case .toolStarted(let jobId, let toolName):
-            try container.encode("tool_started", forKey: .type)
-            try container.encode(jobId, forKey: .jobId)
-            try container.encode(toolName, forKey: .toolName)
 
         case .toolCompleted(let jobId, let toolName, let success, let summary):
             try container.encode("tool_completed", forKey: .type)
@@ -257,6 +254,11 @@ public enum ActivityMessage: Identifiable, Codable, Sendable {
             try container.encode(jobId, forKey: .jobId)
             try container.encode(cardId, forKey: .cardId)
             try container.encode(approved, forKey: .approved)
+
+        case .userMessage(let todoId, let content):
+            try container.encode("user_message", forKey: .type)
+            try container.encode(todoId, forKey: .todoId)
+            try container.encode(content, forKey: .content)
         }
     }
 

@@ -7,14 +7,6 @@ public struct CalendarPlaceholderView: View {
 
     public var body: some View {
         ZStack {
-            #if os(iOS)
-            Color(uiColor: .secondarySystemBackground)
-                .ignoresSafeArea()
-            #else
-            Color.gray.opacity(0.08)
-                .ignoresSafeArea()
-            #endif
-
             VStack(spacing: 16) {
                 ZStack {
                     Image(systemName: "calendar")
@@ -33,6 +25,7 @@ public struct CalendarPlaceholderView: View {
                     .foregroundStyle(.tertiary)
             }
         }
+        .secondaryBackground()
         #if os(iOS)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {

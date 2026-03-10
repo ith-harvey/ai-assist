@@ -227,15 +227,26 @@ impl Agent {
                         tool_calls.clone(),
                     ));
 
-                    // Execute tools and add results to context
+                    // Build a descriptive status using tool summaries
+                    let mut headlines: Vec<String> = Vec::new();
+                    for tc in &tool_calls {
+                        if let Some(tool) = self.tools().get(&tc.name).await {
+                            headlines.push(tool.summarize(&tc.arguments).headline);
+                        } else {
+                            headlines.push(tc.name.clone());
+                        }
+                    }
+                    let status_msg = if headlines.len() == 1 {
+                        format!("{}...", headlines[0])
+                    } else {
+                        format!("{}...", headlines.join(", "))
+                    };
+
                     let _ = self
                         .channels
                         .send_status(
                             &message.channel,
-                            StatusUpdate::Thinking(format!(
-                                "Executing {} tool(s)...",
-                                tool_calls.len()
-                            )),
+                            StatusUpdate::Thinking(status_msg),
                             &message.metadata,
                         )
                         .await;
@@ -294,13 +305,15 @@ impl Agent {
 
                             if !is_auto_approved {
                                 // Need approval - store pending request and return
+                                let tool_summary = tool.summarize(&tc.arguments);
                                 let pending = PendingApproval {
                                     request_id: Uuid::new_v4(),
                                     tool_name: tc.name.clone(),
                                     parameters: tc.arguments.clone(),
-                                    description: tool.description().to_string(),
+                                    description: tool_summary.headline.clone(),
                                     tool_call_id: tc.id.clone(),
                                     context_messages: context_messages.clone(),
+                                    summary: Some(tool_summary),
                                 };
 
                                 return Ok(AgenticLoopResult::NeedApproval { pending });
