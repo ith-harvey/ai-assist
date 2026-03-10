@@ -4,5 +4,6 @@
 
 | Feature | File | Status | Summary |
 |---|---|---|---|
+| Dev Mode Server Prompt | [dev-mode-server-prompt.md](dev-mode-server-prompt.md) | in-progress | Env var skips onboarding and auto-configures server address for dev |
 | Next Steps Approval Queue | [next-steps-approval-queue.md](next-steps-approval-queue.md) | planned | Continuous swipe-through queue for all pending approval cards across silos |
 | Voice Recording UX | [voice-recording.md](voice-recording.md) | in-progress | Push-to-talk mic button with orange glow, on-device transcription, and 2s trailing audio buffer |

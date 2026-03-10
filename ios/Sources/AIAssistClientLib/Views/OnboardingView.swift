@@ -67,8 +67,22 @@ public struct OnboardingView: View {
             .disabled(serverInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isConnecting)
             .padding(.horizontal, 40)
 
+            #if DEBUG
+            Button("Skip") {
+                onboardingComplete = true
+            }
+            .foregroundStyle(.secondary)
+            #endif
+
             Spacer()
             Spacer()
+        }
+        .onAppear {
+            let host = UserDefaults.standard.string(forKey: "ai_assist_host") ?? ""
+            let port = UserDefaults.standard.object(forKey: "ai_assist_port") as? Int
+            if !host.isEmpty {
+                serverInput = port != nil ? "\(host):\(port!)" : host
+            }
         }
     }
 
