@@ -1,6 +1,6 @@
 # Feature: Next Steps Approval Queue
 
-**Status**: planned
+**Status**: shipped
 **Created**: 2026-03-08
 **Last updated**: 2026-03-08
 

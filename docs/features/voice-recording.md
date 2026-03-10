@@ -52,10 +52,10 @@ Push-to-talk voice input via a long-press microphone button. The button scales u
 
 **Acceptance Criteria:**
 - [ ] When the user lifts their finger, the button immediately returns to idle state (no visual recording indicator)
-- [ ] The speech recognizer continues capturing and transcribing for 2 seconds after release
-- [ ] The final transcript (including trailing audio) is sent as the chat message
-- [ ] If the user taps the mic button again during the 2-second buffer, the previous buffer is finalized and a new recording starts
-- [ ] No audio artifacts or duplicate transcripts result from the buffer
+- [ ] **NOT IMPLEMENTED** — The speech recognizer continues capturing and transcribing for 2 seconds after release
+- [ ] **NOT IMPLEMENTED** — The final transcript (including trailing audio) is sent as the chat message
+- [ ] **NOT IMPLEMENTED** — If the user taps the mic button again during the 2-second buffer, the previous buffer is finalized and a new recording starts
+- [ ] **NOT IMPLEMENTED** — No audio artifacts or duplicate transcripts result from the buffer
 
 ### US-005: Permission handling
 **Description:** As a user, I want to be prompted for microphone and speech recognition permissions so that the app can record.
