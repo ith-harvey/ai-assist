@@ -169,8 +169,7 @@ public struct VoiceMicButton: View {
 
     private func stopRecordingAndSubmit() {
         isPressed = false
-        let transcript = voiceManager.stopRecording()
-        if !transcript.isEmpty {
+        voiceManager.stopRecording { [onTranscript] transcript in
             onTranscript(transcript)
         }
     }
