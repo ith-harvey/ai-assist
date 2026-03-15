@@ -1,6 +1,6 @@
 # Feature: Voice Recording UX
 
-**Status**: in-progress
+**Status**: shipped
 **Created**: 2026-03-08
 **Last updated**: 2026-03-08
 
@@ -21,50 +21,50 @@ Push-to-talk voice input via a long-press microphone button. The button scales u
 **Description:** As a user, I want to long-press the microphone button to record my voice so that I can compose messages without typing.
 
 **Acceptance Criteria:**
-- [ ] Long-press (500ms minimum) on the mic button starts recording
-- [ ] Releasing the button stops the visible recording interaction
-- [ ] On-device speech recognizer produces a transcript from the captured audio
-- [ ] Transcript is sent as a chat message over WebSocket upon completion
-- [ ] Mic button only appears when the text field is empty; send button appears when text is present
+- [x] Long-press (500ms minimum) on the mic button starts recording
+- [x] Releasing the button stops the visible recording interaction
+- [x] On-device speech recognizer produces a transcript from the captured audio
+- [x] Transcript is sent as a chat message over WebSocket upon completion
+- [x] Mic button only appears when the text field is empty; send button appears when text is present
 - [ ] **[UI]** Visually verify in simulator
 
 ### US-002: Recording visual feedback
 **Description:** As a user, I want the mic button to visually change while I'm recording so that I know the app is listening.
 
 **Acceptance Criteria:**
-- [ ] Button scales to 3.0× its base size (44pt diameter) during recording
-- [ ] Button fills with orange and shows an orange glow shadow (12pt radius, 0.6 opacity)
-- [ ] Two concentric pulsing rings animate outward (outer: 1.5×→3.0× scale, inner: 1.2×→2.2× scale) on a 1.2-second ease-out loop
-- [ ] Icon switches from `mic.fill` (blue, idle) to filled orange mic during recording
-- [ ] When unauthorized, icon shows `mic.slash.fill` and button is grayed out
+- [x] Button scales to 3.0× its base size (44pt diameter) during recording
+- [x] Button fills with orange and shows an orange glow shadow (12pt radius, 0.6 opacity)
+- [x] Two concentric pulsing rings animate outward (outer: 1.5×→3.0× scale, inner: 1.2×→2.2× scale) on a 1.2-second ease-out loop
+- [x] Icon switches from `mic.fill` (blue, idle) to filled orange mic during recording
+- [x] When unauthorized, icon shows `mic.slash.fill` and button is grayed out
 - [ ] **[UI]** Visually verify in simulator
 
 ### US-003: Haptic feedback
 **Description:** As a user, I want tactile feedback when recording starts and stops so that I have confirmation without looking at the screen.
 
 **Acceptance Criteria:**
-- [ ] `UINotificationFeedbackGenerator.warning` fires 50ms after recording starts
-- [ ] `UINotificationFeedbackGenerator.success` fires when recording stops
+- [x] `UINotificationFeedbackGenerator.warning` fires 50ms after recording starts
+- [x] `UINotificationFeedbackGenerator.success` fires when recording stops
 - [ ] Haptics fire even if the app is partially obscured
 
 ### US-004: Trailing audio buffer
 **Description:** As a user, I want recording to silently continue for ~2 seconds after I release the mic button so that my last words aren't cut off.
 
 **Acceptance Criteria:**
-- [ ] When the user lifts their finger, the button immediately returns to idle state (no visual recording indicator)
-- [ ] **NOT IMPLEMENTED** — The speech recognizer continues capturing and transcribing for 2 seconds after release
-- [ ] **NOT IMPLEMENTED** — The final transcript (including trailing audio) is sent as the chat message
-- [ ] **NOT IMPLEMENTED** — If the user taps the mic button again during the 2-second buffer, the previous buffer is finalized and a new recording starts
-- [ ] **NOT IMPLEMENTED** — No audio artifacts or duplicate transcripts result from the buffer
+- [x] When the user lifts their finger, the button immediately returns to idle state (no visual recording indicator)
+- [x] The speech recognizer continues capturing and transcribing for 2 seconds after release
+- [x] The final transcript (including trailing audio) is sent as the chat message
+- [x] If the user taps the mic button again during the 2-second buffer, the previous buffer is finalized and a new recording starts
+- [ ] No audio artifacts or duplicate transcripts result from the buffer
 
 ### US-005: Permission handling
 **Description:** As a user, I want to be prompted for microphone and speech recognition permissions so that the app can record.
 
 **Acceptance Criteria:**
-- [ ] App requests microphone permission (`NSMicrophoneUsageDescription`) on first use
-- [ ] App requests speech recognition permission (`NSSpeechRecognitionUsageDescription`) on first use
-- [ ] If either permission is denied, the mic button shows `mic.slash.fill` and is non-interactive
-- [ ] Re-tapping a denied button does not crash or produce errors
+- [x] App requests microphone permission (`NSMicrophoneUsageDescription`) on first use
+- [x] App requests speech recognition permission (`NSSpeechRecognitionUsageDescription`) on first use
+- [x] If either permission is denied, the mic button shows `mic.slash.fill` and is non-interactive
+- [x] Re-tapping a denied button does not crash or produce errors
 
 ## Data Model
 
