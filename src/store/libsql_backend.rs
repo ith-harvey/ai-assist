@@ -287,7 +287,15 @@ fn row_to_card(row: &libsql::Row) -> Result<ApprovalCard, libsql::Error> {
                         message_id: r.message_id,
                     })
                     .unwrap_or_else(|_| fallback_reply_payload()),
-                "compose" => serde_json::from_str(pstr).unwrap_or_else(|_| fallback_reply_payload()),
+                "compose" => serde_json::from_str::<ComposePayloadRaw>(pstr)
+                    .map(|c| CardPayload::Compose {
+                        channel: c.channel,
+                        recipient: c.recipient,
+                        subject: c.subject,
+                        draft_body: c.draft_body,
+                        confidence: c.confidence,
+                    })
+                    .unwrap_or_else(|_| fallback_reply_payload()),
                 "action" => serde_json::from_str(pstr).unwrap_or_else(|_| CardPayload::Action {
                     description: "Unknown".into(),
                     action_detail: None,
@@ -334,6 +342,16 @@ struct ReplyPayloadRaw {
     reply_metadata: Option<serde_json::Value>,
     #[serde(default)]
     message_id: Option<String>,
+}
+
+/// Helper struct for deserializing the inner Compose payload from the JSON column.
+#[derive(serde::Deserialize)]
+struct ComposePayloadRaw {
+    channel: String,
+    recipient: String,
+    subject: Option<String>,
+    draft_body: String,
+    confidence: f32,
 }
 
 /// Serialize a CardPayload's inner data as a flat JSON object (not adjacently tagged).
@@ -650,6 +668,33 @@ impl Database for LibSqlBackend {
                 Ok(card) => cards.push(card),
                 Err(e) => {
                     tracing::warn!("Skipping card row: {e}");
+                }
+            }
+        }
+        Ok(cards)
+    }
+
+    async fn get_cards_by_todo(
+        &self,
+        todo_id: Uuid,
+    ) -> Result<Vec<ApprovalCard>, DatabaseError> {
+        let conn = self.conn();
+        let mut rows = conn
+            .query(
+                &format!(
+                    "SELECT {CARD_COLUMNS} FROM cards WHERE todo_id = ?1 AND card_type IN ('compose', 'reply') ORDER BY created_at ASC"
+                ),
+                params![todo_id.to_string()],
+            )
+            .await
+            .map_err(|e| DatabaseError::Query(format!("get_cards_by_todo: {e}")))?;
+
+        let mut cards = Vec::new();
+        while let Ok(Some(row)) = rows.next().await {
+            match row_to_card(&row) {
+                Ok(card) => cards.push(card),
+                Err(e) => {
+                    tracing::warn!("Skipping card row in get_cards_by_todo: {e}");
                 }
             }
         }
@@ -2630,6 +2675,92 @@ mod tests {
         }
     }
 
+    // ── get_cards_by_todo tests ────────────────────────────────────
+
+    #[tokio::test]
+    async fn get_cards_by_todo_returns_compose_and_reply() {
+        let db = test_db().await;
+        let todo_id = Uuid::new_v4();
+
+        // Compose card linked to todo
+        let compose = ApprovalCard::new_compose("email", "joey@x.com", Some("Flights".into()), "Draft body", 0.9, 30)
+            .with_todo_id(todo_id);
+        db.insert_card(&compose).await.unwrap();
+
+        // Reply card linked to same todo
+        let reply = ApprovalCard::new_reply("email", "Alice", "hello", "hi back!", 0.85, "chat_1", 15)
+            .with_todo_id(todo_id);
+        db.insert_card(&reply).await.unwrap();
+
+        let cards = db.get_cards_by_todo(todo_id).await.unwrap();
+        assert_eq!(cards.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn get_cards_by_todo_excludes_action_cards() {
+        let db = test_db().await;
+        let todo_id = Uuid::new_v4();
+
+        // Action card linked to todo — should NOT be returned
+        let action = ApprovalCard::new_action("Deploy v2", None, CardSilo::Todos, 60)
+            .with_todo_id(todo_id);
+        db.insert_card(&action).await.unwrap();
+
+        // Compose card linked to todo — should be returned
+        let compose = ApprovalCard::new_compose("email", "joey@x.com", None, "Draft", 0.9, 30)
+            .with_todo_id(todo_id);
+        db.insert_card(&compose).await.unwrap();
+
+        let cards = db.get_cards_by_todo(todo_id).await.unwrap();
+        assert_eq!(cards.len(), 1);
+        assert_eq!(cards[0].card_type_str(), "compose");
+    }
+
+    #[tokio::test]
+    async fn get_cards_by_todo_excludes_other_todos() {
+        let db = test_db().await;
+        let todo_a = Uuid::new_v4();
+        let todo_b = Uuid::new_v4();
+
+        let card_a = ApprovalCard::new_compose("email", "a@x.com", None, "Draft A", 0.9, 30)
+            .with_todo_id(todo_a);
+        let card_b = ApprovalCard::new_compose("email", "b@x.com", None, "Draft B", 0.9, 30)
+            .with_todo_id(todo_b);
+
+        db.insert_card(&card_a).await.unwrap();
+        db.insert_card(&card_b).await.unwrap();
+
+        let cards = db.get_cards_by_todo(todo_a).await.unwrap();
+        assert_eq!(cards.len(), 1);
+        assert_eq!(cards[0].id, card_a.id);
+    }
+
+    #[tokio::test]
+    async fn get_cards_by_todo_empty_when_no_match() {
+        let db = test_db().await;
+        let cards = db.get_cards_by_todo(Uuid::new_v4()).await.unwrap();
+        assert!(cards.is_empty());
+    }
+
+    #[tokio::test]
+    async fn get_cards_by_todo_includes_dismissed_cards() {
+        let db = test_db().await;
+        let todo_id = Uuid::new_v4();
+
+        let card = ApprovalCard::new_compose("email", "joey@x.com", None, "Draft", 0.9, 30)
+            .with_todo_id(todo_id);
+        let card_id = card.id;
+        db.insert_card(&card).await.unwrap();
+
+        // Dismiss the card
+        db.update_card_status(card_id, CardStatus::Dismissed).await.unwrap();
+
+        // Should still return dismissed cards (deliverables list shows them dimmed)
+        let cards = db.get_cards_by_todo(todo_id).await.unwrap();
+        assert_eq!(cards.len(), 1);
+        assert_eq!(cards[0].status, CardStatus::Dismissed);
+    }
+
     // ── Message tests ───────────────────────────────────────────────
 
     #[tokio::test]
@@ -4083,10 +4214,14 @@ mod tests {
 
     // ── Document tests ──────────────────────────────────────────────
 
+    fn make_doc(title: &str, content: &str, doc_type: DocumentType) -> Document {
+        Document::new(Uuid::new_v4(), title, content, doc_type, "agent")
+    }
+
     #[tokio::test]
     async fn document_create_and_get() {
         let db = test_db().await;
-        let doc = Document::new("Research: AI", "# Overview\nContent here.", DocumentType::Research, "agent");
+        let doc = make_doc("Research: AI", "# Overview\nContent here.", DocumentType::Research);
         let id = doc.id;
         db.create_document(&doc).await.unwrap();
 
@@ -4095,32 +4230,30 @@ mod tests {
         assert_eq!(fetched.content, "# Overview\nContent here.");
         assert_eq!(fetched.doc_type, DocumentType::Research);
         assert_eq!(fetched.created_by, "agent");
-        assert!(fetched.todo_id.is_none());
     }
 
     #[tokio::test]
     async fn document_get_not_found() {
         let db = test_db().await;
-        let result = db.get_document(uuid::Uuid::new_v4()).await.unwrap();
+        let result = db.get_document(Uuid::new_v4()).await.unwrap();
         assert!(result.is_none());
     }
 
     #[tokio::test]
     async fn document_with_todo_id() {
         let db = test_db().await;
-        let todo_id = uuid::Uuid::new_v4();
-        let doc = Document::new("Notes", "Some notes", DocumentType::Notes, "agent")
-            .with_todo(todo_id);
+        let todo_id = Uuid::new_v4();
+        let doc = Document::new(todo_id, "Notes", "Some notes", DocumentType::Notes, "agent");
         db.create_document(&doc).await.unwrap();
 
         let fetched = db.get_document(doc.id).await.unwrap().unwrap();
-        assert_eq!(fetched.todo_id, Some(todo_id));
+        assert_eq!(fetched.todo_id, todo_id);
     }
 
     #[tokio::test]
     async fn document_update() {
         let db = test_db().await;
-        let mut doc = Document::new("Draft", "Initial", DocumentType::Notes, "agent");
+        let mut doc = make_doc("Draft", "Initial", DocumentType::Notes);
         db.create_document(&doc).await.unwrap();
 
         doc.title = "Final".into();
@@ -4138,7 +4271,7 @@ mod tests {
     #[tokio::test]
     async fn document_delete() {
         let db = test_db().await;
-        let doc = Document::new("Temp", "Content", DocumentType::Other, "agent");
+        let doc = make_doc("Temp", "Content", DocumentType::Other);
         let id = doc.id;
         db.create_document(&doc).await.unwrap();
 
@@ -4149,14 +4282,14 @@ mod tests {
     #[tokio::test]
     async fn document_delete_not_found() {
         let db = test_db().await;
-        assert!(!db.delete_document(uuid::Uuid::new_v4()).await.unwrap());
+        assert!(!db.delete_document(Uuid::new_v4()).await.unwrap());
     }
 
     #[tokio::test]
     async fn document_list_ordered_by_created_desc() {
         let db = test_db().await;
-        let d1 = Document::new("First", "A", DocumentType::Notes, "agent");
-        let d2 = Document::new("Second", "B", DocumentType::Notes, "agent");
+        let d1 = make_doc("First", "A", DocumentType::Notes);
+        let d2 = make_doc("Second", "B", DocumentType::Notes);
         db.create_document(&d1).await.unwrap();
         // Slight delay so created_at differs
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
@@ -4172,7 +4305,7 @@ mod tests {
     async fn document_list_respects_limit() {
         let db = test_db().await;
         for i in 0..5 {
-            let doc = Document::new(format!("Doc {i}"), "Content", DocumentType::Notes, "agent");
+            let doc = Document::new(Uuid::new_v4(), format!("Doc {i}"), "Content", DocumentType::Notes, "agent");
             db.create_document(&doc).await.unwrap();
         }
 
@@ -4183,9 +4316,9 @@ mod tests {
     #[tokio::test]
     async fn document_list_by_todo() {
         let db = test_db().await;
-        let todo_id = uuid::Uuid::new_v4();
-        let d1 = Document::new("Linked", "A", DocumentType::Notes, "agent").with_todo(todo_id);
-        let d2 = Document::new("Unlinked", "B", DocumentType::Notes, "agent");
+        let todo_id = Uuid::new_v4();
+        let d1 = Document::new(todo_id, "Linked", "A", DocumentType::Notes, "agent");
+        let d2 = make_doc("Unlinked", "B", DocumentType::Notes);
         db.create_document(&d1).await.unwrap();
         db.create_document(&d2).await.unwrap();
 
@@ -4197,8 +4330,8 @@ mod tests {
     #[tokio::test]
     async fn document_search_by_title() {
         let db = test_db().await;
-        let d1 = Document::new("Rust concurrency guide", "Content about threads", DocumentType::Research, "agent");
-        let d2 = Document::new("Python basics", "Intro to Python", DocumentType::Notes, "agent");
+        let d1 = make_doc("Rust concurrency guide", "Content about threads", DocumentType::Research);
+        let d2 = make_doc("Python basics", "Intro to Python", DocumentType::Notes);
         db.create_document(&d1).await.unwrap();
         db.create_document(&d2).await.unwrap();
 
@@ -4210,7 +4343,7 @@ mod tests {
     #[tokio::test]
     async fn document_search_by_content() {
         let db = test_db().await;
-        let doc = Document::new("Untitled", "The tokio runtime provides async IO", DocumentType::Notes, "agent");
+        let doc = make_doc("Untitled", "The tokio runtime provides async IO", DocumentType::Notes);
         db.create_document(&doc).await.unwrap();
 
         let results = db.search_documents("tokio", None, 10).await.unwrap();
@@ -4220,8 +4353,8 @@ mod tests {
     #[tokio::test]
     async fn document_search_with_type_filter() {
         let db = test_db().await;
-        let d1 = Document::new("Research: AI", "Machine learning overview", DocumentType::Research, "agent");
-        let d2 = Document::new("Notes: AI", "Quick notes about AI", DocumentType::Notes, "agent");
+        let d1 = make_doc("Research: AI", "Machine learning overview", DocumentType::Research);
+        let d2 = make_doc("Notes: AI", "Quick notes about AI", DocumentType::Notes);
         db.create_document(&d1).await.unwrap();
         db.create_document(&d2).await.unwrap();
 
@@ -4233,7 +4366,7 @@ mod tests {
     #[tokio::test]
     async fn document_search_no_match() {
         let db = test_db().await;
-        let doc = Document::new("Something", "Content", DocumentType::Notes, "agent");
+        let doc = make_doc("Something", "Content", DocumentType::Notes);
         db.create_document(&doc).await.unwrap();
 
         let results = db.search_documents("nonexistent_xyz", None, 10).await.unwrap();
@@ -4243,7 +4376,7 @@ mod tests {
     #[tokio::test]
     async fn document_search_case_insensitive() {
         let db = test_db().await;
-        let doc = Document::new("Rust Guide", "Content about RUST", DocumentType::Research, "agent");
+        let doc = make_doc("Rust Guide", "Content about RUST", DocumentType::Research);
         db.create_document(&doc).await.unwrap();
 
         let results = db.search_documents("rust", None, 10).await.unwrap();
@@ -4254,7 +4387,7 @@ mod tests {
     async fn document_search_respects_limit() {
         let db = test_db().await;
         for i in 0..5 {
-            let doc = Document::new(format!("Topic {i}"), "Shared keyword content", DocumentType::Notes, "agent");
+            let doc = Document::new(Uuid::new_v4(), format!("Topic {i}"), "Shared keyword content", DocumentType::Notes, "agent");
             db.create_document(&doc).await.unwrap();
         }
 

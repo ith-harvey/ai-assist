@@ -536,6 +536,62 @@ pub fn send_reply_email(
     Ok(())
 }
 
+/// Send a new (non-reply) email via SMTP.
+///
+/// Used by the ComposeHandler when the agent drafts a brand-new outbound message.
+pub fn send_new_email(
+    config: &EmailConfig,
+    to: &str,
+    subject: &str,
+    body: &str,
+) -> Result<(), ChannelError> {
+    let creds = Credentials::new(config.username.clone(), config.password.clone());
+
+    let transport = SmtpTransport::starttls_relay(&config.smtp_host)
+        .map_err(|e| ChannelError::SendFailed {
+            name: "email".into(),
+            reason: format!("SMTP STARTTLS error: {e}"),
+        })?
+        .port(config.smtp_port)
+        .credentials(creds)
+        .build();
+
+    let email = Message::builder()
+        .from(
+            config
+                .from_address
+                .parse()
+                .map_err(|e| ChannelError::SendFailed {
+                    name: "email".into(),
+                    reason: format!("Invalid from address: {e}"),
+                })?,
+        )
+        .to(to.parse().map_err(|e| ChannelError::SendFailed {
+            name: "email".into(),
+            reason: format!("Invalid recipient address: {e}"),
+        })?)
+        .subject(subject)
+        .body(body.to_string())
+        .map_err(|e| ChannelError::SendFailed {
+            name: "email".into(),
+            reason: format!("Failed to build email: {e}"),
+        })?;
+
+    transport
+        .send(&email)
+        .map_err(|e| ChannelError::SendFailed {
+            name: "email".into(),
+            reason: format!("SMTP send failed: {e}"),
+        })?;
+
+    tracing::info!(
+        to = to,
+        subject = subject,
+        "New email sent"
+    );
+    Ok(())
+}
+
 // ── Reply metadata ──────────────────────────────────────────────
 
 /// Build reply metadata from a parsed email for reply-all sending.

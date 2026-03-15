@@ -109,22 +109,26 @@ struct WebSocketTests {
 
     // MARK: - Helpers
 
-    private func makeTestCard(sender: String = "TestSender") -> ReplyCard {
+    private func makeTestCard(sender: String = "TestSender") -> ApprovalCard {
         let json = """
         {
             "id": "\(UUID().uuidString)",
-            "conversation_id": "chat_test",
-            "source_message": "Test message",
-            "source_sender": "\(sender)",
-            "suggested_reply": "Test reply",
-            "confidence": 0.85,
+            "card_type": "reply",
+            "silo": "messages",
+            "payload": {
+                "channel": "telegram",
+                "source_sender": "\(sender)",
+                "source_message": "Test message",
+                "suggested_reply": "Test reply",
+                "confidence": 0.85,
+                "conversation_id": "chat_test"
+            },
             "status": "pending",
             "created_at": "2026-02-15T10:00:00Z",
             "expires_at": "2026-02-15T10:15:00Z",
-            "channel": "telegram",
             "updated_at": "2026-02-15T10:00:00Z"
         }
         """
-        return try! ReplyCard.decode(from: json.data(using: .utf8)!)
+        return try! ApprovalCard.decode(from: json.data(using: .utf8)!)
     }
 }

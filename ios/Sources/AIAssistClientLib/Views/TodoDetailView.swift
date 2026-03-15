@@ -106,7 +106,7 @@ public struct TodoDetailView: View {
                             .padding(.horizontal, 20)
                             .padding(.bottom, 12)
 
-                        DocumentListSection(todoId: todo.id, host: cardSocket.host, port: cardSocket.port)
+                        DeliverableListSection(todoId: todo.id, cardSocket: cardSocket)
                             .padding(.horizontal, 20)
                             .padding(.bottom, 12)
 
@@ -116,7 +116,7 @@ public struct TodoDetailView: View {
                         }
                     } else {
                         // In-progress layout: documents → divider → live activity
-                        DocumentListSection(todoId: todo.id, host: cardSocket.host, port: cardSocket.port)
+                        DeliverableListSection(todoId: todo.id, cardSocket: cardSocket)
                             .padding(.horizontal, 20)
                             .padding(.bottom, 8)
 
