@@ -20,6 +20,7 @@ use super::reply_drafter::ReplyDrafter;
 use super::handlers::{ApprovalHandler, CardActionContext};
 use super::model::{ApprovalCard, CardAction, CardPayload, CardSilo, WsMessage};
 use super::queue::CardQueue;
+use crate::agent::agent_queue::AgentQueue;
 use crate::cards::choice_registry::ChoiceRegistry;
 use crate::channels::email::EmailConfig;
 use crate::store::Database;
@@ -38,6 +39,7 @@ pub struct AppState {
     pub choice_registry: ChoiceRegistry,
     pub db: Arc<dyn Database>,
     pub todo_tx: tokio::sync::broadcast::Sender<TodoWsMessage>,
+    pub agent_queue: Option<Arc<AgentQueue>>,
 }
 
 impl AppState {
@@ -62,6 +64,7 @@ impl AppState {
                     activity_tx: self.activity_tx.clone(),
                     db: Arc::clone(&self.db),
                     todo_tx: self.todo_tx.clone(),
+                    agent_queue: self.agent_queue.clone(),
                 })
             }
             CardPayload::Compose { .. } => Box::new(super::handlers::ComposeHandler),
@@ -85,6 +88,7 @@ pub fn card_routes(
     choice_registry: ChoiceRegistry,
     db: Arc<dyn Database>,
     todo_tx: tokio::sync::broadcast::Sender<TodoWsMessage>,
+    agent_queue: Option<Arc<AgentQueue>>,
 ) -> Router {
     let state = AppState {
         queue,
@@ -95,6 +99,7 @@ pub fn card_routes(
         choice_registry,
         db,
         todo_tx,
+        agent_queue,
     };
 
     Router::new()

@@ -8,6 +8,7 @@ use tokio::sync::broadcast;
 use tracing::{info, warn};
 
 use super::{ApprovalHandler, CardActionContext};
+use crate::agent::agent_queue::AgentQueue;
 use crate::cards::model::ApprovalCard;
 use crate::channels::IncomingMessage;
 use crate::store::Database;
@@ -20,21 +21,22 @@ pub struct ActionHandler {
     pub activity_tx: broadcast::Sender<TodoActivityMessage>,
     pub db: Arc<dyn Database>,
     pub todo_tx: broadcast::Sender<TodoWsMessage>,
+    pub agent_queue: Option<Arc<AgentQueue>>,
 }
 
 #[async_trait]
 impl ApprovalHandler for ActionHandler {
     async fn on_approve(&self, card: &ApprovalCard, _ctx: &CardActionContext) {
-        resolve_approval(card, true, &self.approval_registry, &self.activity_tx, &self.db, &self.todo_tx).await;
+        resolve_approval(card, true, &self.approval_registry, &self.activity_tx, &self.db, &self.todo_tx, &self.agent_queue).await;
     }
 
     async fn on_dismiss(&self, card: &ApprovalCard, _ctx: &CardActionContext) {
-        resolve_approval(card, false, &self.approval_registry, &self.activity_tx, &self.db, &self.todo_tx).await;
+        resolve_approval(card, false, &self.approval_registry, &self.activity_tx, &self.db, &self.todo_tx, &self.agent_queue).await;
     }
 
     async fn on_edit(&self, card: &ApprovalCard, _new_text: &str, _ctx: &CardActionContext) {
         // Edit on an Action card = approve with (potentially modified) details
-        resolve_approval(card, true, &self.approval_registry, &self.activity_tx, &self.db, &self.todo_tx).await;
+        resolve_approval(card, true, &self.approval_registry, &self.activity_tx, &self.db, &self.todo_tx, &self.agent_queue).await;
     }
 }
 
@@ -50,6 +52,7 @@ async fn resolve_approval(
     activity_tx: &broadcast::Sender<TodoActivityMessage>,
     db: &Arc<dyn Database>,
     todo_tx: &broadcast::Sender<TodoWsMessage>,
+    agent_queue: &Option<Arc<AgentQueue>>,
 ) {
     // First check if this is a tool approval (agent waiting for response)
     if let Some(pending) = registry.take(card.id).await {
@@ -100,13 +103,21 @@ async fn resolve_approval(
     // Not a tool approval — check if it's a todo queue approval card (US-003)
     if let Some(todo_id) = card.todo_id {
         if approved {
-            // Transition todo to AgentQueued
-            if let Err(e) = db.update_todo_status(todo_id, TodoStatus::AgentQueued).await {
-                warn!(todo_id = %todo_id, error = %e, "Failed to update todo to AgentQueued");
-                return;
-            }
-            if let Ok(Some(updated)) = db.get_todo(todo_id).await {
-                let _ = todo_tx.send(TodoWsMessage::TodoUpdated { todo: updated });
+            // Enqueue via AgentQueue (sets DB status + sends to dispatch channel)
+            if let Some(queue) = agent_queue {
+                if let Err(e) = queue.enqueue(todo_id).await {
+                    warn!(todo_id = %todo_id, error = %e, "Failed to enqueue todo");
+                    return;
+                }
+            } else {
+                // Fallback: just set DB status (no queue available)
+                if let Err(e) = db.update_todo_status(todo_id, TodoStatus::AgentQueued).await {
+                    warn!(todo_id = %todo_id, error = %e, "Failed to update todo to AgentQueued");
+                    return;
+                }
+                if let Ok(Some(updated)) = db.get_todo(todo_id).await {
+                    let _ = todo_tx.send(TodoWsMessage::TodoUpdated { todo: updated });
+                }
             }
             info!(
                 card_id = %card.id,
@@ -187,6 +198,7 @@ mod tests {
             activity_tx: make_activity_tx(),
             db: make_db().await,
             todo_tx: make_todo_tx(),
+            agent_queue: None,
         };
         let ctx = make_ctx();
         handler.on_approve(&card, &ctx).await;
@@ -214,6 +226,7 @@ mod tests {
             activity_tx: make_activity_tx(),
             db: make_db().await,
             todo_tx: make_todo_tx(),
+            agent_queue: None,
         };
         let ctx = make_ctx();
         handler.on_dismiss(&card, &ctx).await;
@@ -236,6 +249,7 @@ mod tests {
             activity_tx: make_activity_tx(),
             db: make_db().await,
             todo_tx: make_todo_tx(),
+            agent_queue: None,
         };
         let ctx = make_ctx();
         handler.on_edit(&card, "modified command", &ctx).await;
@@ -254,6 +268,7 @@ mod tests {
             activity_tx: make_activity_tx(),
             db: make_db().await,
             todo_tx: make_todo_tx(),
+            agent_queue: None,
         };
         let ctx = make_ctx();
         handler.on_approve(&card, &ctx).await;
@@ -274,6 +289,7 @@ mod tests {
             activity_tx: make_activity_tx(),
             db: make_db().await,
             todo_tx: make_todo_tx(),
+            agent_queue: None,
         };
         let ctx = make_ctx();
         handler.on_approve(&card, &ctx).await;
@@ -295,6 +311,7 @@ mod tests {
             activity_tx: make_activity_tx(),
             db: make_db().await,
             todo_tx: make_todo_tx(),
+            agent_queue: None,
         };
         let ctx = make_ctx();
         handler.on_approve(&card, &ctx).await;
@@ -322,6 +339,7 @@ mod tests {
             activity_tx: make_activity_tx(),
             db: make_db().await,
             todo_tx: make_todo_tx(),
+            agent_queue: None,
         };
         let ctx = make_ctx();
         handler.on_approve(&card, &ctx).await;
@@ -345,6 +363,7 @@ mod tests {
             activity_tx: activity_tx.clone(),
             db: make_db().await,
             todo_tx: make_todo_tx(),
+            agent_queue: None,
         };
         let ctx = make_ctx();
         handler.on_approve(&card, &ctx).await;
@@ -374,6 +393,7 @@ mod tests {
             activity_tx: activity_tx.clone(),
             db: make_db().await,
             todo_tx: make_todo_tx(),
+            agent_queue: None,
         };
         let ctx = make_ctx();
         handler.on_dismiss(&card, &ctx).await;

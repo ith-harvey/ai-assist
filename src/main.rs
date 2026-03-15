@@ -315,6 +315,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         choice_registry,
         Arc::clone(&db),
         todo_state.tx.clone(),
+        Some(Arc::clone(&agent_queue)),
     )
     .merge(ios_router)
     .merge(todo_routes(todo_state))

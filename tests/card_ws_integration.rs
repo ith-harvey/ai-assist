@@ -83,6 +83,7 @@ async fn start_server() -> (u16, Arc<CardQueue>, TodoApprovalRegistry) {
         choice_registry,
         db,
         todo_tx,
+        None,
     );
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
