@@ -296,6 +296,25 @@ ios/                           # Native iOS client (SwiftUI, Swift Package)
 | Registered tools | 13 |
 | Zero unsafe code | ✅ |
 
+## MVP Target User
+
+The MVP user is someone who:
+1. Gets the iOS app on their phone
+2. Connects at least one real channel (Telegram or Email)
+3. Sees smart reply suggestions appear as cards
+4. Swipes to approve/dismiss throughout the day
+5. Trusts the system enough to keep using it
+
+## MVP Kill List
+
+| # | Item | Why it's non-negotiable |
+|---|------|------------------------|
+| 1 | **Server deployed somewhere** | App can't reach localhost |
+| 2 | **TestFlight build** | Can't launch what people can't install |
+| 3 | **Push notifications** | Users won't open the app speculatively |
+| 4 | **Onboarding flow** | Users can't SSH into a server to configure |
+| 5 | **WebSocket reconnection** | Mobile networks drop constantly |
+
 ## Roadmap
 
 - [x] Agent loop (LLM + tool execution cycle)
