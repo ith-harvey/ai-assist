@@ -20,13 +20,6 @@ public struct BrainChatView: View {
             }
         }
         .secondaryBackground()
-        #if os(iOS)
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                ApprovalBellBadge(count: 0)
-            }
-        }
-        #endif
     }
 
     // MARK: - Message List
