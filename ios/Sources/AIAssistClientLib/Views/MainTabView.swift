@@ -41,7 +41,7 @@ public struct MainTabView: View {
                     Text("Messages")
                 }
                 .tag(1)
-                .badge(cardSocket.siloCounts.total)
+                .badge(cardSocket.siloCounts.messages)
 
             // Calendar
             NavigationStack {

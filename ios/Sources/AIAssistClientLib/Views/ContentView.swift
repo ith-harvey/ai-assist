@@ -17,10 +17,15 @@ public struct ContentView: View {
         self.socket = socket
     }
 
+    /// Only messages-silo cards (reply/compose drafts) appear in this view.
+    private var messageCards: [ApprovalCard] {
+        socket.cards(for: .messages)
+    }
+
     public var body: some View {
         NavigationStack {
             ZStack {
-                if let card = socket.cards.first {
+                if let card = messageCards.first {
                     cardContent(for: card)
                 } else {
                     VStack(spacing: 0) {
@@ -36,8 +41,8 @@ public struct ContentView: View {
                 }
                 #if os(iOS)
                 ToolbarItem(placement: .principal) {
-                    if !socket.cards.isEmpty {
-                        Text("\(socket.cards.count) Left")
+                    if !messageCards.isEmpty {
+                        Text("\(messageCards.count) Left")
                             .font(.headline)
                             .monospacedDigit()
                     } else {
@@ -47,7 +52,7 @@ public struct ContentView: View {
                 }
                 #endif
                 ToolbarItem(placement: .primaryAction) {
-                    ApprovalBellBadge(count: socket.cards.count)
+                    ApprovalBellBadge(count: messageCards.count)
                 }
             }
             #if os(iOS)
