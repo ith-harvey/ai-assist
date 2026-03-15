@@ -15,7 +15,7 @@ use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use crate::agent::todo_agent::{TodoAgentDeps, spawn_todo_agent};
-use crate::todos::model::{TodoStatus, TodoWsMessage};
+use crate::todos::model::{TodoBucket, TodoStatus, TodoWsMessage};
 
 /// Central orchestrator for todo agent concurrency and dispatch.
 ///
@@ -132,6 +132,29 @@ impl AgentQueue {
                 for todo in queued {
                     if let Err(e) = self.tx.send(todo.id) {
                         warn!(todo_id = %todo.id, error = %e, "Failed to re-enqueue todo");
+                    }
+                }
+            }
+        }
+
+        // Startup scan: auto-enqueue Created + AgentStartable todos
+        if let Ok(created) = db.list_todos_by_status("default", TodoStatus::Created).await {
+            let eligible: Vec<_> = created
+                .into_iter()
+                .filter(|t| t.bucket == TodoBucket::AgentStartable && !t.is_agent_internal)
+                .collect();
+            if !eligible.is_empty() {
+                info!(count = eligible.len(), "Auto-enqueuing AgentStartable todos on startup");
+                for todo in eligible {
+                    if let Err(e) = db.update_todo_status(todo.id, TodoStatus::AgentQueued).await {
+                        warn!(todo_id = %todo.id, error = %e, "Failed to set AgentQueued");
+                        continue;
+                    }
+                    if let Ok(Some(updated)) = db.get_todo(todo.id).await {
+                        let _ = todo_tx.send(TodoWsMessage::TodoUpdated { todo: updated });
+                    }
+                    if let Err(e) = self.tx.send(todo.id) {
+                        warn!(todo_id = %todo.id, error = %e, "Failed to enqueue todo");
                     }
                 }
             }
