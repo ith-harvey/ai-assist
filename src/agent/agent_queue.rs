@@ -137,14 +137,25 @@ impl AgentQueue {
             }
         }
 
-        // Startup scan: auto-enqueue Created + AgentStartable todos
+        // Also run the startable scan on recovery
+        self.scan_startable().await;
+    }
+
+    /// Scan for Created + AgentStartable todos and auto-enqueue them.
+    ///
+    /// Lightweight check intended to run frequently (e.g. every 30s) so that
+    /// newly-seeded todos are picked up promptly.
+    pub async fn scan_startable(&self) {
+        let db = &self.deps.db;
+        let todo_tx = &self.deps.todo_tx;
+
         if let Ok(created) = db.list_todos_by_status("default", TodoStatus::Created).await {
             let eligible: Vec<_> = created
                 .into_iter()
                 .filter(|t| t.bucket == TodoBucket::AgentStartable && !t.is_agent_internal)
                 .collect();
             if !eligible.is_empty() {
-                info!(count = eligible.len(), "Auto-enqueuing AgentStartable todos on startup");
+                info!(count = eligible.len(), "Auto-enqueuing AgentStartable todos");
                 for todo in eligible {
                     if let Err(e) = db.update_todo_status(todo.id, TodoStatus::AgentQueued).await {
                         warn!(todo_id = %todo.id, error = %e, "Failed to set AgentQueued");
