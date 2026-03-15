@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use tokio::sync::{RwLock, mpsc};
+use tokio::sync::{Mutex, OwnedSemaphorePermit, RwLock, Semaphore, mpsc};
 use uuid::Uuid;
 
 use crate::channels::IncomingMessage;
@@ -21,6 +21,10 @@ pub struct TodoApprovalPending {
     pub tx: mpsc::Sender<IncomingMessage>,
     /// Todo ID for status updates.
     pub todo_id: Uuid,
+    /// The agent's permit slot — taken when entering approval wait, restored on resume.
+    pub permit_slot: Arc<Mutex<Option<OwnedSemaphorePermit>>>,
+    /// Semaphore reference for re-acquiring a permit on approval resume.
+    pub semaphore: Arc<Semaphore>,
 }
 
 /// Thread-safe registry of pending tool approval requests from todo agents.
@@ -74,6 +78,16 @@ impl TodoApprovalRegistry {
 mod tests {
     use super::*;
 
+    fn make_pending(tx: mpsc::Sender<IncomingMessage>, todo_id: Uuid) -> TodoApprovalPending {
+        TodoApprovalPending {
+            request_id: Uuid::new_v4(),
+            tx,
+            todo_id,
+            permit_slot: Arc::new(Mutex::new(None)),
+            semaphore: Arc::new(Semaphore::new(1)),
+        }
+    }
+
     #[tokio::test]
     async fn register_and_take() {
         let registry = TodoApprovalRegistry::new();
@@ -81,11 +95,7 @@ mod tests {
         let todo_id = Uuid::new_v4();
         let (tx, _rx) = mpsc::channel(1);
 
-        registry.register(card_id, TodoApprovalPending {
-            request_id: Uuid::new_v4(),
-            tx,
-            todo_id,
-        }).await;
+        registry.register(card_id, make_pending(tx, todo_id)).await;
 
         assert_eq!(registry.len().await, 1);
 
@@ -109,17 +119,9 @@ mod tests {
         let (tx1, _rx1) = mpsc::channel(1);
         let (tx2, _rx2) = mpsc::channel(1);
 
-        registry.register(Uuid::new_v4(), TodoApprovalPending {
-            request_id: Uuid::new_v4(),
-            tx: tx1,
-            todo_id,
-        }).await;
+        registry.register(Uuid::new_v4(), make_pending(tx1, todo_id)).await;
 
-        registry.register(Uuid::new_v4(), TodoApprovalPending {
-            request_id: Uuid::new_v4(),
-            tx: tx2,
-            todo_id: other_todo,
-        }).await;
+        registry.register(Uuid::new_v4(), make_pending(tx2, other_todo)).await;
 
         assert_eq!(registry.len().await, 2);
 
@@ -139,11 +141,7 @@ mod tests {
         let card_id = Uuid::new_v4();
         let (tx, _rx) = mpsc::channel(1);
 
-        registry.register(card_id, TodoApprovalPending {
-            request_id: Uuid::new_v4(),
-            tx,
-            todo_id: Uuid::new_v4(),
-        }).await;
+        registry.register(card_id, make_pending(tx, Uuid::new_v4())).await;
 
         // First take succeeds.
         assert!(registry.take(card_id).await.is_some());
@@ -165,11 +163,7 @@ mod tests {
         let registry = TodoApprovalRegistry::new();
         let (tx, _rx) = mpsc::channel(1);
 
-        registry.register(Uuid::new_v4(), TodoApprovalPending {
-            request_id: Uuid::new_v4(),
-            tx,
-            todo_id: Uuid::new_v4(),
-        }).await;
+        registry.register(Uuid::new_v4(), make_pending(tx, Uuid::new_v4())).await;
 
         // Remove a different todo_id — nothing should change.
         registry.remove_for_todo(Uuid::new_v4()).await;
@@ -186,17 +180,9 @@ mod tests {
         let todo1 = Uuid::new_v4();
         let todo2 = Uuid::new_v4();
 
-        registry.register(card_id, TodoApprovalPending {
-            request_id: Uuid::new_v4(),
-            tx: tx1,
-            todo_id: todo1,
-        }).await;
+        registry.register(card_id, make_pending(tx1, todo1)).await;
 
-        registry.register(card_id, TodoApprovalPending {
-            request_id: Uuid::new_v4(),
-            tx: tx2,
-            todo_id: todo2,
-        }).await;
+        registry.register(card_id, make_pending(tx2, todo2)).await;
 
         // Should have only 1 entry (overwritten).
         assert_eq!(registry.len().await, 1);
@@ -217,11 +203,7 @@ mod tests {
             handles.push(tokio::spawn(async move {
                 let card_id = Uuid::new_v4();
                 let (tx, _rx) = mpsc::channel(1);
-                reg.register(card_id, TodoApprovalPending {
-                    request_id: Uuid::new_v4(),
-                    tx,
-                    todo_id: Uuid::new_v4(),
-                }).await;
+                reg.register(card_id, make_pending(tx, Uuid::new_v4())).await;
                 reg.take(card_id).await.is_some()
             }));
         }
@@ -240,11 +222,7 @@ mod tests {
 
         for _ in 0..5 {
             let (tx, _rx) = mpsc::channel(1);
-            registry.register(Uuid::new_v4(), TodoApprovalPending {
-                request_id: Uuid::new_v4(),
-                tx,
-                todo_id,
-            }).await;
+            registry.register(Uuid::new_v4(), make_pending(tx, todo_id)).await;
         }
 
         assert_eq!(registry.len().await, 5);
@@ -259,11 +237,9 @@ mod tests {
         let request_id = Uuid::new_v4();
         let (tx, _rx) = mpsc::channel(1);
 
-        registry.register(card_id, TodoApprovalPending {
-            request_id,
-            tx,
-            todo_id: Uuid::new_v4(),
-        }).await;
+        let mut pending_entry = make_pending(tx, Uuid::new_v4());
+        pending_entry.request_id = request_id;
+        registry.register(card_id, pending_entry).await;
 
         let pending = registry.take(card_id).await.unwrap();
         assert_eq!(pending.request_id, request_id);

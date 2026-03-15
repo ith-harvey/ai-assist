@@ -62,6 +62,7 @@ public enum TodoBucket: String, Codable, Sendable {
 /// Lifecycle status of a to-do item.
 public enum TodoStatus: String, Codable, Sendable {
     case created
+    case agentQueued = "agent_queued"
     case agentWorking = "agent_working"
     case awaitingApproval = "awaiting_approval"
     case readyForReview = "ready_for_review"
@@ -73,6 +74,7 @@ public enum TodoStatus: String, Codable, Sendable {
     public var iconName: String {
         switch self {
         case .created: "doc.text"
+        case .agentQueued: "hourglass"
         case .agentWorking: "gearshape.2"
         case .awaitingApproval: "hand.raised.fill"
         case .readyForReview: "checkmark.circle"
@@ -86,6 +88,7 @@ public enum TodoStatus: String, Codable, Sendable {
     public var label: String {
         switch self {
         case .created: "Created"
+        case .agentQueued: "Agent queued"
         case .agentWorking: "Agent working"
         case .awaitingApproval: "Awaiting approval"
         case .readyForReview: "Ready for review"
@@ -99,6 +102,7 @@ public enum TodoStatus: String, Codable, Sendable {
     public var color: Color {
         switch self {
         case .created: .blue
+        case .agentQueued: .blue
         case .agentWorking: .orange
         case .awaitingApproval: .orange
         case .readyForReview: .green

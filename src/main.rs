@@ -257,9 +257,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     eprintln!("   Tools: {} registered", tools.count());
 
     // ── Todo Agent System ──────────────────────────────────────────────
-    let tracker = Arc::new(ai_assist::agent::todo_agent::ActiveAgentTracker::new(
-        agent_config.max_parallel_jobs,
-    ));
     let approval_registry = TodoApprovalRegistry::new();
 
     let todo_state = TodoState::new(Arc::clone(&db));
@@ -275,10 +272,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         approval_registry: approval_registry.clone(),
     };
 
+    let agent_queue = ai_assist::agent::agent_queue::AgentQueue::new(
+        agent_config.max_parallel_jobs,
+        todo_agent_deps.clone(),
+    );
+
     let todo_state = TodoState::with_agents(
         Arc::clone(&db),
-        todo_agent_deps.clone(),
-        Arc::clone(&tracker),
+        Arc::clone(&agent_queue),
+        card_queue.clone(),
     );
     tools.register_todo_tools(Arc::clone(&db), todo_state.tx.clone());
     let choice_registry = ai_assist::cards::choice_registry::ChoiceRegistry::new();
@@ -287,16 +289,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Arc::clone(&db),
         activity_tx.clone(),
         todo_agent_deps.clone(),
-        Arc::clone(&tracker),
+        Arc::clone(&agent_queue),
     );
 
-    // ── Todo Pickup Loop (auto-spawns agents for AgentStartable todos) ──
+    // ── Todo Pickup Loop (safety-net recovery for orphaned todos) ──
     let _pickup_handle = ai_assist::todos::pickup::spawn_todo_pickup_loop(
-        todo_agent_deps,
-        Arc::clone(&tracker),
+        Arc::clone(&agent_queue),
     );
     eprintln!(
-        "   Todo agents: enabled (max {} parallel, pickup every 15m)",
+        "   Todo agents: enabled (max {} parallel, semaphore + dispatch loop)",
         agent_config.max_parallel_jobs,
     );
 
@@ -312,6 +313,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         approval_registry,
         activity_tx.clone(),
         choice_registry,
+        Arc::clone(&db),
+        todo_state.tx.clone(),
     )
     .merge(ios_router)
     .merge(todo_routes(todo_state))

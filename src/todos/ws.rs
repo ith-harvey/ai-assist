@@ -16,7 +16,9 @@ use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use super::model::{TodoAction, TodoBucket, TodoItem, TodoStatus, TodoType, TodoWsMessage};
-use crate::agent::todo_agent::{ActiveAgentTracker, TodoAgentDeps};
+use crate::agent::agent_queue::AgentQueue;
+use crate::cards::model::{ApprovalCard, CardSilo};
+use crate::cards::queue::CardQueue;
 use crate::store::Database;
 
 /// Shared state for the todo WebSocket.
@@ -25,30 +27,30 @@ pub struct TodoState {
     pub db: Arc<dyn Database>,
     /// Broadcast channel for pushing updates to all connected clients.
     pub tx: broadcast::Sender<TodoWsMessage>,
-    /// Shared deps for spawning todo agents.
-    pub agent_deps: Option<TodoAgentDeps>,
-    /// Concurrency tracker for active todo agents.
-    pub tracker: Option<Arc<ActiveAgentTracker>>,
+    /// Agent dispatch queue for enqueuing todos.
+    pub queue: Option<Arc<AgentQueue>>,
+    /// Card queue for creating approval cards.
+    pub card_queue: Option<Arc<CardQueue>>,
 }
 
 impl TodoState {
     pub fn new(db: Arc<dyn Database>) -> Self {
         let (tx, _) = broadcast::channel(256);
-        Self { db, tx, agent_deps: None, tracker: None }
+        Self { db, tx, queue: None, card_queue: None }
     }
 
-    /// Create with agent deps attached for instant todo pickup.
+    /// Create with agent queue and card queue attached.
     pub fn with_agents(
         db: Arc<dyn Database>,
-        agent_deps: TodoAgentDeps,
-        tracker: Arc<ActiveAgentTracker>,
+        queue: Arc<AgentQueue>,
+        card_queue: Arc<CardQueue>,
     ) -> Self {
         let (tx, _) = broadcast::channel(256);
         Self {
             db,
             tx,
-            agent_deps: Some(agent_deps),
-            tracker: Some(tracker),
+            queue: Some(queue),
+            card_queue: Some(card_queue),
         }
     }
 }
@@ -208,23 +210,22 @@ async fn handle_client_action(text: &str, state: &TodoState) -> Option<TodoWsMes
                     Ok(()) => {
                         info!(id = %todo.id, title = %todo.title, "Todo created via WS");
                         let is_agent_startable = todo.bucket == TodoBucket::AgentStartable;
-                        let todo_for_schedule = todo.clone();
+                        let todo_id = todo.id;
+                        let todo_desc = todo.description.clone();
+                        let todo_title = todo.title.clone();
                         let _ = state.tx.send(TodoWsMessage::TodoCreated { todo });
 
-                        // Instant pickup: spawn agent immediately if agent-startable
+                        // Create approval card for agent-startable todos
                         if is_agent_startable {
-                            if let (Some(deps), Some(tracker)) = (&state.agent_deps, &state.tracker) {
-                                let deps = deps.clone();
-                                let tracker = Arc::clone(tracker);
-                                tokio::spawn(async move {
-                                    if let Err(e) = crate::todos::pickup::try_spawn_agent(
-                                        &deps, &tracker, &todo_for_schedule,
-                                    ).await {
-                                        warn!(error = %e, "Instant pickup failed for WS-created todo");
-                                    } else if let Ok(Some(updated)) = deps.db.get_todo(todo_for_schedule.id).await {
-                                        let _ = deps.todo_tx.send(TodoWsMessage::TodoUpdated { todo: updated });
-                                    }
-                                });
+                            if let Some(cq) = &state.card_queue {
+                                let card = ApprovalCard::new_action(
+                                    format!("Add to agent queue: {}?", todo_title),
+                                    todo_desc,
+                                    CardSilo::Todos,
+                                    60,
+                                )
+                                .with_todo_id(todo_id);
+                                cq.push(card).await;
                             }
                         }
                     }
@@ -288,24 +289,6 @@ async fn handle_client_action(text: &str, state: &TodoState) -> Option<TodoWsMes
                         match state.db.update_todo(&todo).await {
                             Ok(()) => {
                                 info!(id = %id, "Todo updated via WS");
-
-                                // Bridge: spawn agent when AgentStartable todo goes to AgentWorking
-                                if todo.status == TodoStatus::AgentWorking
-                                    && todo.bucket == TodoBucket::AgentStartable
-                                {
-                                    if let (Some(deps), Some(tracker)) = (&state.agent_deps, &state.tracker) {
-                                        if let Err(e) = crate::todos::pickup::try_spawn_agent(
-                                            deps, tracker, &todo,
-                                        ).await {
-                                            warn!(
-                                                todo_id = %todo.id,
-                                                error = %e,
-                                                "Failed to spawn agent for todo status update"
-                                            );
-                                        }
-                                    }
-                                }
-
                                 let _ = state.tx.send(TodoWsMessage::TodoUpdated { todo });
                             }
                             Err(e) => warn!(id = %id, error = %e, "Failed to update todo"),
@@ -509,23 +492,21 @@ async fn create_test_todo(
     match state.db.create_todo(&todo).await {
         Ok(()) => {
             info!(id = %todo_id, title = %todo.title, "Test todo created via REST");
-            let _ = state.tx.send(TodoWsMessage::TodoCreated { todo: todo.clone() });
+            let todo_desc = todo.description.clone();
+            let todo_title = todo.title.clone();
+            let _ = state.tx.send(TodoWsMessage::TodoCreated { todo });
 
-            // Instant pickup: spawn agent immediately if agent-startable
+            // Create approval card for agent-startable todos
             if is_agent_startable {
-                if let (Some(deps), Some(tracker)) = (&state.agent_deps, &state.tracker) {
-                    let deps = deps.clone();
-                    let tracker = Arc::clone(tracker);
-                    let todo_for_spawn = todo;
-                    tokio::spawn(async move {
-                        if let Err(e) = crate::todos::pickup::try_spawn_agent(
-                            &deps, &tracker, &todo_for_spawn,
-                        ).await {
-                            warn!(error = %e, "Instant pickup failed for REST-created todo");
-                        } else if let Ok(Some(updated)) = deps.db.get_todo(todo_for_spawn.id).await {
-                            let _ = deps.todo_tx.send(TodoWsMessage::TodoUpdated { todo: updated });
-                        }
-                    });
+                if let Some(cq) = &state.card_queue {
+                    let card = ApprovalCard::new_action(
+                        format!("Add to agent queue: {}?", todo_title),
+                        todo_desc,
+                        CardSilo::Todos,
+                        60,
+                    )
+                    .with_todo_id(todo_id);
+                    cq.push(card).await;
                 }
             }
 

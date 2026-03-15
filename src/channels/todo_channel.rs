@@ -11,9 +11,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use tokio::sync::{Mutex, broadcast, mpsc};
+use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore, broadcast, mpsc};
 use uuid::Uuid;
-
 use crate::cards::model::{ApprovalCard, CardPayload, CardSilo};
 use crate::cards::queue::CardQueue;
 use crate::channels::channel::{
@@ -39,6 +38,10 @@ pub struct TodoChannel {
     todo_tx: broadcast::Sender<TodoWsMessage>,
     card_queue: Arc<CardQueue>,
     approval_registry: TodoApprovalRegistry,
+    /// The agent's concurrency permit — dropped (via RAII) to release the slot.
+    permit: Arc<Mutex<Option<OwnedSemaphorePermit>>>,
+    /// Semaphore reference for broadcasting available permit count.
+    semaphore: Arc<Semaphore>,
     /// Set to true when respond() is called successfully.
     responded: AtomicBool,
     /// Structured per-run logger.
@@ -64,8 +67,10 @@ impl TodoChannel {
         todo_tx: broadcast::Sender<TodoWsMessage>,
         card_queue: Arc<CardQueue>,
         approval_registry: TodoApprovalRegistry,
+        permit: OwnedSemaphorePermit,
+        semaphore: Arc<Semaphore>,
     ) -> Self {
-        Self::with_override(todo_id, job_id, todo_title, todo_description, None, activity_tx, db, todo_tx, card_queue, approval_registry)
+        Self::with_override(todo_id, job_id, todo_title, todo_description, None, activity_tx, db, todo_tx, card_queue, approval_registry, permit, semaphore)
     }
 
     pub fn with_override(
@@ -79,8 +84,11 @@ impl TodoChannel {
         todo_tx: broadcast::Sender<TodoWsMessage>,
         card_queue: Arc<CardQueue>,
         approval_registry: TodoApprovalRegistry,
+        permit: OwnedSemaphorePermit,
+        semaphore: Arc<Semaphore>,
     ) -> Self {
         let logger = AgentLogger::new(todo_id, job_id, &todo_title);
+        let permit_slot = Arc::new(Mutex::new(Some(permit)));
         // Bounded channel: 1 message at a time (approval response)
         let (tx, rx) = mpsc::channel(8);
         Self {
@@ -94,12 +102,24 @@ impl TodoChannel {
             todo_tx,
             card_queue,
             approval_registry,
+            permit: permit_slot,
+            semaphore,
             responded: AtomicBool::new(false),
             logger,
             pending_tool_completed: Mutex::new(None),
             msg_tx: Mutex::new(Some(tx)),
             msg_rx: Mutex::new(Some(rx)),
         }
+    }
+
+    /// Get a reference to the permit slot (for passing to approval registry).
+    pub fn permit_slot(&self) -> Arc<Mutex<Option<OwnedSemaphorePermit>>> {
+        self.permit.clone()
+    }
+
+    /// Get a reference to the semaphore (for passing to approval registry).
+    pub fn semaphore_ref(&self) -> Arc<Semaphore> {
+        self.semaphore.clone()
     }
 
     /// Get a clone of the mpsc sender (for the approval registry).
@@ -341,6 +361,8 @@ impl Channel for TodoChannel {
                                 request_id: request_uuid,
                                 tx,
                                 todo_id: self.todo_id,
+                                permit_slot: self.permit.clone(),
+                                semaphore: self.semaphore.clone(),
                             },
                         )
                         .await;
@@ -355,6 +377,19 @@ impl Channel for TodoChannel {
                     tracing::warn!(error = %e, "Failed to update todo status to awaiting_approval");
                 }
                 self.broadcast_todo_update().await;
+
+                // Release permit while blocked on approval (US-002) — RAII drop releases the slot
+                if self.permit.lock().await.take().is_some() {
+                    tracing::info!(
+                        todo_id = %self.todo_id,
+                        "Released permit during approval wait"
+                    );
+                    // Broadcast agent status change
+                    let _ = self.todo_tx.send(TodoWsMessage::AgentStatus {
+                        active_count: self.semaphore.available_permits(),
+                        max_count: self.semaphore.available_permits(), // max is total when all free
+                    });
+                }
 
                 tracing::info!(
                     todo_id = %self.todo_id,
@@ -410,6 +445,9 @@ impl Channel for TodoChannel {
 
         // Close the stream if not already closed
         self.close_stream().await;
+
+        // Drop the permit if still held — RAII ensures the semaphore slot is released
+        self.permit.lock().await.take();
 
         // Flush structured log to disk (data/logs/agents/)
         let succeeded = self.responded.load(Ordering::SeqCst);

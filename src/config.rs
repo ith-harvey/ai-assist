@@ -43,7 +43,7 @@ impl Default for AgentConfig {
             max_context_tokens: 100_000,
             allow_local_tools: true,
             session_idle_timeout: Duration::from_secs(3600), // 1 hour
-            max_parallel_jobs: 1,
+            max_parallel_jobs: 5,
             job_timeout: Duration::from_secs(600), // 10 minutes
             use_planning: false,
             stuck_threshold: Duration::from_secs(300), // 5 minutes
@@ -71,7 +71,7 @@ impl AgentConfig {
             max_parallel_jobs: std::env::var("AI_ASSIST_MAX_WORKERS")
                 .ok()
                 .and_then(|v| v.parse().ok())
-                .unwrap_or(1),
+                .unwrap_or(5),
             job_timeout: Duration::from_secs(
                 std::env::var("AI_ASSIST_JOB_TIMEOUT")
                     .ok()

@@ -905,7 +905,14 @@ public struct TodoDetailView: View {
 
     private var activityEmptyState: some View {
         VStack(spacing: 12) {
-            if activitySocket.isConnected {
+            if todo.status == .agentQueued {
+                Image(systemName: "hourglass")
+                    .font(.system(size: 24))
+                    .foregroundStyle(.blue)
+                Text("Agent queued")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else if activitySocket.isConnected {
                 ProgressView()
                     .controlSize(.small)
                 Text("Waiting for agent to start...")
@@ -929,6 +936,7 @@ public struct TodoDetailView: View {
     private var statusColor: Color {
         switch todo.status {
         case .created: .blue
+        case .agentQueued: .blue
         case .agentWorking: .orange
         case .awaitingApproval: .orange
         case .readyForReview: .green

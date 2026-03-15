@@ -22,8 +22,10 @@ use super::model::{ApprovalCard, CardAction, CardPayload, CardSilo, WsMessage};
 use super::queue::CardQueue;
 use crate::cards::choice_registry::ChoiceRegistry;
 use crate::channels::email::EmailConfig;
+use crate::store::Database;
 use crate::todos::activity::TodoActivityMessage;
 use crate::todos::approval_registry::TodoApprovalRegistry;
+use crate::todos::model::TodoWsMessage;
 
 /// Application state shared across handlers.
 #[derive(Clone)]
@@ -34,6 +36,8 @@ pub struct AppState {
     pub approval_registry: TodoApprovalRegistry,
     pub activity_tx: tokio::sync::broadcast::Sender<TodoActivityMessage>,
     pub choice_registry: ChoiceRegistry,
+    pub db: Arc<dyn Database>,
+    pub todo_tx: tokio::sync::broadcast::Sender<TodoWsMessage>,
 }
 
 impl AppState {
@@ -56,6 +60,8 @@ impl AppState {
                 Box::new(super::handlers::ActionHandler {
                     approval_registry: self.approval_registry.clone(),
                     activity_tx: self.activity_tx.clone(),
+                    db: Arc::clone(&self.db),
+                    todo_tx: self.todo_tx.clone(),
                 })
             }
             CardPayload::Compose { .. } => Box::new(super::handlers::ComposeHandler),
@@ -77,6 +83,8 @@ pub fn card_routes(
     approval_registry: TodoApprovalRegistry,
     activity_tx: tokio::sync::broadcast::Sender<TodoActivityMessage>,
     choice_registry: ChoiceRegistry,
+    db: Arc<dyn Database>,
+    todo_tx: tokio::sync::broadcast::Sender<TodoWsMessage>,
 ) -> Router {
     let state = AppState {
         queue,
@@ -85,6 +93,8 @@ pub fn card_routes(
         approval_registry,
         activity_tx,
         choice_registry,
+        db,
+        todo_tx,
     };
 
     Router::new()

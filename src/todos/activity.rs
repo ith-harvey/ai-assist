@@ -14,10 +14,11 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
-use tracing::{Instrument, debug, info, warn};
+use tracing::{debug, info, warn};
 use uuid::Uuid;
 
-use crate::agent::todo_agent::{ActiveAgentTracker, TodoAgentDeps};
+use crate::agent::agent_queue::AgentQueue;
+use crate::agent::todo_agent::TodoAgentDeps;
 use crate::store::Database;
 use crate::todos::model::{TodoStatus, TodoWsMessage};
 
@@ -168,8 +169,8 @@ pub struct ActivityState {
     pub activity_tx: broadcast::Sender<TodoActivityMessage>,
     /// Dependencies for spawning follow-up agents.
     pub agent_deps: TodoAgentDeps,
-    /// Concurrency tracker for agent slots.
-    pub tracker: Arc<ActiveAgentTracker>,
+    /// Agent dispatch queue for enqueuing follow-ups.
+    pub queue: Arc<AgentQueue>,
 }
 
 impl ActivityState {
@@ -177,9 +178,9 @@ impl ActivityState {
         db: Arc<dyn Database>,
         activity_tx: broadcast::Sender<TodoActivityMessage>,
         agent_deps: TodoAgentDeps,
-        tracker: Arc<ActiveAgentTracker>,
+        queue: Arc<AgentQueue>,
     ) -> Self {
-        Self { db, activity_tx, agent_deps, tracker }
+        Self { db, activity_tx, agent_deps, queue }
     }
 }
 
@@ -332,11 +333,10 @@ async fn handle_socket(mut socket: WebSocket, todo_id: Uuid, state: ActivityStat
                                         }
                                     });
 
-                                    // Spawn follow-up agent
-                                    let deps = state.agent_deps.clone();
-                                    let tracker = Arc::clone(&state.tracker);
+                                    // Spawn follow-up agent via queue
+                                    let queue = Arc::clone(&state.queue);
                                     tokio::spawn(async move {
-                                        if let Err(e) = spawn_followup_agent(todo_id, &content, &deps, &tracker).await {
+                                        if let Err(e) = spawn_followup_agent(todo_id, &content, &queue).await {
                                             warn!(todo_id = %todo_id, error = %e, "Failed to spawn follow-up agent");
                                         }
                                     });
@@ -358,151 +358,14 @@ async fn handle_socket(mut socket: WebSocket, todo_id: Uuid, state: ActivityStat
 }
 
 /// Spawn a follow-up agent for a todo, building context from prior activity history.
+///
+/// Delegates to `AgentQueue::enqueue_followup` which handles concurrency via semaphore.
 async fn spawn_followup_agent(
     todo_id: Uuid,
     user_message: &str,
-    deps: &TodoAgentDeps,
-    tracker: &Arc<ActiveAgentTracker>,
+    queue: &Arc<AgentQueue>,
 ) -> Result<(), String> {
-    if !tracker.try_acquire() {
-        return Err("No agent slots available".to_string());
-    }
-
-    // Load todo
-    let todo = match deps.db.get_todo(todo_id).await {
-        Ok(Some(t)) => t,
-        Ok(None) => {
-            tracker.release();
-            return Err(format!("Todo {todo_id} not found"));
-        }
-        Err(e) => {
-            tracker.release();
-            return Err(format!("DB error: {e}"));
-        }
-    };
-
-    // Load prior activity history and build context
-    let history = deps
-        .db
-        .get_activity_for_todo(todo_id)
-        .await
-        .unwrap_or_default();
-
-    let mut context_parts = Vec::new();
-    for action_json in &history {
-        if let Ok(msg) = serde_json::from_str::<TodoActivityMessage>(action_json) {
-            match &msg {
-                TodoActivityMessage::AgentResponse { content, .. } => {
-                    context_parts.push(format!("**Agent:** {content}"));
-                }
-                TodoActivityMessage::UserMessage { content, .. } => {
-                    context_parts.push(format!("**User:** {content}"));
-                }
-                _ => {}
-            }
-        }
-    }
-
-    let override_content = if context_parts.is_empty() {
-        format!(
-            "{}\n\n{}\n\n## New Instruction\n{}",
-            todo.title,
-            todo.description.as_deref().unwrap_or(""),
-            user_message
-        )
-    } else {
-        format!(
-            "{}\n\n{}\n\n## Previous Work on This Todo\n{}\n\n## New Instruction\n{}",
-            todo.title,
-            todo.description.as_deref().unwrap_or(""),
-            context_parts.join("\n\n"),
-            user_message
-        )
-    };
-
-    let job_id = Uuid::new_v4();
-
-    let worker_prompt = deps
-        .workspace
-        .worker_prompt()
-        .await
-        .unwrap_or_default();
-
-    let system_prompt = if worker_prompt.is_empty() {
-        None
-    } else {
-        Some(worker_prompt)
-    };
-
-    let channel = crate::channels::todo_channel::TodoChannel::with_override(
-        todo.id,
-        job_id,
-        todo.title.clone(),
-        todo.description.clone().unwrap_or_default(),
-        Some(override_content),
-        deps.activity_tx.clone(),
-        Arc::clone(&deps.db),
-        deps.todo_tx.clone(),
-        Arc::clone(&deps.card_queue),
-        deps.approval_registry.clone(),
-    );
-
-    let mut channel_manager = crate::channels::ChannelManager::new();
-    channel_manager.add(Box::new(channel));
-
-    let config = crate::config::AgentConfig {
-        name: format!("todo-followup-{}", &todo.id.to_string()[..8]),
-        system_prompt,
-        ..crate::config::AgentConfig::default()
-    };
-
-    let agent_deps = crate::agent::agent_loop::AgentDeps {
-        store: Some(Arc::clone(&deps.db)),
-        llm: Arc::clone(&deps.llm),
-        safety: Arc::clone(&deps.safety),
-        tools: Arc::clone(&deps.tools),
-        workspace: Some(Arc::clone(&deps.workspace)),
-        extension_manager: None,
-        reply_drafter: None,
-        card_queue: None,
-        routine_engine: None,
-    };
-
-    let _ = deps.activity_tx.send(TodoActivityMessage::Started {
-        job_id,
-        todo_id: Some(todo.id),
-    });
-
-    let agent = crate::agent::agent_loop::Agent::new(config, agent_deps, channel_manager, None);
-
-    let title = todo.title.clone();
-    let tracker_clone = Arc::clone(tracker);
-    let span = tracing::info_span!("todo_followup_agent",
-        todo_id = %todo_id,
-        job_id = %job_id,
-        title = %title,
-    );
-
-    let handle = tokio::spawn(async move {
-        if let Err(e) = agent.run().await {
-            tracing::error!(error = %e, "Follow-up todo agent failed");
-        }
-    }.instrument(span));
-
-    // Release tracker slot when agent finishes
-    tokio::spawn(async move {
-        let _ = handle.await;
-        tracker_clone.release();
-        tracing::info!(todo_id = %todo_id, "Follow-up agent finished, released tracker slot");
-    });
-
-    tracing::info!(
-        todo_id = %todo_id,
-        job_id = %job_id,
-        "Spawned follow-up todo agent"
-    );
-
-    Ok(())
+    queue.enqueue_followup(todo_id, user_message.to_string()).await
 }
 
 #[cfg(test)]
