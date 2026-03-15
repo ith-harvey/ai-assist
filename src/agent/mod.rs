@@ -1,6 +1,7 @@
 //! Agent module — session management, context handling, and the agent loop.
 
 pub mod agent_loop;
+pub mod agent_queue;
 pub mod approval;
 pub mod commands;
 pub mod compaction;

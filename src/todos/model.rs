@@ -30,6 +30,7 @@ pub enum TodoBucket {
 #[serde(rename_all = "snake_case")]
 pub enum TodoStatus {
     Created,
+    AgentQueued,
     AgentWorking,
     AwaitingApproval,
     ReadyForReview,
@@ -250,6 +251,11 @@ pub enum TodoWsMessage {
     SearchResults {
         query: String,
         results: Vec<TodoItem>,
+    },
+    /// Agent concurrency status update.
+    AgentStatus {
+        active_count: usize,
+        max_count: usize,
     },
 }
 

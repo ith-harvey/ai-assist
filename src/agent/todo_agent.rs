@@ -4,9 +4,9 @@
 //! spawns it on a tokio task, and returns the JoinHandle.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
-use tokio::sync::broadcast;
+use tokio::sync::{Semaphore, broadcast};
+use tokio::sync::OwnedSemaphorePermit;
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 
@@ -25,58 +25,6 @@ use crate::todos::approval_registry::TodoApprovalRegistry;
 use crate::todos::model::{TodoItem, TodoWsMessage};
 use crate::tools::registry::ToolRegistry;
 use crate::workspace::Workspace;
-
-// ── Active Agent Tracker ─────────────────────────────────────────────
-
-/// Concurrency guard for todo agents.
-///
-/// Wraps an `AtomicUsize` counter with CAS-based `try_acquire()`.
-/// Limits the number of concurrently running todo agents.
-pub struct ActiveAgentTracker {
-    active: AtomicUsize,
-    max: usize,
-}
-
-impl ActiveAgentTracker {
-    /// Create a new tracker with the given max concurrency.
-    pub fn new(max: usize) -> Self {
-        Self {
-            active: AtomicUsize::new(0),
-            max,
-        }
-    }
-
-    /// Try to acquire a slot. Returns `true` if successful.
-    ///
-    /// Uses compare-and-swap to atomically increment if under the limit.
-    pub fn try_acquire(&self) -> bool {
-        loop {
-            let current = self.active.load(Ordering::Acquire);
-            if current >= self.max {
-                return false;
-            }
-            match self.active.compare_exchange_weak(
-                current,
-                current + 1,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            ) {
-                Ok(_) => return true,
-                Err(_) => continue, // Retry on spurious CAS failure
-            }
-        }
-    }
-
-    /// Release a slot (decrement the counter).
-    pub fn release(&self) {
-        self.active.fetch_sub(1, Ordering::Release);
-    }
-
-    /// Current number of active agents.
-    pub fn active_count(&self) -> usize {
-        self.active.load(Ordering::Acquire)
-    }
-}
 
 // ── Todo Agent Deps ─────────────────────────────────────────────────
 
@@ -102,10 +50,16 @@ pub struct TodoAgentDeps {
 /// processes it through the full agent loop (LLM → tools → respond), and
 /// the TodoChannel maps lifecycle events to the activity WebSocket stream.
 ///
+/// Takes an `OwnedSemaphorePermit` for RAII concurrency control and an
+/// optional `override_content` for follow-up agents.
+///
 /// Returns the JoinHandle for the spawned tokio task.
 pub async fn spawn_todo_agent(
     todo: &TodoItem,
     deps: &TodoAgentDeps,
+    permit: OwnedSemaphorePermit,
+    semaphore: Arc<Semaphore>,
+    override_content: Option<String>,
 ) -> Result<JoinHandle<()>, String> {
     let job_id = Uuid::new_v4();
 
@@ -122,22 +76,25 @@ pub async fn spawn_todo_agent(
         Some(worker_prompt)
     };
 
-    // Create the TodoChannel
+    // Create the TodoChannel (with optional override content for follow-ups)
     let description = todo
         .description
         .clone()
         .unwrap_or_default();
 
-    let channel = TodoChannel::new(
+    let channel = TodoChannel::with_override(
         todo.id,
         job_id,
         todo.title.clone(),
         description,
+        override_content,
         deps.activity_tx.clone(),
         Arc::clone(&deps.db),
         deps.todo_tx.clone(),
         Arc::clone(&deps.card_queue),
         deps.approval_registry.clone(),
+        permit,
+        semaphore,
     );
 
     // Build ChannelManager with just the TodoChannel
@@ -181,6 +138,8 @@ pub async fn spawn_todo_agent(
         title = %title,
     );
     let handle = tokio::spawn(async move {
+        // Permit is held inside the TodoChannel (RAII via Arc<Mutex<Option<OwnedSemaphorePermit>>>).
+        // It is released in TodoChannel::shutdown() or when dropped during approval wait.
         if let Err(e) = agent.run().await {
             tracing::error!(
                 error = %e,
@@ -207,34 +166,5 @@ mod tests {
     fn todo_agent_deps_is_clone() {
         fn assert_clone<T: Clone>() {}
         assert_clone::<TodoAgentDeps>();
-    }
-
-    #[test]
-    fn tracker_try_acquire_within_limit() {
-        let tracker = ActiveAgentTracker::new(2);
-        assert!(tracker.try_acquire());
-        assert_eq!(tracker.active_count(), 1);
-        assert!(tracker.try_acquire());
-        assert_eq!(tracker.active_count(), 2);
-        // At limit — should fail
-        assert!(!tracker.try_acquire());
-        assert_eq!(tracker.active_count(), 2);
-    }
-
-    #[test]
-    fn tracker_release_frees_slot() {
-        let tracker = ActiveAgentTracker::new(1);
-        assert!(tracker.try_acquire());
-        assert!(!tracker.try_acquire());
-        tracker.release();
-        assert_eq!(tracker.active_count(), 0);
-        assert!(tracker.try_acquire());
-    }
-
-    #[test]
-    fn tracker_zero_max_always_rejects() {
-        let tracker = ActiveAgentTracker::new(0);
-        assert!(!tracker.try_acquire());
-        assert_eq!(tracker.active_count(), 0);
     }
 }

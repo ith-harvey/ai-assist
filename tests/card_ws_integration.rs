@@ -70,6 +70,10 @@ async fn start_server() -> (u16, Arc<CardQueue>, TodoApprovalRegistry) {
     ));
     let (activity_tx, _activity_rx) = tokio::sync::broadcast::channel::<TodoActivityMessage>(16);
     let choice_registry = ai_assist::cards::choice_registry::ChoiceRegistry::new();
+    let db: Arc<dyn ai_assist::store::Database> = Arc::new(
+        ai_assist::store::LibSqlBackend::new_memory().await.unwrap()
+    );
+    let (todo_tx, _todo_rx) = tokio::sync::broadcast::channel::<ai_assist::todos::model::TodoWsMessage>(16);
     let app = card_routes(
         Arc::clone(&queue),
         None,
@@ -77,6 +81,8 @@ async fn start_server() -> (u16, Arc<CardQueue>, TodoApprovalRegistry) {
         registry.clone(),
         activity_tx,
         choice_registry,
+        db,
+        todo_tx,
     );
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

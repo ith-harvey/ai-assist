@@ -7,10 +7,15 @@ struct TodoRowView: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            // Status icon (spinner for agentWorking)
+            // Status icon (spinner for agentWorking, hourglass for agentQueued)
             if todo.status == .agentWorking {
                 ProgressView()
                     .controlSize(.small)
+                    .frame(width: 24)
+            } else if todo.status == .agentQueued {
+                Image(systemName: "hourglass")
+                    .font(.system(size: 18))
+                    .foregroundStyle(.blue)
                     .frame(width: 24)
             } else {
                 Image(systemName: todo.status.iconName)
