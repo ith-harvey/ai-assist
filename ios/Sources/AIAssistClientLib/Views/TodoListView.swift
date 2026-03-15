@@ -49,13 +49,6 @@ public struct TodoListView: View {
                 todoSocket.search(query: trimmed)
             }
         }
-        #if os(iOS)
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                ApprovalBellBadge(count: todoSocket.approvalCount)
-            }
-        }
-        #endif
         .navigationDestination(item: $selectedTodo) { todo in
             TodoDetailView(todo: todo, cardSocket: cardSocket)
         }
