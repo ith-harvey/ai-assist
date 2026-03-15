@@ -55,12 +55,13 @@ impl TodoState {
     }
 }
 
-/// Build the Axum router for `/ws/todos`, `/api/todos/{id}`, and `/api/todos/test`.
+/// Build the Axum router for `/ws/todos`, `/api/todos/{id}`, `/api/todos/{id}/deliverables`, and `/api/todos/test`.
 pub fn todo_routes(state: TodoState) -> Router {
     Router::new()
         .route("/ws/todos", get(ws_handler))
         .route("/api/todos/test", post(create_test_todo))
         .route("/api/todos/{id}", get(get_todo_detail))
+        .route("/api/todos/{id}/deliverables", get(get_todo_deliverables))
         .with_state(state)
 }
 
@@ -425,6 +426,53 @@ async fn get_todo_detail(
         )
             .into_response(),
     }
+}
+
+// ── REST endpoint for todo deliverables ───────────────────────────────
+
+/// GET /api/todos/{id}/deliverables — returns documents and messages linked to a todo.
+async fn get_todo_deliverables(
+    State(state): State<TodoState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let todo_id = match Uuid::parse_str(&id) {
+        Ok(id) => id,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "Invalid UUID"})),
+            )
+                .into_response();
+        }
+    };
+
+    let documents = match state.db.list_documents_by_todo(todo_id).await {
+        Ok(docs) => docs,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": e.to_string()})),
+            )
+                .into_response();
+        }
+    };
+
+    let messages = match state.db.get_cards_by_todo(todo_id).await {
+        Ok(cards) => cards,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": e.to_string()})),
+            )
+                .into_response();
+        }
+    };
+
+    Json(serde_json::json!({
+        "documents": documents,
+        "messages": messages,
+    }))
+    .into_response()
 }
 
 // ── REST endpoint for seeding test todos ──────────────────────────────

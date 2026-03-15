@@ -67,7 +67,9 @@ impl AppState {
                     agent_queue: self.agent_queue.clone(),
                 })
             }
-            CardPayload::Compose { .. } => Box::new(super::handlers::ComposeHandler),
+            CardPayload::Compose { .. } => Box::new(super::handlers::ComposeHandler {
+                email_config: self.email_config.clone(),
+            }),
             CardPayload::Decision { .. } => Box::new(super::handlers::DecisionHandler),
             CardPayload::MultipleChoice { .. } => {
                 Box::new(super::handlers::MultipleChoiceHandler {

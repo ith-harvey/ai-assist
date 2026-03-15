@@ -39,6 +39,7 @@ const PROTECTED_TOOL_NAMES: &[&str] = &[
     "delete_todo",
     "list_todos",
     "ask_user",
+    "create_message",
 ];
 
 /// Registry of available tools.
@@ -213,6 +214,12 @@ impl ToolRegistry {
     ) {
         use crate::tools::builtin::ask_user::AskUserTool;
         self.register_sync(Arc::new(AskUserTool::new(queue, choice_registry)));
+    }
+
+    /// Register message tools (compose approval cards).
+    pub fn register_message_tools(&self, card_queue: Arc<crate::cards::queue::CardQueue>) {
+        use crate::tools::builtin::message::CreateMessageTool;
+        self.register_sync(Arc::new(CreateMessageTool::new(card_queue)));
     }
 
     /// Register all memory/workspace tools.

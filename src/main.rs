@@ -285,6 +285,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tools.register_todo_tools(Arc::clone(&db), todo_state.tx.clone());
     let choice_registry = ai_assist::cards::choice_registry::ChoiceRegistry::new();
     tools.register_ask_user_tool(card_queue.clone(), choice_registry.clone());
+    tools.register_message_tools(card_queue.clone());
     let activity_state = ActivityState::new(
         Arc::clone(&db),
         activity_tx.clone(),

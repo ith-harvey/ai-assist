@@ -469,6 +469,9 @@ pub trait Database: Send + Sync {
     /// List documents linked to a specific todo.
     async fn list_documents_by_todo(&self, todo_id: Uuid) -> Result<Vec<Document>, DatabaseError>;
 
+    /// Get approval cards linked to a specific todo (compose/reply types only).
+    async fn get_cards_by_todo(&self, todo_id: Uuid) -> Result<Vec<ApprovalCard>, DatabaseError>;
+
     /// Search documents by title or content (case-insensitive LIKE).
     /// Optionally filter by document type.
     async fn search_documents(
