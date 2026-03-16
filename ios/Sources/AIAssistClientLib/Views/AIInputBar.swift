@@ -37,7 +37,7 @@ public struct AIInputBar: View {
                     inputText = ""
                 },
                 onVoiceTranscript: { transcript in
-                    chatSocket.send(text: transcript)
+                    inputText = transcript
                 }
             )
         }

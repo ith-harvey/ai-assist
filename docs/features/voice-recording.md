@@ -2,11 +2,11 @@
 
 **Status**: shipped
 **Created**: 2026-03-08
-**Last updated**: 2026-03-08
+**Last updated**: 2026-03-15
 
 ## Summary
 
-Push-to-talk voice input via a long-press microphone button. The button scales up and glows orange with pulsing rings while recording. On-device speech recognition converts speech to text in real time and sends the transcript over WebSocket. A silent 2-second trailing buffer continues capturing after the user releases the button to prevent clipped endings.
+Push-to-talk voice input via a long-press microphone button. The button scales up and glows orange with pulsing rings while recording. On-device speech recognition converts speech to text in real time. A silent 2-second trailing buffer continues capturing after the user releases the button to prevent clipped endings. The transcript fills the text field for review — the user must tap send to dispatch it. This "fill-then-send" flow applies on all tabs (Home, Messages, Calendar, Brain).
 
 ## Goals
 
@@ -24,7 +24,8 @@ Push-to-talk voice input via a long-press microphone button. The button scales u
 - [x] Long-press (500ms minimum) on the mic button starts recording
 - [x] Releasing the button stops the visible recording interaction
 - [x] On-device speech recognizer produces a transcript from the captured audio
-- [x] Transcript is sent as a chat message over WebSocket upon completion
+- [x] Transcript fills the text field for user review; mic button swaps to send button
+- [x] User taps send to dispatch the message over WebSocket
 - [x] Mic button only appears when the text field is empty; send button appears when text is present
 - [ ] **[UI]** Visually verify in simulator
 
@@ -53,7 +54,7 @@ Push-to-talk voice input via a long-press microphone button. The button scales u
 **Acceptance Criteria:**
 - [x] When the user lifts their finger, the button immediately returns to idle state (no visual recording indicator)
 - [x] The speech recognizer continues capturing and transcribing for 2 seconds after release
-- [x] The final transcript (including trailing audio) is sent as the chat message
+- [x] The final transcript (including trailing audio) fills the text field for review
 - [x] If the user taps the mic button again during the 2-second buffer, the previous buffer is finalized and a new recording starts
 - [ ] No audio artifacts or duplicate transcripts result from the buffer
 
@@ -90,13 +91,13 @@ _No new endpoints. Uses existing WebSocket chat protocol._
 
 **Buffer state (post-release):** Button immediately returns to idle appearance. Recording continues silently in the background for ~2 seconds. No visual indicator — the user perceives recording as stopped.
 
-**Transcript delivery:** Once the buffer completes, the trimmed transcript auto-sends as a chat message (same path as typing + tapping send).
+**Transcript delivery:** Once the buffer completes, the trimmed transcript fills the text field. The mic button swaps to the send button (existing SharedInputBar logic). The user reviews the text and taps send to dispatch.
 
 ## Non-Goals
 
 - **No audio file recording or transmission** — only text transcripts are sent; raw audio never leaves the device
 - **No continuous/hands-free recording** — this is strictly push-to-talk, not voice-activated
-- **No editable transcript preview** — the transcript sends automatically; there is no review/edit step before sending
+- **No live transcript preview during recording** — the transcript only appears in the text field after the trailing buffer completes; there is no real-time preview while speaking
 - **No server-side speech recognition** — all transcription is on-device via `SFSpeechRecognizer`
 - **No configurable buffer duration** — the 2-second trailing buffer is fixed, not user-adjustable
 - **No recording indicator in the status bar** — the system microphone indicator will appear per iOS behavior, but the app does not add its own persistent indicator

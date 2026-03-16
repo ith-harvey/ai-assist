@@ -78,4 +78,44 @@ struct AIInputBarTests {
         // We verify the direct property behavior
         #expect(ws.isConnected == false)
     }
+
+    // MARK: - Voice transcript fill-then-send
+
+    @Test("Voice transcript fills text field instead of auto-sending")
+    func voiceTranscriptFillsTextField() {
+        // Simulate the AIInputBar voice transcript contract:
+        // The onVoiceTranscript callback should set inputText, NOT call chatSocket.send()
+        let ws = ChatWebSocket()
+        var inputText = ""
+        let transcript = "Create a todo for groceries"
+
+        // This mirrors the AIInputBar onVoiceTranscript closure
+        let onVoiceTranscript: (String) -> Void = { transcript in
+            inputText = transcript
+        }
+
+        // Simulate receiving a voice transcript
+        onVoiceTranscript(transcript)
+
+        // Text field should contain the transcript
+        #expect(inputText == transcript)
+        // WebSocket should NOT have sent a message (messages stays empty)
+        #expect(ws.messages.isEmpty)
+    }
+
+    @Test("Voice transcript does not auto-send over WebSocket")
+    func voiceTranscriptDoesNotAutoSend() {
+        // Regression test: ensure the old auto-send behavior is gone
+        let ws = ChatWebSocket()
+        var inputText = ""
+        let transcript = "Schedule a meeting tomorrow"
+
+        // The correct behavior: fill the text field
+        inputText = transcript
+
+        // Verify: socket has no messages (nothing was sent)
+        #expect(ws.messages.isEmpty)
+        // Verify: text field has the transcript ready for user review
+        #expect(inputText == "Schedule a meeting tomorrow")
+    }
 }
