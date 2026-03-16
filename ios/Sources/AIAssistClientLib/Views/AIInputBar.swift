@@ -8,10 +8,12 @@ import SwiftUI
 public struct AIInputBar: View {
     let chatSocket: ChatWebSocket
     @Binding var inputText: String
+    let showStatusOverlay: Bool
 
-    public init(chatSocket: ChatWebSocket, inputText: Binding<String>) {
+    public init(chatSocket: ChatWebSocket, inputText: Binding<String>, showStatusOverlay: Bool = true) {
         self.chatSocket = chatSocket
         self._inputText = inputText
+        self.showStatusOverlay = showStatusOverlay
     }
 
     private var canSend: Bool {
@@ -22,6 +24,7 @@ public struct AIInputBar: View {
     public var body: some View {
         VStack(spacing: 0) {
             statusIndicator
+                .animation(.spring(response: 0.35, dampingFraction: 0.8), value: chatSocket.currentStatus != nil)
 
             SharedInputBar(
                 text: $inputText,
@@ -44,7 +47,7 @@ public struct AIInputBar: View {
 
     @ViewBuilder
     private var statusIndicator: some View {
-        if let status = chatSocket.currentStatus {
+        if let status = chatSocket.currentStatus, showStatusOverlay {
             HStack(spacing: 6) {
                 statusIcon(for: status)
                 statusText(for: status)
@@ -54,8 +57,11 @@ public struct AIInputBar: View {
                 Spacer()
             }
             .padding(.horizontal, 16)
-            .padding(.vertical, 6)
-            .transition(.opacity)
+            .padding(.vertical, 10)
+            .background(.regularMaterial)
+            .clipShape(.rect(topLeadingRadius: 12, topTrailingRadius: 12))
+            .shadow(color: .black.opacity(0.08), radius: 4, y: -2)
+            .transition(.move(edge: .bottom).combined(with: .opacity))
         }
     }
 
