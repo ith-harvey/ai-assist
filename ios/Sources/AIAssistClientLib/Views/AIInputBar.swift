@@ -71,10 +71,10 @@ public struct AIInputBar: View {
         case .thinking:
             ProgressView()
                 .controlSize(.small)
-        case .toolStarted:
-            Image(systemName: "wrench.and.screwdriver")
+        case .toolStarted(let name):
+            Image(systemName: name == "draft_todo" ? "pencil.circle" : "wrench.and.screwdriver")
                 .font(.caption)
-                .foregroundStyle(.orange)
+                .foregroundStyle(name == "draft_todo" ? .teal : .orange)
         case .toolCompleted(_, let success):
             Image(systemName: success ? "checkmark.circle" : "xmark.circle")
                 .font(.caption)
@@ -98,7 +98,7 @@ public struct AIInputBar: View {
         case .thinking(let msg):
             Text(msg.isEmpty ? "thinking..." : msg)
         case .toolStarted(let name):
-            Text("running \(name)...")
+            Text(name == "draft_todo" ? "Creating a to-do..." : "running \(name)...")
         case .toolCompleted(let name, let success):
             Text("\(name) \(success ? "done" : "failed")")
         case .toolResult(let name, let preview):

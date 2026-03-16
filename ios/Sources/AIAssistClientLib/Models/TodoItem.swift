@@ -61,6 +61,7 @@ public enum TodoBucket: String, Codable, Sendable {
 
 /// Lifecycle status of a to-do item.
 public enum TodoStatus: String, Codable, Sendable {
+    case drafting
     case created
     case agentQueued = "agent_queued"
     case agentWorking = "agent_working"
@@ -73,6 +74,7 @@ public enum TodoStatus: String, Codable, Sendable {
     /// SF Symbol name for this status.
     public var iconName: String {
         switch self {
+        case .drafting: "pencil.circle"
         case .created: "doc.text"
         case .agentQueued: "hourglass"
         case .agentWorking: "gearshape.2"
@@ -87,6 +89,7 @@ public enum TodoStatus: String, Codable, Sendable {
     /// Display label.
     public var label: String {
         switch self {
+        case .drafting: "Drafting"
         case .created: "Created"
         case .agentQueued: "Queued"
         case .agentWorking: "Agent working"
@@ -101,6 +104,7 @@ public enum TodoStatus: String, Codable, Sendable {
     /// Status color for UI indicators (stripe, icon tint).
     public var color: Color {
         switch self {
+        case .drafting: .teal
         case .created: .blue
         case .agentQueued: .blue
         case .agentWorking: .orange

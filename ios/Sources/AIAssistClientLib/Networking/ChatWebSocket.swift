@@ -37,6 +37,10 @@ public final class ChatWebSocket: @unchecked Sendable {
     /// Convenience — true when the agent is actively working.
     public var isThinking: Bool { currentStatus != nil }
 
+    /// Set when the server sends a `todo_navigate` event. Observed by MainTabView
+    /// to switch to the Home tab and push TodoDetailView.
+    public var navigateToTodoId: UUID?
+
     /// Thread ID for conversation continuity. Persisted in UserDefaults.
     public var currentThreadId: String?
 
@@ -222,6 +226,16 @@ public final class ChatWebSocket: @unchecked Sendable {
             } else if let msg = json["message"] as? String {
                 // New format: {"type":"status","message":"General status info"}
                 currentStatus = StatusEvent(kind: .status(msg))
+            }
+
+        // --- Navigation events ---
+
+        case "todo_navigate":
+            // {"type":"todo_navigate","todo_id":"<uuid>"}
+            if let todoIdStr = json["todo_id"] as? String,
+               let todoId = UUID(uuidString: todoIdStr) {
+                navigateToTodoId = todoId
+                currentStatus = StatusEvent(kind: .status("Creating a to-do..."))
             }
 
         // --- Content messages ---

@@ -286,7 +286,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Arc::clone(&agent_queue),
         card_queue.clone(),
     );
-    tools.register_todo_tools(Arc::clone(&db), todo_state.tx.clone());
+    let (navigate_tx, navigate_rx) = tokio::sync::broadcast::channel::<uuid::Uuid>(16);
+    tools.register_todo_tools(Arc::clone(&db), todo_state.tx.clone(), navigate_tx);
     let choice_registry = ai_assist::cards::choice_registry::ChoiceRegistry::new();
     tools.register_ask_user_tool(card_queue.clone(), choice_registry.clone());
     tools.register_message_tools(card_queue.clone());
@@ -307,7 +308,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // Create iOS channel (needs to exist before router build)
-    let ios_channel = IosChannel::new(Some(Arc::clone(&db)));
+    let ios_channel = IosChannel::new(Some(Arc::clone(&db)), navigate_rx);
     let ios_router = ios_channel.router();
 
     // Spawn Axum WS/REST server — cards + iOS chat + todos + activity

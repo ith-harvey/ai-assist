@@ -13,6 +13,9 @@ public struct MainTabView: View {
     @State private var isInputBarVisible = true
     @State private var isKeyboardVisible = false
 
+    /// Todo navigation trigger (set by ChatWebSocket on todo_navigate event)
+    @State private var navigateToTodoId: UUID?
+
     /// Settings sheet state
     @State private var showSettings = false
     @State private var hostInput = ""
@@ -24,7 +27,7 @@ public struct MainTabView: View {
         TabView(selection: $selectedTab) {
             // Home — to-do list
             NavigationStack {
-                TodoListView(cardSocket: cardSocket)
+                TodoListView(cardSocket: cardSocket, navigateToTodoId: $navigateToTodoId)
                     .safeAreaInset(edge: .bottom) { aiInputBar }
             }
             .tabItem {
@@ -69,6 +72,16 @@ public struct MainTabView: View {
             .tag(3)
         }
         .tint(.accentColor)
+        .onChange(of: chatSocket.navigateToTodoId) { _, newId in
+            guard let todoId = newId else { return }
+            chatSocket.navigateToTodoId = nil
+            // Switch to Home tab, then trigger navigation after a brief delay
+            // to allow the tab switch to complete
+            selectedTab = 0
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                navigateToTodoId = todoId
+            }
+        }
         .onAppear {
             cardSocket.connect()
             chatSocket.connect()

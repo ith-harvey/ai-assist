@@ -155,6 +155,115 @@ impl Tool for CreateTodoTool {
     }
 }
 
+// ── draft_todo ──────────────────────────────────────────────────────
+
+/// Tool for creating a draft todo and triggering iOS navigation.
+///
+/// Unlike `create_todo`, this creates a minimal skeleton (title only, status `Drafting`)
+/// and sends a navigation event so the iOS client immediately opens the detail view.
+/// The agent should follow up with `update_todo` calls to progressively populate fields,
+/// then run an enrichment interview before transitioning the todo to `Created`.
+pub struct DraftTodoTool {
+    db: Arc<dyn Database>,
+    todo_tx: broadcast::Sender<TodoWsMessage>,
+    navigate_tx: broadcast::Sender<uuid::Uuid>,
+}
+
+impl DraftTodoTool {
+    pub fn new(
+        db: Arc<dyn Database>,
+        todo_tx: broadcast::Sender<TodoWsMessage>,
+        navigate_tx: broadcast::Sender<uuid::Uuid>,
+    ) -> Self {
+        Self { db, todo_tx, navigate_tx }
+    }
+}
+
+#[async_trait]
+impl Tool for DraftTodoTool {
+    fn name(&self) -> &str {
+        "draft_todo"
+    }
+
+    fn description(&self) -> &str {
+        "Create a draft todo and navigate the user to its detail view. Use this instead of \
+         create_todo when the user asks to create a new todo interactively. This creates a \
+         skeleton todo with just a title (status: drafting), then the user sees the detail view \
+         immediately. After calling this, use update_todo to progressively fill in fields \
+         (todo_type, description, priority, due_date, context) one at a time. Then ask the user \
+         enrichment questions to make the todo robust — use ask_user for structured multiple-choice \
+         questions (e.g. priority) and plain text responses for open-ended questions. When done, \
+         call update_todo with status 'created' to finalize."
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "title": {
+                    "type": "string",
+                    "description": "Provisional title for the todo (can be refined later via update_todo)"
+                }
+            },
+            "required": ["title"]
+        })
+    }
+
+    fn summarize(&self, params: &serde_json::Value) -> crate::tools::summary::ToolSummary {
+        let raw = serde_json::to_string_pretty(params).unwrap_or_default();
+        let title = params
+            .get("title")
+            .and_then(|v| v.as_str())
+            .unwrap_or("untitled");
+        crate::tools::summary::ToolSummary::new("Draft", title, format!("Draft todo: {}", title), raw)
+    }
+
+    async fn execute(
+        &self,
+        params: serde_json::Value,
+        ctx: &JobContext,
+    ) -> Result<ToolOutput, ToolError> {
+        let start = std::time::Instant::now();
+        let p = Params::new(&params);
+
+        let title = p.require_str("title")?;
+
+        let user_id = if ctx.user_id.is_empty() {
+            "default"
+        } else {
+            &ctx.user_id
+        };
+
+        let mut todo = TodoItem::new(user_id, title, TodoType::Deliverable, TodoBucket::HumanOnly);
+        todo.status = TodoStatus::Drafting;
+
+        let todo_id = todo.id;
+        self.db
+            .create_todo(&todo)
+            .await
+            .map_err(|e| ToolError::exec("Draft todo", e))?;
+
+        // Broadcast creation so iOS todo list gets the new item
+        let _ = self.todo_tx.send(TodoWsMessage::TodoCreated { todo });
+
+        // Send navigation event so iOS switches to the todo detail view
+        let _ = self.navigate_tx.send(todo_id);
+
+        Ok(ToolOutput::success(
+            serde_json::json!({
+                "id": todo_id.to_string(),
+                "title": title,
+                "status": "drafting",
+                "message": "Draft todo created. The user is now viewing this todo's detail page. \
+                            Use update_todo to progressively fill in fields (todo_type, description, \
+                            priority, due_date). Then ask enrichment questions to improve the todo. \
+                            When finished, set status to 'created'."
+            }),
+            start.elapsed(),
+        ))
+    }
+}
+
 // ── update_todo ─────────────────────────────────────────────────────
 
 /// Tool for updating an existing todo.
@@ -196,9 +305,14 @@ impl Tool for UpdateTodoTool {
                     "type": "string",
                     "description": "New description (optional)"
                 },
+                "todo_type": {
+                    "type": "string",
+                    "enum": ["deliverable", "research", "errand", "learning", "administrative", "creative", "review"],
+                    "description": "New kind of work (optional)"
+                },
                 "status": {
                     "type": "string",
-                    "enum": ["created", "agent_working", "awaiting_approval", "ready_for_review", "waiting_on_you", "snoozed", "completed"],
+                    "enum": ["drafting", "created", "agent_working", "awaiting_approval", "ready_for_review", "waiting_on_you", "snoozed", "completed"],
                     "description": "New status (optional)"
                 },
                 "priority": {
@@ -254,6 +368,12 @@ impl Tool for UpdateTodoTool {
         }
         if let Some(desc) = p.optional_str("description") {
             todo.description = Some(desc.to_string());
+        }
+        if let Some(type_str) = p.optional_str("todo_type") {
+            let todo_type: TodoType =
+                serde_json::from_value(serde_json::Value::String(type_str.to_string()))
+                    .map_err(|_| ToolError::InvalidParameters(format!("Invalid todo_type: {}", type_str)))?;
+            todo.todo_type = todo_type;
         }
         if let Some(status_str) = p.optional_str("status") {
             let status: TodoStatus =
@@ -408,7 +528,7 @@ impl Tool for ListTodosTool {
             "properties": {
                 "status": {
                     "type": "string",
-                    "enum": ["created", "agent_working", "awaiting_approval", "ready_for_review", "waiting_on_you", "snoozed", "completed"],
+                    "enum": ["drafting", "created", "agent_working", "awaiting_approval", "ready_for_review", "waiting_on_you", "snoozed", "completed"],
                     "description": "Filter by status (optional, returns all if omitted)"
                 },
                 "limit": {

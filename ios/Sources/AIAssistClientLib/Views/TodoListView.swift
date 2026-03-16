@@ -14,9 +14,12 @@ public struct TodoListView: View {
     @State private var searchText: String = ""
     @State private var searchTask: Task<Void, Never>?
     let cardSocket: CardWebSocket
+    /// When set by MainTabView (from a todo_navigate event), navigates to the specified todo.
+    @Binding var navigateToTodoId: UUID?
 
-    public init(cardSocket: CardWebSocket) {
+    public init(cardSocket: CardWebSocket, navigateToTodoId: Binding<UUID?> = .constant(nil)) {
         self.cardSocket = cardSocket
+        self._navigateToTodoId = navigateToTodoId
     }
 
     public var body: some View {
@@ -48,6 +51,17 @@ public struct TodoListView: View {
                 guard !Task.isCancelled else { return }
                 todoSocket.search(query: trimmed)
             }
+        }
+        .onChange(of: navigateToTodoId) { _, newId in
+            guard let todoId = newId else { return }
+            // Look up the todo from the live socket data, or create a placeholder for draft todos
+            if let todo = todoSocket.todos.first(where: { $0.id == todoId }) {
+                selectedTodo = todo
+            } else {
+                // Draft todo may not be in the list yet — create a placeholder
+                selectedTodo = TodoItem(id: todoId, title: "Loading...", status: .drafting)
+            }
+            navigateToTodoId = nil
         }
         .navigationDestination(item: $selectedTodo) { todo in
             TodoDetailView(todo: todo, cardSocket: cardSocket)

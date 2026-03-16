@@ -142,6 +142,10 @@ pub enum StatusUpdate {
         success: bool,
         message: String,
     },
+    /// Navigate iOS client to a specific todo's detail view.
+    TodoNavigate {
+        todo_id: Uuid,
+    },
 }
 
 /// Trait for message channels.
