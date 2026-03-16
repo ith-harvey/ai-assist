@@ -45,7 +45,7 @@ public struct MainTabView: View {
 
             // Calendar
             NavigationStack {
-                CalendarPlaceholderView()
+                CalendarView()
                     .navigationTitle("Calendar")
                     .safeAreaInset(edge: .bottom) { aiInputBar }
             }

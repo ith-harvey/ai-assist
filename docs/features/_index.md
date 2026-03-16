@@ -8,6 +8,7 @@
 | Voice Recording UX | [voice-recording.md](voice-recording.md) | shipped | Push-to-talk mic button with orange glow, on-device transcription, and 2s trailing audio buffer |
 | Dev Mode Server Prompt | [dev-mode-server-prompt.md](dev-mode-server-prompt.md) | planned | Always show server address screen in Debug builds; pre-fill last address; print LAN IP in dev.sh |
 | Task Deliverables | [task-deliverables.md](task-deliverables.md) | in-progress | Rename Documents to Deliverables; add message-type deliverables with approval card integration |
+| Calendar Google Calendar Setup | [calendar-google-calendar-setup.md](calendar-google-calendar-setup.md) | planned | Setup flow to connect Google Calendar via OAuth; connected placeholder state |
 | Todo Agent Workflow | [todo-agent-workflow.md](todo-agent-workflow.md) | in-progress | End-to-end todo agent lifecycle, activity streaming, and parallel execution (multiple agents on different todos simultaneously) |
 | AI Status Overlay | [ai-status-overlay.md](ai-status-overlay.md) | planned | Background strip + spring animation for AI status above input bar; hidden on Brain tab |
 | Unified Approval Card UX | [unified-approval-card-ux.md](unified-approval-card-ux.md) | in-progress | Unify Messages and Todo approval card UX via generic parent view hierarchy; ContentView embeds ApprovalQueueView |
