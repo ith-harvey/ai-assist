@@ -172,7 +172,7 @@ public struct MainTabView: View {
 
     @ViewBuilder
     private var aiInputBar: some View {
-        AIInputBar(chatSocket: chatSocket, inputText: $inputText)
+        AIInputBar(chatSocket: chatSocket, inputText: $inputText, showStatusOverlay: selectedTab != 3)
             .offset(y: isInputBarVisible || shouldForceShowBar ? 0 : 120)
             .animation(.spring(response: 0.35, dampingFraction: 0.8), value: isInputBarVisible || shouldForceShowBar)
     }
