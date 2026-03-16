@@ -26,12 +26,5 @@ public struct CalendarPlaceholderView: View {
             }
         }
         .secondaryBackground()
-        #if os(iOS)
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                ApprovalBellBadge(count: 0)
-            }
-        }
-        #endif
     }
 }

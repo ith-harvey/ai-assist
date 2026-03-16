@@ -51,9 +51,6 @@ public struct ContentView: View {
                     }
                 }
                 #endif
-                ToolbarItem(placement: .primaryAction) {
-                    ApprovalBellBadge(count: messageCards.count)
-                }
             }
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
