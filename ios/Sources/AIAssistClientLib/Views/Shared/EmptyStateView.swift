@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// Reusable empty state placeholder with icon, title, and optional subtitle.
-/// Used across ContentView, TodoListView, BrainChatView, CalendarPlaceholderView, etc.
+/// Used across ContentView, TodoListView, BrainChatView, CalendarView, etc.
 struct EmptyStateView: View {
     let icon: String
     let title: String
