@@ -220,7 +220,7 @@ async fn handle_client_action(text: &str, state: &TodoState) -> Option<TodoWsMes
                         if is_agent_startable {
                             if let Some(cq) = &state.card_queue {
                                 let card = ApprovalCard::new_action(
-                                    format!("Add to agent queue: {}?", todo_title),
+                                    format!("Do you want me to start on {}?", todo_title),
                                     todo_desc,
                                     CardSilo::Todos,
                                     60,
@@ -548,7 +548,7 @@ async fn create_test_todo(
             if is_agent_startable {
                 if let Some(cq) = &state.card_queue {
                     let card = ApprovalCard::new_action(
-                        format!("Add to agent queue: {}?", todo_title),
+                        format!("Do you want me to start on {}?", todo_title),
                         todo_desc,
                         CardSilo::Todos,
                         60,

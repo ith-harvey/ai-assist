@@ -909,7 +909,7 @@ public struct TodoDetailView: View {
                 Image(systemName: "hourglass")
                     .font(.system(size: 24))
                     .foregroundStyle(.blue)
-                Text("Agent queued")
+                Text("Queued — waiting to start")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else if activitySocket.isConnected {

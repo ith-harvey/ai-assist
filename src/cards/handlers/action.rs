@@ -122,7 +122,7 @@ async fn resolve_approval(
             info!(
                 card_id = %card.id,
                 todo_id = %todo_id,
-                "Todo approved for agent queue → AgentQueued"
+                "Todo approved → AgentQueued"
             );
         } else {
             info!(

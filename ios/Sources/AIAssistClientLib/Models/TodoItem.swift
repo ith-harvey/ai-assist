@@ -88,7 +88,7 @@ public enum TodoStatus: String, Codable, Sendable {
     public var label: String {
         switch self {
         case .created: "Created"
-        case .agentQueued: "Agent queued"
+        case .agentQueued: "Queued"
         case .agentWorking: "Agent working"
         case .awaitingApproval: "Awaiting approval"
         case .readyForReview: "Ready for review"
