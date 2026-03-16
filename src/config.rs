@@ -144,6 +144,30 @@ impl RoutineConfig {
     }
 }
 
+/// Google OAuth configuration for Calendar integration.
+/// Optional — feature is disabled when `GOOGLE_CLIENT_ID` is unset.
+#[derive(Debug, Clone)]
+pub struct GoogleOAuthConfig {
+    pub client_id: String,
+    pub client_secret: secrecy::SecretString,
+    pub redirect_uri: String,
+}
+
+impl GoogleOAuthConfig {
+    /// Build from environment variables. Returns `None` if `GOOGLE_CLIENT_ID` is unset.
+    pub fn from_env() -> Option<Self> {
+        let client_id = std::env::var("GOOGLE_CLIENT_ID").ok()?;
+        let client_secret = std::env::var("GOOGLE_CLIENT_SECRET").ok()?;
+        let redirect_uri = std::env::var("GOOGLE_REDIRECT_URI")
+            .unwrap_or_else(|_| "http://localhost:8080/auth/google/callback".to_string());
+        Some(Self {
+            client_id,
+            client_secret: secrecy::SecretString::from(client_secret),
+            redirect_uri,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

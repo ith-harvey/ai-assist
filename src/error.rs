@@ -36,6 +36,9 @@ pub enum Error {
 
     #[error("Pipeline error: {0}")]
     Pipeline(#[from] PipelineError),
+
+    #[error("OAuth error: {0}")]
+    OAuth(#[from] OAuthError),
 }
 
 /// Configuration-related errors.
@@ -287,6 +290,22 @@ pub enum PipelineError {
 
     #[error("LLM error: {0}")]
     Llm(#[from] LlmError),
+}
+
+/// OAuth-related errors.
+#[derive(Debug, thiserror::Error)]
+pub enum OAuthError {
+    #[error("OAuth token exchange failed: {0}")]
+    TokenExchange(String),
+
+    #[error("OAuth token refresh failed: {0}")]
+    TokenRefresh(String),
+
+    #[error("OAuth invalid state parameter")]
+    InvalidState,
+
+    #[error("OAuth HTTP error: {0}")]
+    Http(String),
 }
 
 /// Result type alias for the agent.

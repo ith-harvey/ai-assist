@@ -7,8 +7,9 @@ use ai_assist::cards::queue::{self, CardQueue};
 use ai_assist::cards::ws::card_routes;
 use ai_assist::channels::email::EmailConfig;
 use ai_assist::channels::{ChannelManager, CliChannel, IosChannel, TelegramChannel};
+use ai_assist::calendar::routes::{CalendarState, calendar_routes};
 use ai_assist::documents::routes::{DocumentState, document_routes};
-use ai_assist::config::{AgentConfig, RoutineConfig};
+use ai_assist::config::{AgentConfig, GoogleOAuthConfig, RoutineConfig};
 use ai_assist::llm::{LlmBackend, LlmConfig, create_provider};
 use ai_assist::safety::SafetyLayer;
 use ai_assist::store::{Database, LibSqlBackend};
@@ -157,6 +158,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Build EmailConfig for the card server (so approve/edit can send replies)
     let email_config_for_cards = EmailConfig::from_env();
+
+    // Google Calendar OAuth (optional — disabled when GOOGLE_CLIENT_ID is unset)
+    let google_oauth_config = GoogleOAuthConfig::from_env();
 
     // ── Agent Config (created early — Scheduler needs it) ──────────────
     let agent_config = AgentConfig::from_env();
@@ -322,6 +326,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     .merge(todo_routes(todo_state))
     .merge(activity_routes(activity_state))
     .merge(document_routes(DocumentState { db: Arc::clone(&db) }));
+
+    // Conditionally add Google Calendar OAuth routes
+    let app = if let Some(oauth_config) = google_oauth_config {
+        eprintln!("   Google Calendar: enabled (redirect: {})", oauth_config.redirect_uri);
+        app.merge(calendar_routes(CalendarState {
+            db: Arc::clone(&db),
+            oauth_config,
+        }))
+    } else {
+        eprintln!("   Google Calendar: disabled (set GOOGLE_CLIENT_ID to enable)");
+        app
+    };
+
     tokio::spawn(async move {
         let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", ws_port))
             .await
