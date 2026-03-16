@@ -103,18 +103,18 @@ On server restart, the pickup loop's first cycle resets all `AgentWorking` todos
 - [ ] No race conditions: two agents can't claim the same slot simultaneously (CAS already handles this)
 
 ### US-003: Approval card on todo creation (queue entry)
-**Description:** As a user, when I create a new todo, I want to be prompted with an approval card asking whether it should be added to the agent queue — and where it should be prioritized relative to existing queued todos.
+**Description:** As a user, when I create a new todo, I want to be prompted with an approval card asking whether the agent should start on it — and where it should be prioritized relative to existing queued todos.
 
 **Acceptance Criteria:**
-- [ ] When an `AgentStartable` todo is created, it stays in `Created` status (not yet in the agent queue)
-- [ ] The system creates an approval card: "Add to agent queue: {todo title}?" with approve/dismiss actions
-- [ ] If the user approves, the todo status changes to `AgentQueued` and enters the priority-sorted agent queue
-- [ ] If the user dismisses, the todo stays in `Created` — user can manually queue it later
+- [ ] When an `AgentStartable` todo is created, it stays in `Created` status (not yet queued)
+- [ ] The system creates an approval card: "Do you want me to start on {todo title}?" with approve/dismiss actions
+- [ ] If the user approves, the todo status changes to `AgentQueued` and enters the priority-sorted work queue
+- [ ] If the user dismisses, the todo stays in `Created` — user can manually start it later
 - [ ] The approval card appears in the Next Steps queue alongside other pending cards
 - [ ] **[UI]** Visually verify: create a todo → approval card appears → approve → todo enters queue → agent picks it up
 
-### US-004: Priority-based agent queue with autonomous pickup
-**Description:** As a user, I want agents to autonomously work through my todo queue in priority order — finishing one todo and immediately picking up the next — without asking me each time.
+### US-004: Priority-based task queue with autonomous pickup
+**Description:** As a user, I want agents to autonomously work through my task queue in priority order — finishing one todo and immediately picking up the next — without asking me each time.
 
 **Acceptance Criteria:**
 - [ ] When multiple todos are queued (`AgentQueued`), they are sorted by `priority` field (lower number = higher priority)
@@ -123,8 +123,8 @@ On server restart, the pickup loop's first cycle resets all `AgentWorking` todos
 - [ ] When an agent finishes a todo, it immediately picks up the next highest-priority queued todo (no user prompt)
 - [ ] Changing a todo's priority while it's queued (not yet picked up) affects its position — next pickup uses updated priority
 - [ ] An already-running agent is NOT preempted by a higher-priority todo arriving later (no preemption)
-- [ ] Deleting a todo removes it from the agent queue (agent never starts on it)
-- [ ] Completing a todo removes it from the agent queue (if it was queued but not yet started)
+- [ ] Deleting a todo removes it from the work queue (agent never starts on it)
+- [ ] Completing a todo removes it from the work queue (if it was queued but not yet started)
 
 ### US-005: Event-driven pickup — agents auto-chain to next todo
 **Description:** As a user, I want agents to automatically pick up the next queued todo as soon as they finish the current one, with no delay and no user prompt.
@@ -149,7 +149,7 @@ On server restart, the pickup loop's first cycle resets all `AgentWorking` todos
 
 **Acceptance Criteria:**
 - [ ] The todo list view already shows a spinner for `AgentWorking` todos — verify this works correctly when multiple todos are in `AgentWorking` state simultaneously
-- [ ] When at capacity and a todo is waiting for a slot, the detail view shows "Agent queued — N agents running" instead of generic "Waiting for agent to start..."
+- [ ] When at capacity and a todo is waiting for a slot, the detail view shows "Queued — N tasks in progress" instead of generic "Waiting for agent to start..."
 - [ ] When the WebSocket is disconnected, the existing "Not connected" state is shown (existing)
 - [ ] When the agent is starting (slot acquired, spawning), the existing spinner + "Waiting for agent to start..." is shown (existing)
 
