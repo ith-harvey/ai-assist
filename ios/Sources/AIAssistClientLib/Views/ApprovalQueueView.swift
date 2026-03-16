@@ -40,17 +40,25 @@ extension AnyTransition {
 struct ApprovalQueueView: View {
     let cardSocket: CardWebSocket
     let mode: ApprovalSheetMode
-    let onDismiss: () -> Void
+    let onDismiss: (() -> Void)?
+
+    /// External card source. When provided, the queue uses these cards instead of `cardSocket.cards`.
+    var cards: [ApprovalCard]?
 
     @State private var processedCount: Int = 0
     @State private var initialQueueSize: Int = 0
+    @State private var refineText: String = ""
+
+    private var sourceCards: [ApprovalCard] {
+        cards ?? cardSocket.cards
+    }
 
     private var currentCard: ApprovalCard? {
         switch mode {
         case .queue:
-            return cardSocket.cards.first
+            return sourceCards.first
         case .single(let card):
-            return cardSocket.cards.first(where: { $0.id == card.id })
+            return sourceCards.first(where: { $0.id == card.id })
         }
     }
 
@@ -61,32 +69,64 @@ struct ApprovalQueueView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // Progress header (queue mode only)
-            if isQueueMode {
+            if isQueueMode && initialQueueSize > 1 {
                 progressHeader
             }
 
-            // Card content
             if let card = currentCard {
-                SwipeCardContainer(
-                    onApprove: { handleAction { cardSocket.approve(cardId: card.id) } },
-                    onReject: { handleAction { cardSocket.dismiss(cardId: card.id) } }
-                ) {
-                    CardBodyView(card: card)
-                }
-                .id(card.id)
-                .transition(.cardFlip)
+                cardView(for: card)
+                    .id(card.id)
+                    .transition(.cardFlip)
             }
         }
         .animation(.easeInOut(duration: 0.35), value: currentCard?.id)
         .onAppear {
             if isQueueMode {
-                initialQueueSize = cardSocket.cards.count
+                initialQueueSize = sourceCards.count
             }
+        }
+        .onChange(of: currentCard?.id) { _, _ in
+            refineText = ""
         }
         .onChange(of: currentCard == nil) { _, isEmpty in
             if isEmpty {
-                onDismiss()
+                onDismiss?()
+            }
+        }
+    }
+
+    // MARK: - Card View (dispatches to child types)
+
+    @ViewBuilder
+    private func cardView(for card: ApprovalCard) -> some View {
+        switch card.payload {
+        case .reply, .compose:
+            SwipeCardContainer(
+                onApprove: { handleAction { cardSocket.approve(cardId: card.id) } },
+                onReject: { handleAction { cardSocket.dismiss(cardId: card.id) } }
+            ) {
+                MessageDraftApprovalCard(
+                    card: card,
+                    cardSocket: cardSocket,
+                    refineText: $refineText
+                )
+            }
+
+        case .action, .decision:
+            SwipeCardContainer(
+                onApprove: { handleAction { cardSocket.approve(cardId: card.id) } },
+                onReject: { handleAction { cardSocket.dismiss(cardId: card.id) } }
+            ) {
+                ActionApprovalCard(card: card)
+            }
+
+        case .multipleChoice:
+            SwipeCardContainer(
+                onApprove: { /* no-op: options handle their own selection */ },
+                onReject: { handleAction { cardSocket.dismiss(cardId: card.id) } },
+                approveDisabled: true
+            ) {
+                MultipleChoiceApprovalCard(card: card, socket: cardSocket)
             }
         }
     }
@@ -129,7 +169,7 @@ struct ApprovalQueueView: View {
         processedCount += 1
 
         if !isQueueMode {
-            onDismiss()
+            onDismiss?()
         }
     }
 }

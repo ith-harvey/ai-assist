@@ -18,7 +18,7 @@ struct CardBodyView: View {
         case .decision:
             DecisionCardBody(card: card)
         case .multipleChoice:
-            // Rendered via MultipleChoiceCardBody in ContentView directly
+            // Rendered via MultipleChoiceApprovalCard in ApprovalQueueView
             EmptyView()
         }
     }
