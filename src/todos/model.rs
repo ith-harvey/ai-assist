@@ -29,6 +29,7 @@ pub enum TodoBucket {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TodoStatus {
+    Drafting,
     Created,
     AgentQueued,
     AgentWorking,

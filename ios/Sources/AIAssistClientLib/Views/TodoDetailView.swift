@@ -63,6 +63,9 @@ public struct TodoDetailView: View {
     /// Todo fetched via REST — source of truth for current status.
     @State private var fetchedTodo: TodoItem?
 
+    /// TodoWebSocket for receiving live todo updates (field changes during drafting).
+    @State private var todoSocket = TodoWebSocket()
+
     public init(todo: TodoItem, cardSocket: CardWebSocket) {
         self.todo = todo
         self.cardSocket = cardSocket
@@ -70,6 +73,21 @@ public struct TodoDetailView: View {
         // Collapse activity by default when completed/readyForReview
         let isFinished = todo.status == .completed || todo.status == .readyForReview
         self._isActivityExpanded = State(initialValue: !isFinished)
+    }
+
+    /// The most up-to-date todo (prefers live-fetched data over initial snapshot).
+    private var displayTodo: TodoItem {
+        fetchedTodo ?? todo
+    }
+
+    /// Whether this todo is in drafting state (being progressively built).
+    private var isDrafting: Bool {
+        displayTodo.status == .drafting
+    }
+
+    /// Whether to show the activity feed (agent-startable or drafting).
+    private var showActivityFeed: Bool {
+        todo.bucket == .agentStartable || isDrafting
     }
 
     public var body: some View {
@@ -92,7 +110,7 @@ public struct TodoDetailView: View {
                     }
 
                     // ── Description (hidden when collapsed) ─────────
-                    if !isHeaderCollapsed, let description = todo.description, !description.isEmpty {
+                    if !isHeaderCollapsed, let description = displayTodo.description, !description.isEmpty {
                         descriptionSection(description)
                             .padding(.horizontal, 20)
                             .padding(.bottom, 16)
@@ -110,7 +128,7 @@ public struct TodoDetailView: View {
                             .padding(.horizontal, 20)
                             .padding(.bottom, 12)
 
-                        if todo.bucket == .agentStartable {
+                        if showActivityFeed {
                             collapsibleActivitySection
                                 .padding(.top, 4)
                         }
@@ -120,7 +138,7 @@ public struct TodoDetailView: View {
                             .padding(.horizontal, 20)
                             .padding(.bottom, 8)
 
-                        if todo.bucket == .agentStartable {
+                        if showActivityFeed {
                             Rectangle()
                                 .fill(Color.gray.opacity(0.2))
                                 .frame(height: 1)
@@ -224,16 +242,26 @@ public struct TodoDetailView: View {
             }
         }
         .onAppear {
-            if todo.bucket == .agentStartable {
+            if showActivityFeed {
                 activitySocket.connect()
             }
+            todoSocket.connect()
         }
         .onDisappear {
             activitySocket.disconnect()
+            todoSocket.disconnect()
         }
         .onChange(of: isActivityExpanded) { _, expanded in
             if expanded && !activitySocket.isConnected {
                 activitySocket.connect()
+            }
+        }
+        .onChange(of: todoSocket.todos) { _, todos in
+            // Observe live todo updates for progressive field population
+            if let updated = todos.first(where: { $0.id == todo.id }) {
+                withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+                    fetchedTodo = updated
+                }
             }
         }
         .onChange(of: fetchedTodo?.status) { _, newStatus in
@@ -267,7 +295,7 @@ public struct TodoDetailView: View {
             .presentationDetents([.medium, .large])
         }
 
-        if todo.bucket == .agentStartable {
+        if showActivityFeed {
             inputBar
         }
         } // VStack
@@ -360,7 +388,7 @@ public struct TodoDetailView: View {
         VStack(alignment: .leading, spacing: 8) {
             if isHeaderCollapsed {
                 // Compact: title only
-                Text(todo.title)
+                Text(displayTodo.title)
                     .font(.title3)
                     .fontWeight(.semibold)
                     .foregroundStyle(.primary)
@@ -369,25 +397,27 @@ public struct TodoDetailView: View {
                 // Full header with icon, badges
                 HStack(spacing: 10) {
                     // Status icon
-                    Image(systemName: todo.status.iconName)
+                    Image(systemName: displayTodo.status.iconName)
                         .font(.system(size: 24))
-                        .foregroundStyle(statusColor)
+                        .foregroundStyle(displayTodo.status.color)
 
                     VStack(alignment: .leading, spacing: 3) {
-                        Text(todo.title)
+                        Text(displayTodo.title)
                             .font(.title3)
                             .fontWeight(.semibold)
                             .foregroundStyle(.primary)
                             .lineLimit(3)
 
                         HStack(spacing: 8) {
-                            todo.todoType.tag()
+                            displayTodo.todoType.tag()
+                                .transition(.move(edge: .leading).combined(with: .opacity))
 
-                            if let priorityTag = todo.priorityTag() {
+                            if let priorityTag = displayTodo.priorityTag() {
                                 priorityTag
+                                    .transition(.opacity)
                             }
 
-                            todo.bucket.tag()
+                            displayTodo.bucket.tag()
                         }
                     }
                 }
@@ -400,31 +430,32 @@ public struct TodoDetailView: View {
     private var metadataSection: some View {
         VStack(alignment: .leading, spacing: 6) {
             // Status
-            metadataRow(label: "Status", icon: todo.status.iconName) {
-                Text(todo.status.label)
+            metadataRow(label: "Status", icon: displayTodo.status.iconName) {
+                Text(displayTodo.status.label)
             }
 
             // Due date
-            if let due = todo.dueDate {
+            if let due = displayTodo.dueDate {
                 metadataRow(label: "Due", icon: "calendar") {
                     HStack(spacing: 4) {
                         Text(formatFullDate(due))
-                        if todo.isOverdue {
+                        if displayTodo.isOverdue {
                             Text("Overdue")
                                 .font(.system(size: 11, weight: .semibold))
                                 .foregroundStyle(.red)
                         }
                     }
                 }
+                .transition(.opacity)
             }
 
             // Created
             metadataRow(label: "Created", icon: "clock.arrow.circlepath") {
-                Text(formatCreatedDate(todo.createdAt))
+                Text(formatCreatedDate(displayTodo.createdAt))
             }
 
             // Source card
-            if todo.sourceCardId != nil {
+            if displayTodo.sourceCardId != nil {
                 metadataRow(label: "Source", icon: "doc.on.doc") {
                     Text("From approval card")
                 }
@@ -905,7 +936,13 @@ public struct TodoDetailView: View {
 
     private var activityEmptyState: some View {
         VStack(spacing: 12) {
-            if todo.status == .agentQueued {
+            if isDrafting {
+                ProgressView()
+                    .controlSize(.small)
+                Text("Building your to-do...")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else if todo.status == .agentQueued {
                 Image(systemName: "hourglass")
                     .font(.system(size: 24))
                     .foregroundStyle(.blue)
@@ -935,6 +972,7 @@ public struct TodoDetailView: View {
 
     private var statusColor: Color {
         switch todo.status {
+        case .drafting: .teal
         case .created: .blue
         case .agentQueued: .blue
         case .agentWorking: .orange

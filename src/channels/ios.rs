@@ -63,6 +63,8 @@ enum ServerMessage {
         content: String,
         thread_id: Option<String>,
     },
+    #[serde(rename = "todo_navigate")]
+    TodoNavigate { todo_id: String },
 }
 
 // ── History DTOs ────────────────────────────────────────────────────────
@@ -125,6 +127,8 @@ pub struct IosChannel {
     store: Option<Arc<dyn Database>>,
     /// Receiver side of the incoming channel — consumed once in `start()`.
     incoming_rx: Mutex<Option<mpsc::UnboundedReceiver<IncomingMessage>>>,
+    /// Receiver for todo navigation events from DraftTodoTool.
+    navigate_rx: Mutex<Option<broadcast::Receiver<Uuid>>>,
 }
 
 impl IosChannel {
@@ -132,7 +136,10 @@ impl IosChannel {
     ///
     /// Pass a `Database` to enable the `/api/chat/history` endpoint.
     /// If `None`, history requests return empty results.
-    pub fn new(store: Option<Arc<dyn Database>>) -> Self {
+    ///
+    /// `navigate_rx` receives todo IDs from `DraftTodoTool` and forwards them
+    /// as `TodoNavigate` events to connected iOS clients.
+    pub fn new(store: Option<Arc<dyn Database>>, navigate_rx: broadcast::Receiver<Uuid>) -> Self {
         let (incoming_tx, incoming_rx) = mpsc::unbounded_channel();
         let (outgoing_tx, _) = broadcast::channel(256);
 
@@ -145,6 +152,7 @@ impl IosChannel {
             inner,
             store,
             incoming_rx: Mutex::new(Some(incoming_rx)),
+            navigate_rx: Mutex::new(Some(navigate_rx)),
         }
     }
 
@@ -180,6 +188,18 @@ impl Channel for IosChannel {
                     name: "ios".to_string(),
                     reason: "start() already called".to_string(),
                 })?;
+
+        // Spawn a task that forwards todo navigation events to connected clients
+        if let Some(mut navigate_rx) = self.navigate_rx.lock().await.take() {
+            let outgoing_tx = self.inner.outgoing_tx.clone();
+            tokio::spawn(async move {
+                while let Ok(todo_id) = navigate_rx.recv().await {
+                    let _ = outgoing_tx.send(ServerMessage::TodoNavigate {
+                        todo_id: todo_id.to_string(),
+                    });
+                }
+            });
+        }
 
         let stream = stream::unfold(
             rx,
@@ -247,6 +267,9 @@ impl Channel for IosChannel {
                     extension_name,
                     if success { &message } else { "auth failed" }
                 ),
+            },
+            StatusUpdate::TodoNavigate { todo_id } => ServerMessage::TodoNavigate {
+                todo_id: todo_id.to_string(),
             },
         };
 

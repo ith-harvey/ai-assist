@@ -177,6 +177,11 @@ public final class CardWebSocket: @unchecked Sendable {
         cards.removeAll { $0.id == cardId }
     }
 
+    public func sendFreeText(cardId: UUID, text: String) {
+        send(action: .freeTextOption(cardId: cardId, text: text))
+        cards.removeAll { $0.id == cardId }
+    }
+
     // MARK: - Reconnection
 
     private func handleDisconnect() {

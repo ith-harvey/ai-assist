@@ -259,6 +259,19 @@ async fn handle_client_message(text: &str, state: &AppState) {
                     warn!(card_id = %card_id, "SelectOption failed — card not found or not pending");
                 }
             }
+            CardAction::FreeTextOption { card_id, text } => {
+                if let Some(card) = state.queue.approve(card_id).await {
+                    info!(card_id = %card_id, "Free-text option submitted via WS");
+                    if let CardPayload::MultipleChoice { .. } = &card.payload {
+                        let handler = super::handlers::MultipleChoiceHandler {
+                            choice_registry: state.choice_registry.clone(),
+                        };
+                        handler.on_free_text(&card, text).await;
+                    }
+                } else {
+                    warn!(card_id = %card_id, "FreeTextOption failed — card not found or not pending");
+                }
+            }
         },
         Err(e) => {
             debug!(error = %e, text = text, "Unrecognized WS message from client");

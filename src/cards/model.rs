@@ -461,6 +461,8 @@ pub enum CardAction {
     Refine { card_id: Uuid, instruction: String },
     /// Select an option from a multiple-choice card.
     SelectOption { card_id: Uuid, selected_index: usize },
+    /// Submit a free-text response for a multiple-choice card's "Something else..." option.
+    FreeTextOption { card_id: Uuid, text: String },
 }
 
 /// Messages sent over WebSocket (server → client and internal events).
@@ -518,6 +520,22 @@ mod tests {
         match parsed {
             CardAction::Approve { .. } => {}
             _ => panic!("Expected Approve"),
+        }
+    }
+
+    #[test]
+    fn card_action_free_text_option_serde_roundtrip() {
+        let action = CardAction::FreeTextOption {
+            card_id: Uuid::new_v4(),
+            text: "My custom answer".into(),
+        };
+        let json = serde_json::to_string(&action).unwrap();
+        assert!(json.contains("\"action\":\"free_text_option\""));
+        assert!(json.contains("My custom answer"));
+        let parsed: CardAction = serde_json::from_str(&json).unwrap();
+        match parsed {
+            CardAction::FreeTextOption { text, .. } => assert_eq!(text, "My custom answer"),
+            _ => panic!("Expected FreeTextOption"),
         }
     }
 

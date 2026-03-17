@@ -38,6 +38,7 @@ const PROTECTED_TOOL_NAMES: &[&str] = &[
     "update_todo",
     "delete_todo",
     "list_todos",
+    "draft_todo",
     "ask_user",
     "create_message",
 ];
@@ -198,11 +199,13 @@ impl ToolRegistry {
         &self,
         db: Arc<dyn Database>,
         todo_tx: tokio::sync::broadcast::Sender<crate::todos::model::TodoWsMessage>,
+        navigate_tx: tokio::sync::broadcast::Sender<uuid::Uuid>,
     ) {
         use crate::tools::builtin::todo::*;
         self.register_sync(Arc::new(CreateTodoTool::new(db.clone(), todo_tx.clone())));
         self.register_sync(Arc::new(UpdateTodoTool::new(db.clone(), todo_tx.clone())));
-        self.register_sync(Arc::new(DeleteTodoTool::new(db.clone(), todo_tx)));
+        self.register_sync(Arc::new(DeleteTodoTool::new(db.clone(), todo_tx.clone())));
+        self.register_sync(Arc::new(DraftTodoTool::new(db.clone(), todo_tx, navigate_tx)));
         self.register_sync(Arc::new(ListTodosTool::new(db)));
     }
 

@@ -105,8 +105,12 @@ impl Tool for AskUserTool {
             ));
         }
 
+        // Auto-append "Something else..." fallback for free-text input
+        let mut card_options = options.clone();
+        card_options.push("Something else...".into());
+
         // Create the card
-        let card = ApprovalCard::new_multiple_choice(question, options.clone(), CardSilo::Messages);
+        let card = ApprovalCard::new_multiple_choice(question, card_options, CardSilo::Messages);
         let card_id = card.id;
 
         // Set up the oneshot channel
@@ -122,6 +126,14 @@ impl Tool for AskUserTool {
                 serde_json::json!({
                     "selected": option,
                     "question": question,
+                }),
+                start.elapsed(),
+            )),
+            Ok(Ok(ChoiceResult::FreeText(text))) => Ok(ToolOutput::success(
+                serde_json::json!({
+                    "selected": text,
+                    "question": question,
+                    "is_free_text": true,
                 }),
                 start.elapsed(),
             )),

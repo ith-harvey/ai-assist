@@ -144,6 +144,18 @@ struct ModelTests {
         #expect(dict["new_text"] as? String == "Custom reply text")
     }
 
+    @Test("Encode free_text_option action to correct JSON")
+    func encodeFreeTextOptionAction() throws {
+        let cardId = UUID(uuidString: "550e8400-e29b-41d4-a716-446655440000")!
+        let action = CardAction.freeTextOption(cardId: cardId, text: "My custom answer")
+        let data = try action.toData()
+        let dict = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+
+        #expect(dict["action"] as? String == "free_text_option")
+        #expect(dict["card_id"] as? String == "550E8400-E29B-41D4-A716-446655440000")
+        #expect(dict["text"] as? String == "My custom answer")
+    }
+
     // MARK: - WsMessage decoding
 
     @Test("Decode new_card WsMessage")

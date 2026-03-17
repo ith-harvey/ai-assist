@@ -304,9 +304,13 @@ struct DecisionCardBody: View {
 
 /// Shows a question with swipeable A/B/C option rows.
 /// Each option can be swiped right to select it.
+/// The last option ("Something else...") triggers a free-text input.
 struct MultipleChoiceCardBody: View {
     let card: ApprovalCard
     let socket: CardWebSocket
+
+    @State private var showFreeTextInput = false
+    @State private var freeTextInput = ""
 
     private var question: String {
         if case .multipleChoice(let q, _) = card.payload { return q }
@@ -318,7 +322,12 @@ struct MultipleChoiceCardBody: View {
         return []
     }
 
-    private let labels = ["A", "B", "C"]
+    private let labels = ["A", "B", "C", "D", "E"]
+
+    /// Whether a given option is the "Something else..." fallback.
+    private func isFreeTextOption(_ option: String) -> Bool {
+        option == "Something else..."
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -340,16 +349,68 @@ struct MultipleChoiceCardBody: View {
                 .foregroundStyle(.primary)
 
             // Swipeable options
-            VStack(spacing: 8) {
-                ForEach(Array(options.enumerated()), id: \.offset) { index, option in
-                    SwipeOptionRow(
-                        label: labels[index],
-                        text: option,
-                        onSelect: {
-                            socket.selectOption(cardId: card.id, selectedIndex: index)
-                        }
-                    )
+            if !showFreeTextInput {
+                VStack(spacing: 8) {
+                    ForEach(Array(options.enumerated()), id: \.offset) { index, option in
+                        SwipeOptionRow(
+                            label: index < labels.count ? labels[index] : "\(index + 1)",
+                            text: option,
+                            onSelect: {
+                                if isFreeTextOption(option) {
+                                    withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                                        showFreeTextInput = true
+                                    }
+                                } else {
+                                    socket.selectOption(cardId: card.id, selectedIndex: index)
+                                }
+                            }
+                        )
+                    }
                 }
+            }
+
+            // Free-text input (shown after selecting "Something else...")
+            if showFreeTextInput {
+                VStack(spacing: 8) {
+                    TextField("Type your answer...", text: $freeTextInput, axis: .vertical)
+                        .textFieldStyle(.roundedBorder)
+                        .lineLimit(1...4)
+
+                    HStack {
+                        Button {
+                            withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                                showFreeTextInput = false
+                                freeTextInput = ""
+                            }
+                        } label: {
+                            Text("Cancel")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                        }
+
+                        Spacer()
+
+                        Button {
+                            let text = freeTextInput.trimmingCharacters(in: .whitespacesAndNewlines)
+                            guard !text.isEmpty else { return }
+                            socket.sendFreeText(cardId: card.id, text: text)
+                        } label: {
+                            Text("Submit")
+                                .font(.subheadline.bold())
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 8)
+                                .background(
+                                    Capsule().fill(freeTextInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? .gray : .blue)
+                                )
+                        }
+                        .disabled(freeTextInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    }
+                }
+                .transition(.asymmetric(
+                    insertion: .opacity.combined(with: .move(edge: .bottom)),
+                    removal: .opacity
+                ))
             }
         }
         .padding(16)
