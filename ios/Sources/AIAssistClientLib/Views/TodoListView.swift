@@ -1,14 +1,21 @@
 import SwiftUI
 
+/// Filter tabs for the todo list.
+private enum TodoTabFilter: String, CaseIterable {
+    case active = "Active"
+    case snoozed = "Snoozed"
+    case completed = "Completed"
+}
+
 /// Main to-do list view with swipeable rows.
 ///
 /// Swipe right → complete. Swipe left → delete.
 /// Tap a row → push full-screen `TodoDetailView` via NavigationStack.
-/// Sections: Active (sorted by priority), Snoozed, Completed (collapsed by default).
+/// Segmented control at top filters between Active, Snoozed, and Completed.
 /// Approval badge in nav bar shows items needing attention.
 public struct TodoListView: View {
     @State private var todoSocket = TodoWebSocket()
-    @State private var showCompleted = false
+    @State private var selectedTab: TodoTabFilter = .active
     @State private var selectedTodo: TodoItem?
     @State private var approvalSheetMode: ApprovalSheetMode?
     @State private var searchText: String = ""
@@ -26,7 +33,7 @@ public struct TodoListView: View {
         ZStack {
             if let results = todoSocket.searchResults {
                 searchResultsList(results)
-            } else if todoSocket.activeTodos.isEmpty && todoSocket.completedTodos.isEmpty {
+            } else if todoSocket.todos.isEmpty {
                 emptyState
             } else {
                 todoList
@@ -34,6 +41,17 @@ public struct TodoListView: View {
         }
         .secondaryBackground()
         .navigationTitle("To-Dos")
+        .toolbar {
+            ToolbarItem(placement: .principal) {
+                Picker("Filter", selection: $selectedTab) {
+                    ForEach(TodoTabFilter.allCases, id: \.self) { tab in
+                        Text(tab.rawValue).tag(tab)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .frame(maxWidth: 280)
+            }
+        }
         #if os(iOS)
         .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .automatic), prompt: "Search todos...")
         #else
@@ -91,64 +109,53 @@ public struct TodoListView: View {
 
     private var todoList: some View {
         List {
-            // Next Steps — opens approval card queue one at a time
-            if !cardSocket.cards.isEmpty {
-                NextStepsButton(count: cardSocket.cards.count) {
-                    guard !cardSocket.cards.isEmpty else { return }
-                    approvalSheetMode = .queue
+            switch selectedTab {
+            case .active:
+                // Next Steps — opens approval card queue one at a time
+                if !cardSocket.cards.isEmpty {
+                    NextStepsButton(count: cardSocket.cards.count) {
+                        guard !cardSocket.cards.isEmpty else { return }
+                        approvalSheetMode = .queue
+                    }
+                    .plainCardListRow()
                 }
-                .plainCardListRow()
-            }
 
-            // Active section
-            if !todoSocket.activeTodos.isEmpty {
-                Section {
+                if todoSocket.activeTodos.isEmpty {
+                    EmptyStateView(icon: "checklist", title: "No active to-dos")
+                        .plainCardListRow()
+                } else {
                     ForEach(todoSocket.activeTodos) { todo in
                         todoCard(todo)
                             .plainCardListRow()
                     }
-                } header: {
-                    SectionHeaderView(label: "Active")
                 }
-            }
 
-            // Snoozed section
-            if !todoSocket.snoozedTodos.isEmpty {
-                Section {
+            case .snoozed:
+                if todoSocket.snoozedTodos.isEmpty {
+                    EmptyStateView(icon: "moon.zzz", title: "No snoozed to-dos")
+                        .plainCardListRow()
+                } else {
                     ForEach(todoSocket.snoozedTodos) { todo in
                         todoCard(todo)
                             .plainCardListRow()
                     }
-                } header: {
-                    SectionHeaderView(label: "Snoozed")
                 }
-            }
 
-            // Completed section (collapsible)
-            if !todoSocket.completedTodos.isEmpty {
-                Section {
-                    if showCompleted {
-                        ForEach(todoSocket.completedTodos) { todo in
-                            todoCard(todo)
-                                .plainCardListRow()
-                        }
+            case .completed:
+                if todoSocket.completedTodos.isEmpty {
+                    EmptyStateView(icon: "checkmark.circle", title: "No completed to-dos")
+                        .plainCardListRow()
+                } else {
+                    ForEach(todoSocket.completedTodos) { todo in
+                        todoCard(todo)
+                            .plainCardListRow()
                     }
-                } header: {
-                    SectionHeaderView(
-                        label: "Completed",
-                        count: todoSocket.completedTodos.count,
-                        isExpanded: showCompleted,
-                        onTap: {
-                            withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
-                                showCompleted.toggle()
-                            }
-                        }
-                    )
                 }
             }
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
+        .animation(.default, value: selectedTab)
         #if os(iOS)
         .scrollDismissesKeyboard(.interactively)
         #endif
