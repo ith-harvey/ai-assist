@@ -13,7 +13,7 @@ import SwiftUI
 struct SharedInputBar: View {
     @Binding var text: String
     var placeholder: String = "Message..."
-    var font: Font = .body
+    var font: Font = .system(size: 8.5)
     var lineLimit: ClosedRange<Int> = 1...5
     var showBackground: Bool = true
     var sendIconSize: CGFloat = 30
