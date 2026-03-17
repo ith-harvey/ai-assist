@@ -28,6 +28,18 @@ impl ApprovalHandler for MultipleChoiceHandler {
 }
 
 impl MultipleChoiceHandler {
+    /// Called when the user submits free text via the "Something else..." option.
+    pub async fn on_free_text(&self, card: &ApprovalCard, text: String) {
+        info!(
+            card_id = %card.id,
+            text = %text,
+            "MultipleChoice free-text response submitted"
+        );
+        self.choice_registry
+            .resolve(card.id, ChoiceResult::FreeText(text))
+            .await;
+    }
+
     /// Called when the user selects a specific option by index.
     pub async fn on_select_option(&self, card: &ApprovalCard, selected_index: usize) {
         if let crate::cards::model::CardPayload::MultipleChoice { ref options, .. } = card.payload {

@@ -13,6 +13,7 @@ public enum CardAction: Encodable, Sendable {
     case edit(cardId: UUID, newText: String)
     case refine(cardId: UUID, instruction: String)
     case selectOption(cardId: UUID, selectedIndex: Int)
+    case freeTextOption(cardId: UUID, text: String)
 
     private enum CodingKeys: String, CodingKey {
         case action
@@ -20,6 +21,7 @@ public enum CardAction: Encodable, Sendable {
         case newText = "new_text"
         case instruction
         case selectedIndex = "selected_index"
+        case text
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -43,6 +45,10 @@ public enum CardAction: Encodable, Sendable {
             try container.encode("select_option", forKey: .action)
             try container.encode(cardId, forKey: .cardId)
             try container.encode(selectedIndex, forKey: .selectedIndex)
+        case .freeTextOption(let cardId, let text):
+            try container.encode("free_text_option", forKey: .action)
+            try container.encode(cardId, forKey: .cardId)
+            try container.encode(text, forKey: .text)
         }
     }
 

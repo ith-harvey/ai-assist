@@ -12,7 +12,7 @@ Rethinks todo creation from a black-box tool call into a live, conversational ex
 
 - Make todo creation feel instant and alive — the user sees the todo being built in real time
 - Produce richer, higher-quality todos by having the agent interview the user after initial creation
-- Use the existing approval card system (multi-choice cards) for structured questions and the activity feed input bar for open-ended questions
+- Use the existing approval card system — enrichment questions are regular approval cards in the queue, and the todo is blocked until the user responds
 - Keep the flow skippable — the user can dismiss enrichment and keep the draft as-is
 
 ## Current Behavior
@@ -65,73 +65,80 @@ User types: "I need to prep for the board meeting next Thursday"
 
 ### Phase 3: Enrichment Interview
 
-After the initial fields are populated, the agent enters an enrichment phase. It asks targeted follow-up questions using two mechanisms:
+After the initial fields are populated, the agent enters an enrichment phase. It asks targeted follow-up questions using **regular approval cards in the queue**. The todo is blocked (`Drafting` status) until the user responds to each card.
 
 #### Enrichment Strategy
 
 The agent uses a **dynamic approach with fixed anchors**:
-- **Always ask** (fixed): priority (multi-choice card), open-ended context question (text input)
+- **Always ask** (fixed): priority, open-ended context — both as `multipleChoice` cards
 - **Conditionally ask** (dynamic): the agent evaluates what the user's original prompt already covered and skips questions for fields that are already well-specified. For example, if the user said "high priority", the priority card is skipped.
+- Cards are created **one at a time** — the next card is only created after the user responds to (or dismisses) the current one.
 
-#### Multi-Choice Approval Cards (for structured questions)
+#### Enrichment via Approval Cards (blocking)
 
-The agent creates `multipleChoice` approval cards that appear inline in the activity feed. These use the existing `MultipleChoiceCardBody` with swipeable option rows.
+Enrichment questions are **regular approval cards** that appear in the normal approval queue — there is no distinction between an enrichment card and any other approval card. The todo is **blocked** (status `Drafting`) until the user responds to the current card. This reuses the same blocking UX the app already has: the todo can't progress until the approval card action is completed.
+
+The agent creates `multipleChoice` approval cards for each enrichment question. The agent generates plausible options based on the user's original prompt. Every card also includes an **open-ended fallback option** (e.g., "Something else..." or "Not listed") that, when selected, prompts the user to type a free-text response. This keeps the UX fast (swipe to pick) while still allowing the user to provide an answer the agent didn't anticipate.
 
 Examples:
 - **Priority**: "How urgent is this?" → Options: `🔴 High`, `🟡 Medium`, `🟢 Low`
 - **Bucket**: "Can I help with this, or is it something only you can do?" → Options: `Agent can start on this`, `I need to do this myself`
+- **Context**: "What's the main focus for the board meeting?" → Options: `Q1 financials`, `Hiring plan`, `Product roadmap`, `All of the above`, `Something else...`
 - **Sub-tasks**: "Want me to break this into sub-tasks?" → Options: `Yes, break it down`, `No, keep it as one task`
 
-When the user swipes to select an option, the agent receives the choice and calls `update_todo` to set the corresponding field. The field animates in on the detail view header.
-
-#### Open-Ended Text Input (for context/description enrichment)
-
-For at least one question, the agent asks via the activity feed and the user responds through the `SharedInputBar` already present in `TodoDetailView`. This captures nuance that predefined options can't.
-
-Examples:
-- "Any additional context I should know about this task?"
-- "What specific topics need to be covered?"
-- "What does 'done' look like for this?"
-
-The user types their response in the input bar. The agent incorporates it into the todo's description or context field via `update_todo`.
+When the user swipes to select an option, the agent receives the selection, calls `update_todo` to set the corresponding field, and either creates the next enrichment card or completes the draft. If the user selects the open-ended fallback, the app presents a text input for their custom answer before sending it to the agent.
 
 #### Flow Example
 
 ```
-[Activity feed in TodoDetailView:]
+[User types: "I need to prep for the board meeting next Thursday"]
 
+[Auto-navigates to TodoDetailView — fields animate in progressively]
   ✅ Created draft: "Board meeting preparation"
   ✅ Set type: administrative
   ✅ Set due date: March 19, 2026
 
+[Todo status: Drafting (blocked — waiting on approval card)]
+
+[In approval queue — a regular multipleChoice card appears:]
   ┌─────────────────────────────────────────┐
   │  How urgent is this?                    │
   │                                         │
   │  ◉ 🔴 High — needs attention today    │  ← swipe to select
   │  ◉ 🟡 Medium — this week              │
   │  ◉ 🟢 Low — whenever I get to it      │
+  │  ◉ Something else...                  │
   └─────────────────────────────────────────┘
 
-  [User swipes "High"]
+[User swipes "High"]
   ✅ Set priority: High
 
-  AI: "What specific topics do you need to cover in the meeting?"
+[Next card appears in approval queue — multipleChoice:]
+  ┌─────────────────────────────────────────┐
+  │  What's the main focus for the meeting? │
+  │                                         │
+  │  ◉ Q1 financials                       │
+  │  ◉ Hiring plan                         │
+  │  ◉ Product roadmap                     │
+  │  ◉ All of the above                    │
+  │  ◉ Something else...                  │
+  └─────────────────────────────────────────┘
 
-  [User types: "Q1 revenue, hiring plan, product roadmap"]
-
+[User swipes "All of the above"]
   ✅ Updated description with meeting topics
 
+[Next card appears in approval queue:]
   ┌─────────────────────────────────────────┐
   │  Want me to break this into sub-tasks?  │
   │                                         │
   │  ◉ Yes, one per topic                  │
   │  ◉ No, keep as single task             │
+  │  ◉ Something else...                  │
   └─────────────────────────────────────────┘
 
-  [User swipes "Yes, one per topic"]
+[User swipes "Yes, one per topic"]
   ✅ Created 3 sub-tasks
-
-  AI: "Your todo is ready. Anything else to add?"
+  ✅ Todo status: Created (no longer blocked)
 ```
 
 ### Phase 4: Completion
@@ -169,42 +176,31 @@ The todo transitions from `Drafting` to `Created`. The detail view settles into 
 - [ ] The activity feed shows a brief log for each field set (e.g. "Set type: administrative")
 - [ ] **[UI]** Visually verify: after navigation, watch fields appear one by one with animation
 
-### US-003: Multi-choice enrichment questions
+### US-003: Enrichment via blocking approval cards
 
-**Description:** As a user, I want the AI to ask me structured follow-up questions using swipeable multi-choice cards so I can quickly enrich my todo.
+**Description:** As a user, I want the AI to ask me follow-up questions using regular approval cards in the queue, with my todo blocked until I respond, so the enrichment flow feels like the same card-based UX I already know.
 
 **Acceptance Criteria:**
-- [ ] After initial field population, the agent creates `multipleChoice` approval cards for structured questions
-- [ ] Cards appear inline in the TodoDetailView activity feed (not in the global approval queue)
-- [ ] Cards use the existing `MultipleChoiceCardBody` with `SwipeOptionRow` for each option
-- [ ] When the user swipes to select an option, the agent receives the selection and calls `update_todo`
+- [ ] After initial field population, the agent creates approval cards for enrichment questions
+- [ ] Cards appear in the normal approval queue — no special "inline" rendering
+- [ ] The todo remains in `Drafting` status (blocked) while waiting for a card response
+- [ ] All enrichment cards use the `multipleChoice` card type — including context questions (agent generates plausible options)
+- [ ] When the user responds to a card, the agent calls `update_todo` to set the corresponding field
 - [ ] The corresponding field animates in on the detail view header
-- [ ] At minimum: priority question uses a multi-choice card
-- [ ] **[UI]** Visually verify: multi-choice card appears in activity feed → swipe to select → field updates in header
-
-### US-004: Open-ended enrichment question
-
-**Description:** As a user, I want at least one enrichment question to be open-ended so I can provide context that predefined options can't capture.
-
-**Acceptance Criteria:**
-- [ ] The agent asks at least one follow-up question as a text message in the activity feed
-- [ ] The user responds via the `SharedInputBar` at the bottom of `TodoDetailView`
-- [ ] The agent incorporates the response into the todo (description or context field) via `update_todo`
-- [ ] The activity feed auto-scrolls to show the agent's question
-- [ ] The input bar auto-focuses after the question appears (keyboard opens)
-- [ ] **[UI]** Visually verify: agent asks text question → user types response → description/context field updates
+- [ ] Cards are created sequentially — one at a time, next card only after the previous is answered
+- [ ] At minimum: priority question + one context question (both `multipleChoice`)
+- [ ] **[UI]** Visually verify: approval card appears in queue → respond → field updates on todo → next card appears
 
 ### US-005: Skip/complete enrichment
 
 **Description:** As a user, I want to be able to end the enrichment interview early if I'm satisfied with the todo as-is.
 
 **Acceptance Criteria:**
-- [ ] User can dismiss a multi-choice card (left swipe) to skip that question
-- [ ] User can type "looks good", "done", or "skip" in the input bar to end enrichment
+- [ ] User can dismiss an enrichment approval card (left swipe) to skip that question
+- [ ] Dismissing a card signals "I'm done" — remaining enrichment questions are skipped
 - [ ] After skipping, the todo retains whatever fields were already set — no data loss
-- [ ] The agent sends a brief confirmation ("Your todo is ready") and the activity feed settles
 - [ ] The enrichment phase ends naturally after all questions are asked (agent doesn't loop forever)
-- [ ] Todo status transitions from `Drafting` to `Created` on completion
+- [ ] Todo status transitions from `Drafting` to `Created` on completion or skip
 - [ ] **[UI]** Visually verify: dismiss a card → enrichment ends gracefully → todo is in normal state
 
 ## Data Model
@@ -236,16 +232,6 @@ Creates a todo with status `Drafting`, all other fields empty/default.
 
 Sent over the chat WebSocket immediately after `draft_todo` completes.
 
-### Enrichment Card Scoping
-
-Enrichment `multipleChoice` cards need a new field to scope them to the todo detail view rather than the global approval queue:
-
-| Field | Type | Description |
-|---|---|---|
-| `scope` | String | `"inline"` for todo-detail-only cards, `"queue"` (default) for global approval queue |
-
-Cards with `scope: "inline"` appear only in the `TodoDetailView` activity feed for the associated todo, not in the Messages tab or global Next Steps queue.
-
 ## API Surface
 
 ### New Tool Registration
@@ -274,8 +260,8 @@ Cards with `scope: "inline"` appear only in the `TodoDetailView` activity feed f
 
 When opened for a `Drafting` todo (most fields empty), the detail view shows:
 - **Header**: Title visible (may refine), other fields show subtle placeholder dots or empty badges
-- **Activity feed**: Shows real-time log of field population + enrichment cards
-- **Input bar**: Active and ready for open-ended responses
+- **Activity feed**: Shows real-time log of field population
+- **Blocked indicator**: Visual cue that the todo is waiting on an approval card response (e.g., subtle banner or status badge)
 
 ### TodoDetailView — Field Animation
 
@@ -296,15 +282,14 @@ New status text for draft phase: "Creating a to-do..." (distinct from generic "r
 1. Switches to Home tab (index 0) — always, regardless of current tab
 2. Pushes `TodoDetailView(todoId)` onto the Home tab's NavigationStack
 
-### Inline Enrichment Cards
+### Blocked Todo UX
 
-`TodoDetailView` activity feed renders `multipleChoice` cards inline (not as a sheet/overlay). Uses existing `MultipleChoiceCardBody` but embedded in the activity feed scroll view rather than `SwipeCardContainer`. Selection sends the choice back via the activity WebSocket.
+When a todo is in `Drafting` status and waiting on an enrichment approval card, the `TodoDetailView` shows a blocked state — indicating the todo can't progress until the user responds to the pending card in the approval queue. This is the same blocking pattern used elsewhere in the app (e.g., a todo waiting on an approval action).
 
 ## Non-Goals
 
 - **No typewriter effect for description** — animating individual characters is too slow and gimmicky; animate the field appearance, not the text
 - **No enrichment for quick-add** — if a future quick-add button is added (tap to create with just a title), it skips enrichment entirely
-- **No mandatory enrichment** — user can always skip/dismiss; enrichment improves quality but never blocks
 - **No sub-task creation in v1** — the "break into sub-tasks" card is shown as an example but sub-task support is a separate feature; if the agent offers it, it creates separate todos (not nested)
 - **No changes to `create_todo`** — the existing tool continues to work for batch/autonomous creation; `draft_todo` is additive
 - **No enrichment for todos created by the agent autonomously** — only user-initiated creation triggers the interview flow
@@ -313,7 +298,7 @@ New status text for draft phase: "Creating a to-do..." (distinct from generic "r
 
 - **AI Status Overlay** (`ai-status-overlay.md`) — the "Creating a to-do..." status text relies on the overlay being visible; this feature should ship first or concurrently
 - **Todo Agent Workflow** (`todo-agent-workflow.md`) — the enrichment phase uses the same activity streaming infrastructure; no conflicts but implementations touch adjacent code
-- **Unified Approval Card UX** (`unified-approval-card-ux.md`) — multi-choice cards in the enrichment flow reuse `MultipleChoiceCardBody`; the `scope: "inline"` field is new
+- **Unified Approval Card UX** (`unified-approval-card-ux.md`) — enrichment cards are regular approval cards in the queue, reusing `MultipleChoiceCardBody` and existing card infrastructure with no special scoping
 
 ## Open Questions
 

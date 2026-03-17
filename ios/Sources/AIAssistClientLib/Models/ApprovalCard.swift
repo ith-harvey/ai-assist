@@ -17,12 +17,6 @@ public enum CardSilo: String, Codable, Sendable {
     case calendar
 }
 
-/// Where a card appears: global approval queue or inline in a todo detail view.
-public enum CardScope: String, Codable, Sendable {
-    case queue
-    case inline
-}
-
 /// The kind of card.
 public enum CardType: String, Codable, Sendable {
     case reply
@@ -100,8 +94,6 @@ public struct ApprovalCard: Identifiable, Sendable {
     public let expiresAt: String?
     public let updatedAt: String
     public let todoId: UUID?
-    /// Where this card appears: global queue or inline in a todo's activity feed.
-    public let scope: CardScope
 }
 
 // MARK: - Convenience Computed Properties (minimize downstream changes)
@@ -167,7 +159,7 @@ extension ApprovalCard {
 
 extension ApprovalCard: Codable {
     enum CodingKeys: String, CodingKey {
-        case id, silo, cardType, payload, status, createdAt, expiresAt, updatedAt, todoId, scope
+        case id, silo, cardType, payload, status, createdAt, expiresAt, updatedAt, todoId
     }
 
     // Keys inside the "payload" container, used per card_type
@@ -198,7 +190,6 @@ extension ApprovalCard: Codable {
         expiresAt = try container.decodeIfPresent(String.self, forKey: .expiresAt)
         updatedAt = try container.decode(String.self, forKey: .updatedAt)
         todoId = try container.decodeIfPresent(UUID.self, forKey: .todoId)
-        scope = try container.decodeIfPresent(CardScope.self, forKey: .scope) ?? .queue
 
         let type = try container.decodeIfPresent(CardType.self, forKey: .cardType) ?? .reply
         cardType = type
@@ -260,7 +251,6 @@ extension ApprovalCard: Codable {
         try container.encodeIfPresent(expiresAt, forKey: .expiresAt)
         try container.encode(updatedAt, forKey: .updatedAt)
         try container.encodeIfPresent(todoId, forKey: .todoId)
-        try container.encode(scope, forKey: .scope)
         // payload encoding omitted — not needed
     }
 }

@@ -23,6 +23,8 @@ pub enum ChoiceResult {
     Selected(String),
     /// User dismissed the card without choosing.
     Dismissed,
+    /// User selected "Something else..." and typed a free-text response.
+    FreeText(String),
 }
 
 impl ChoiceRegistry {
@@ -116,6 +118,21 @@ mod tests {
 
         registry.remove(card_id).await;
         assert_eq!(registry.len().await, 0);
+    }
+
+    #[tokio::test]
+    async fn resolve_free_text() {
+        let registry = ChoiceRegistry::new();
+        let card_id = Uuid::new_v4();
+        let (tx, rx) = oneshot::channel();
+
+        registry.register(card_id, tx).await;
+        registry.resolve(card_id, ChoiceResult::FreeText("Custom answer".into())).await;
+
+        match rx.await.unwrap() {
+            ChoiceResult::FreeText(text) => assert_eq!(text, "Custom answer"),
+            _ => panic!("Expected FreeText"),
+        }
     }
 
     #[test]

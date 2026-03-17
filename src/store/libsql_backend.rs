@@ -322,7 +322,6 @@ fn row_to_card(row: &libsql::Row) -> Result<ApprovalCard, libsql::Error> {
         expires_at: expires_str.as_deref().map(parse_datetime),
         updated_at: parse_datetime(&updated_str),
         todo_id: todo_id_str.and_then(|s| Uuid::parse_str(&s).ok()),
-        scope: crate::cards::model::CardScope::Queue,
     })
 }
 

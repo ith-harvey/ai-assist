@@ -54,22 +54,6 @@ impl Default for CardSilo {
     }
 }
 
-/// Where a card appears in the iOS UI.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum CardScope {
-    /// Card appears in the global approval queue / Messages tab.
-    Queue,
-    /// Card appears inline in a specific todo's activity feed only.
-    Inline,
-}
-
-impl Default for CardScope {
-    fn default() -> Self {
-        Self::Queue
-    }
-}
-
 impl std::fmt::Display for CardSilo {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -218,7 +202,7 @@ impl SiloCounts {
     pub fn from_cards(cards: &VecDeque<ApprovalCard>) -> Self {
         let mut counts = Self::default();
         for card in cards.iter() {
-            if card.status == CardStatus::Pending && !card.is_expired() && card.scope == CardScope::Queue {
+            if card.status == CardStatus::Pending && !card.is_expired() {
                 match card.silo {
                     CardSilo::Messages => counts.messages += 1,
                     CardSilo::Todos => counts.todos += 1,
@@ -255,9 +239,6 @@ pub struct ApprovalCard {
     /// Associated todo ID (for Action cards created by todo agents).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub todo_id: Option<Uuid>,
-    /// Where this card appears: global queue or inline in a todo's activity feed.
-    #[serde(default)]
-    pub scope: CardScope,
 }
 
 impl ApprovalCard {
@@ -276,7 +257,6 @@ impl ApprovalCard {
             expires_at: Some(now + chrono::Duration::minutes(expire_minutes as i64)),
             updated_at: now,
             todo_id: None,
-            scope: CardScope::Queue,
         }
     }
 
@@ -385,7 +365,6 @@ impl ApprovalCard {
             expires_at: None,
             updated_at: now,
             todo_id: None,
-            scope: CardScope::Queue,
         }
     }
 
@@ -404,12 +383,6 @@ impl ApprovalCard {
     /// Associate this card with a todo (for Action cards from todo agents).
     pub fn with_todo_id(mut self, todo_id: Uuid) -> Self {
         self.todo_id = Some(todo_id);
-        self
-    }
-
-    /// Set card scope to inline (appears only in todo detail activity feed).
-    pub fn with_inline_scope(mut self) -> Self {
-        self.scope = CardScope::Inline;
         self
     }
 
@@ -488,6 +461,8 @@ pub enum CardAction {
     Refine { card_id: Uuid, instruction: String },
     /// Select an option from a multiple-choice card.
     SelectOption { card_id: Uuid, selected_index: usize },
+    /// Submit a free-text response for a multiple-choice card's "Something else..." option.
+    FreeTextOption { card_id: Uuid, text: String },
 }
 
 /// Messages sent over WebSocket (server → client and internal events).
@@ -545,6 +520,22 @@ mod tests {
         match parsed {
             CardAction::Approve { .. } => {}
             _ => panic!("Expected Approve"),
+        }
+    }
+
+    #[test]
+    fn card_action_free_text_option_serde_roundtrip() {
+        let action = CardAction::FreeTextOption {
+            card_id: Uuid::new_v4(),
+            text: "My custom answer".into(),
+        };
+        let json = serde_json::to_string(&action).unwrap();
+        assert!(json.contains("\"action\":\"free_text_option\""));
+        assert!(json.contains("My custom answer"));
+        let parsed: CardAction = serde_json::from_str(&json).unwrap();
+        match parsed {
+            CardAction::FreeTextOption { text, .. } => assert_eq!(text, "My custom answer"),
+            _ => panic!("Expected FreeTextOption"),
         }
     }
 
