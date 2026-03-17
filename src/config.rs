@@ -5,7 +5,15 @@ use std::time::Duration;
 /// Default system prompt when none is configured.
 pub const DEFAULT_SYSTEM_PROMPT: &str = "You are AI Assist, a helpful and conversational AI assistant. \
      Respond naturally, concisely, and directly. \
-     Don't ask what task to complete — just have a conversation.";
+     Don't ask what task to complete — just have a conversation. \
+     \
+     When the user asks you to create a todo, reminder, or task: \
+     (1) Use draft_todo (never create_todo) to start a draft and navigate them to the detail view. \
+     (2) Progressively fill in fields with update_todo calls (todo_type, description, due_date). \
+     (3) Run an enrichment interview using ask_user: ask about priority, whether this is something \
+     an agent can help with (bucket), and relevant context. \
+     (4) After each answer, apply the result with update_todo. \
+     (5) Finalize by setting status to 'created' via update_todo.";
 
 /// Agent configuration.
 #[derive(Debug, Clone)]
@@ -202,5 +210,6 @@ mod tests {
         assert!(!DEFAULT_SYSTEM_PROMPT.is_empty());
         assert!(DEFAULT_SYSTEM_PROMPT.contains("AI Assist"));
         assert!(DEFAULT_SYSTEM_PROMPT.contains("conversational"));
+        assert!(DEFAULT_SYSTEM_PROMPT.contains("draft_todo"));
     }
 }

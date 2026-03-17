@@ -41,8 +41,10 @@ impl Tool for CreateTodoTool {
     }
 
     fn description(&self) -> &str {
-        "Create a new todo item. Use this when the user asks you to add a task, \
-         reminder, or action item to their todo list."
+        "Create a new todo item in one shot (no enrichment interview). Use ONLY for \
+         autonomous or batch todo creation (e.g., breaking a task into sub-todos, \
+         agent-initiated tasks, or programmatic creation). Do NOT use this when a user \
+         directly asks to create a todo — use draft_todo instead for user-initiated requests."
     }
 
     fn parameters_schema(&self) -> serde_json::Value {
@@ -186,14 +188,20 @@ impl Tool for DraftTodoTool {
     }
 
     fn description(&self) -> &str {
-        "Create a draft todo and navigate the user to its detail view. Use this instead of \
-         create_todo when the user asks to create a new todo interactively. This creates a \
+        "Create a draft todo and navigate the user to its detail view. Use this when the \
+         user asks you to add a task, reminder, or action item to their todo list. This creates a \
          skeleton todo with just a title (status: drafting), then the user sees the detail view \
-         immediately. After calling this, use update_todo to progressively fill in fields \
-         (todo_type, description, priority, due_date, context) one at a time. Then ask the user \
-         enrichment questions to make the todo robust — use ask_user for structured multiple-choice \
-         questions (e.g. priority) and plain text responses for open-ended questions. When done, \
-         call update_todo with status 'created' to finalize."
+         immediately. After calling this, progressively fill in fields via update_todo \
+         (todo_type, description, due_date) one at a time. Then run an enrichment interview \
+         using ask_user with multipleChoice cards: \
+         (1) Priority — 'How urgent is this?' with High/Medium/Low options. \
+         (2) Bucket — 'Can I help with this, or is it something only you can do?' with options \
+         'Agent can start on this' (maps to bucket: agent_startable) and 'I need to do this myself' \
+         (maps to bucket: human_only). Bias toward suggesting agent_startable when the task involves \
+         research, drafting, summarizing, code review, data analysis, or other work an AI agent can do. \
+         (3) Context — ask a relevant follow-up question about the task with plausible options. \
+         After each answer, apply the result with update_todo. When done, call update_todo with \
+         status 'created' to finalize."
     }
 
     fn parameters_schema(&self) -> serde_json::Value {
@@ -255,9 +263,12 @@ impl Tool for DraftTodoTool {
                 "title": title,
                 "status": "drafting",
                 "message": "Draft todo created. The user is now viewing this todo's detail page. \
-                            Use update_todo to progressively fill in fields (todo_type, description, \
-                            priority, due_date). Then ask enrichment questions to improve the todo. \
-                            When finished, set status to 'created'."
+                            Next steps: (1) Use update_todo to fill in fields one at a time: todo_type, \
+                            description, due_date. (2) Ask enrichment questions using ask_user: priority \
+                            (High/Medium/Low), bucket (agent_startable vs human_only — bias toward \
+                            agent_startable for tasks like research, drafting, summarizing), and a context \
+                            question. (3) After each answer, call update_todo to apply the field. \
+                            (4) When done, call update_todo with status 'created' to finalize."
             }),
             start.elapsed(),
         ))
@@ -326,6 +337,11 @@ impl Tool for UpdateTodoTool {
                 "context": {
                     "type": "object",
                     "description": "New structured context (optional)"
+                },
+                "bucket": {
+                    "type": "string",
+                    "enum": ["agent_startable", "human_only"],
+                    "description": "Who can work on this: agent_startable or human_only (optional)"
                 }
             },
             "required": ["id"]
@@ -392,6 +408,12 @@ impl Tool for UpdateTodoTool {
         }
         if let Some(context) = params.get("context").cloned() {
             todo.context = Some(context);
+        }
+        if let Some(bucket_str) = p.optional_str("bucket") {
+            let bucket: TodoBucket =
+                serde_json::from_value(serde_json::Value::String(bucket_str.to_string()))
+                    .map_err(|_| ToolError::InvalidParameters(format!("Invalid bucket: {}", bucket_str)))?;
+            todo.bucket = bucket;
         }
 
         todo.updated_at = chrono::Utc::now();
