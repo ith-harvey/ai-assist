@@ -46,6 +46,7 @@ private struct ScrollViewFrameKey: PreferenceKey {
 
 public struct TodoDetailView: View {
     let todo: TodoItem
+    let todoSocket: TodoWebSocket
     let cardSocket: CardWebSocket
     @State private var activitySocket: TodoActivitySocket
     @State private var isDescriptionExpanded = false
@@ -63,11 +64,9 @@ public struct TodoDetailView: View {
     /// Todo fetched via REST — source of truth for current status.
     @State private var fetchedTodo: TodoItem?
 
-    /// TodoWebSocket for receiving live todo updates (field changes during drafting).
-    @State private var todoSocket = TodoWebSocket()
-
-    public init(todo: TodoItem, cardSocket: CardWebSocket) {
+    public init(todo: TodoItem, todoSocket: TodoWebSocket, cardSocket: CardWebSocket) {
         self.todo = todo
+        self.todoSocket = todoSocket
         self.cardSocket = cardSocket
         self._activitySocket = State(initialValue: TodoActivitySocket(todoId: todo.id))
         // Collapse activity by default when completed/readyForReview
@@ -245,11 +244,9 @@ public struct TodoDetailView: View {
             if showActivityFeed {
                 activitySocket.connect()
             }
-            todoSocket.connect()
         }
         .onDisappear {
             activitySocket.disconnect()
-            todoSocket.disconnect()
         }
         .onChange(of: isActivityExpanded) { _, expanded in
             if expanded && !activitySocket.isConnected {
