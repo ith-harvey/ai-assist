@@ -14,7 +14,7 @@ private enum TodoTabFilter: String, CaseIterable {
 /// Segmented control at top filters between Active, Snoozed, and Completed.
 /// Approval badge in nav bar shows items needing attention.
 public struct TodoListView: View {
-    @State private var todoSocket = TodoWebSocket()
+    let todoSocket: TodoWebSocket
     @State private var selectedTab: TodoTabFilter = .active
     @State private var selectedTodo: TodoItem?
     @State private var approvalSheetMode: ApprovalSheetMode?
@@ -24,7 +24,8 @@ public struct TodoListView: View {
     /// When set by MainTabView (from a todo_navigate event), navigates to the specified todo.
     @Binding var navigateToTodoId: UUID?
 
-    public init(cardSocket: CardWebSocket, navigateToTodoId: Binding<UUID?> = .constant(nil)) {
+    public init(todoSocket: TodoWebSocket, cardSocket: CardWebSocket, navigateToTodoId: Binding<UUID?> = .constant(nil)) {
+        self.todoSocket = todoSocket
         self.cardSocket = cardSocket
         self._navigateToTodoId = navigateToTodoId
     }
@@ -82,7 +83,7 @@ public struct TodoListView: View {
             navigateToTodoId = nil
         }
         .navigationDestination(item: $selectedTodo) { todo in
-            TodoDetailView(todo: todo, cardSocket: cardSocket)
+            TodoDetailView(todo: todo, todoSocket: todoSocket, cardSocket: cardSocket)
         }
         .sheet(isPresented: Binding(
             get: { approvalSheetMode != nil },
@@ -96,12 +97,6 @@ public struct TodoListView: View {
                 )
                 .presentationDetents([.medium, .large])
             }
-        }
-        .onAppear {
-            todoSocket.connect()
-        }
-        .onDisappear {
-            todoSocket.disconnect()
         }
     }
 

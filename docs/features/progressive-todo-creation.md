@@ -162,6 +162,7 @@ The todo transitions from `Drafting` to `Created`. The detail view settles into 
 - [ ] Client switches to Home tab (index 0) and pushes `TodoDetailView(todoId)` onto the Home tab's NavigationStack
 - [ ] Status overlay shows "Creating a to-do..." during the transition
 - [ ] Works from any tab — always switches to Home tab first, then pushes detail view
+- [ ] After creation, the todo persists in the todo list view — navigating away from the detail view and back to the list must show the newly created todo
 - [ ] **[UI]** Visually verify: type "create a todo for X" → status overlay appears → switches to Home tab → navigates to detail view
 
 ### US-002: Progressive field population
@@ -212,6 +213,45 @@ The todo transitions from `Drafting` to `Created`. The detail view settles into 
 | `Drafting` | Todo is being built — agent is populating fields and/or running enrichment interview |
 
 Added to the existing `TodoStatus` enum. Transitions: `Drafting` → `Created` (enrichment complete or skipped).
+
+### `context` Field: Structured JSON
+
+The `context` field stores structured metadata about a todo — who it involves, what it's about, relevant references, etc. This field is set during the enrichment interview (Phase 3) when the agent asks the user contextual questions and applies their answers.
+
+| Layer | Type | Notes |
+|---|---|---|
+| Server (Rust) | `Option<serde_json::Value>` | Arbitrary JSON — typically an object like `{"ref": "PR #42", "focus": "Q1 financials"}` |
+| Database | `TEXT` (JSON string) | Serialized via `serde_json::to_string` on write, `serde_json::from_str` on read |
+| iOS (Swift) | `TodoContext?` (custom struct) | Decoded from JSON object or string; renders as key-value pairs in TodoDetailView |
+
+#### iOS `TodoContext` type
+
+```swift
+/// Structured context attached to a todo.
+/// Decodes flexibly: accepts a JSON object (normal case) or a bare JSON string (legacy/fallback).
+public struct TodoContext: Codable, Hashable, Sendable {
+    /// Raw key-value pairs from the server.
+    public let fields: [String: String]
+}
+```
+
+The decoder must handle two shapes:
+1. **JSON object** (normal): `{"focus": "Q1 financials", "ref": "PR #42"}` — decode each key-value pair into `fields`
+2. **JSON string** (fallback): `"some plain text"` — store as `fields: ["note": "some plain text"]`
+
+This prevents a decode failure from poisoning the entire `TodosSync` response (see Bug Fix below).
+
+#### UX: How context appears
+
+- **TodoDetailView**: Context fields render as a labeled list below the description — each key is a subtle gray label, each value is body text. Example:
+  ```
+  Context
+  ─────────
+  Focus     Q1 financials
+  Ref       PR #42
+  ```
+- **TodoListView**: Context is not shown in the list row — it's detail-only information.
+- **Empty state**: When `context` is `nil`, the context section is hidden entirely (no "No context" placeholder).
 
 ### New Tool: `draft_todo`
 

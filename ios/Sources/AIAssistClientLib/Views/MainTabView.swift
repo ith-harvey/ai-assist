@@ -3,10 +3,12 @@ import SwiftUI
 /// Root tab bar view with 4 tabs: Home (todos), Messages, Calendar, Brain.
 /// Owns the shared CardWebSocket so silo counts drive live tab badges.
 /// Owns the shared ChatWebSocket so the AI input bar works on every tab.
+/// Owns the shared TodoWebSocket so todo data stays in sync across all tabs.
 public struct MainTabView: View {
     @State private var selectedTab = 0
     @State private var cardSocket = CardWebSocket()
     @State private var chatSocket = ChatWebSocket()
+    @State private var todoSocket = TodoWebSocket()
     @State private var inputText = ""
 
     /// Whether the global input bar is visible (driven by keyboard / scroll).
@@ -27,7 +29,7 @@ public struct MainTabView: View {
         TabView(selection: $selectedTab) {
             // Home — to-do list
             NavigationStack {
-                TodoListView(cardSocket: cardSocket, navigateToTodoId: $navigateToTodoId)
+                TodoListView(todoSocket: todoSocket, cardSocket: cardSocket, navigateToTodoId: $navigateToTodoId)
                     .safeAreaInset(edge: .bottom) { aiInputBar }
             }
             .tabItem {
@@ -85,10 +87,12 @@ public struct MainTabView: View {
         .onAppear {
             cardSocket.connect()
             chatSocket.connect()
+            todoSocket.connect()
         }
         .onDisappear {
             cardSocket.disconnect()
             chatSocket.disconnect()
+            todoSocket.disconnect()
         }
         .overlay(alignment: .topTrailing) {
             Button {
@@ -169,8 +173,10 @@ public struct MainTabView: View {
                             UserDefaults.standard.set(port, forKey: "ai_assist_port")
                             cardSocket.updateServer(host: hostInput, port: port)
                             chatSocket.updateServer(host: hostInput, port: port)
+                            todoSocket.updateServer(host: hostInput, port: port)
                             cardSocket.connect()
                             chatSocket.connect()
+                            todoSocket.connect()
                         }
                         showSettings = false
                     }
