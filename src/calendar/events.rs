@@ -374,6 +374,7 @@ fn parse_google_datetime(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Timelike;
 
     #[test]
     fn parse_timed_event() {
