@@ -76,6 +76,8 @@ public final class TodoActivitySocket: @unchecked Sendable {
         hasCompletedInitialLoad = false
         initialLoadDebounceItem?.cancel()
         initialLoadDebounceItem = nil
+        messages = []
+        latestActivity = nil
         openConnection()
     }
 

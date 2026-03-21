@@ -204,6 +204,9 @@ async fn ws_handler(
 async fn handle_socket(mut socket: WebSocket, todo_id: Uuid, state: ActivityState) {
     info!(todo_id = %todo_id, "📡 Activity WS connected");
 
+    // Subscribe BEFORE querying history so no broadcast events are lost
+    let mut rx = state.activity_channels.subscribe(todo_id);
+
     // Replay any stored activity history for this todo
     match state.db.get_activity_for_todo(todo_id).await {
         Ok(actions) => {
@@ -238,9 +241,9 @@ async fn handle_socket(mut socket: WebSocket, todo_id: Uuid, state: ActivityStat
         }
     }
 
-    // Subscribe to this todo's activity channel (per-todo isolation)
-    let mut rx = state.activity_channels.subscribe(todo_id);
-    info!(todo_id = %todo_id, "📡 Subscribed to per-todo activity channel, entering main loop");
+    // Drain events that arrived during history replay — they are duplicates
+    while let Ok(_) = rx.try_recv() {}
+    info!(todo_id = %todo_id, "📡 History replayed, entering main loop");
 
     loop {
         tokio::select! {
