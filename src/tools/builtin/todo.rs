@@ -14,6 +14,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use tokio::sync::broadcast;
 
+use crate::agent::agent_queue::AgentQueue;
 use crate::context::JobContext;
 use crate::store::Database;
 use crate::todos::model::{TodoBucket, TodoItem, TodoStatus, TodoType, TodoWsMessage};
@@ -164,11 +165,13 @@ impl Tool for CreateTodoTool {
 /// Unlike `create_todo`, this creates a minimal skeleton (title only, status `Drafting`)
 /// and sends a navigation event so the iOS client immediately opens the detail view.
 /// The agent should follow up with `update_todo` calls to progressively populate fields,
-/// then run an enrichment interview before transitioning the todo to `Created`.
+/// The todo agent is then prompted to run an enrichment interview before transitioning
+/// the todo to `Created`.
 pub struct DraftTodoTool {
     db: Arc<dyn Database>,
     todo_tx: broadcast::Sender<TodoWsMessage>,
     navigate_tx: broadcast::Sender<uuid::Uuid>,
+    agent_queue: Arc<AgentQueue>,
 }
 
 impl DraftTodoTool {
@@ -176,8 +179,9 @@ impl DraftTodoTool {
         db: Arc<dyn Database>,
         todo_tx: broadcast::Sender<TodoWsMessage>,
         navigate_tx: broadcast::Sender<uuid::Uuid>,
+        agent_queue: Arc<AgentQueue>,
     ) -> Self {
-        Self { db, todo_tx, navigate_tx }
+        Self { db, todo_tx, navigate_tx, agent_queue }
     }
 }
 
@@ -188,20 +192,10 @@ impl Tool for DraftTodoTool {
     }
 
     fn description(&self) -> &str {
-        "Create a draft todo and navigate the user to its detail view. Use this when the \
-         user asks you to add a task, reminder, or action item to their todo list. This creates a \
-         skeleton todo with just a title (status: drafting), then the user sees the detail view \
-         immediately. After calling this, progressively fill in fields via update_todo \
-         (todo_type, description, due_date) one at a time. Then run an enrichment interview \
-         using ask_user with multipleChoice cards: \
-         (1) Priority — 'How urgent is this?' with High/Medium/Low options. \
-         (2) Bucket — 'Can I help with this, or is it something only you can do?' with options \
-         'Agent can start on this' (maps to bucket: agent_startable) and 'I need to do this myself' \
-         (maps to bucket: human_only). Bias toward suggesting agent_startable when the task involves \
-         research, drafting, summarizing, code review, data analysis, or other work an AI agent can do. \
-         (3) Context — ask a relevant follow-up question about the task with plausible options. \
-         After each answer, apply the result with update_todo. When done, call update_todo with \
-         status 'created' to finalize."
+        "Create a draft todo and navigate the user to its detail view. The todo agent will \
+         automatically prompt the user to fill in details via the activity feed. Use this when \
+         the user asks you to add a task, reminder, or action item. Your job is done after \
+         calling this — do NOT follow up with update_todo or ask_user."
     }
 
     fn parameters_schema(&self) -> serde_json::Value {
@@ -257,18 +251,34 @@ impl Tool for DraftTodoTool {
         // Send navigation event so iOS switches to the todo detail view
         let _ = self.navigate_tx.send(todo_id);
 
+        // Spawn a todo agent follow-up to run enrichment in the activity feed
+        let enrichment_instructions = format!(
+            "[todo_id: {}]\n\n\
+             ENRICHMENT MODE: This is a newly drafted todo titled \"{}\".\n\
+             Interview the user to fill in missing fields, then finalize.\n\n\
+             Ask ONE question at a time as a plain text response. The user sees your responses \
+             in the activity feed and replies through the input bar. Do NOT use ask_user.\n\n\
+             Question sequence:\n\
+             1. What kind of task is this? (deliverable/research/errand/learning/etc.)\n\
+             2. How urgent? (high/medium/low priority)\n\
+             3. Can an AI agent help, or is this human-only?\n\
+             4. One relevant context question about the task.\n\n\
+             After each user reply, call update_todo to apply the field.\n\
+             When all done, call update_todo with status 'created' to finalize.",
+            todo_id, title
+        );
+        let queue = Arc::clone(&self.agent_queue);
+        tokio::spawn(async move {
+            let _ = queue.enqueue_followup(todo_id, enrichment_instructions).await;
+        });
+
         Ok(ToolOutput::success(
             serde_json::json!({
                 "id": todo_id.to_string(),
                 "title": title,
                 "status": "drafting",
-                "message": "Draft todo created. The user is now viewing this todo's detail page. \
-                            Next steps: (1) Use update_todo to fill in fields one at a time: todo_type, \
-                            description, due_date. (2) Ask enrichment questions using ask_user: priority \
-                            (High/Medium/Low), bucket (agent_startable vs human_only — bias toward \
-                            agent_startable for tasks like research, drafting, summarizing), and a context \
-                            question. (3) After each answer, call update_todo to apply the field. \
-                            (4) When done, call update_todo with status 'created' to finalize."
+                "message": "Draft todo created and enrichment interview started in the activity feed. \
+                            Your job is done — do NOT follow up with update_todo or ask_user."
             }),
             start.elapsed(),
         ))

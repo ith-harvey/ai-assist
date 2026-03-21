@@ -172,6 +172,40 @@ impl AgentQueue {
         }
     }
 
+    /// Scan for stale Drafting todos and auto-finalize them to Created with defaults.
+    ///
+    /// If a Drafting todo hasn't been updated in 5 minutes, the enrichment interview
+    /// is assumed abandoned. Auto-finalize by setting defaults and transitioning to Created.
+    pub async fn scan_stale_drafts(&self) {
+        let db = &self.deps.db;
+        let todo_tx = &self.deps.todo_tx;
+        let stale_threshold = chrono::Duration::minutes(5);
+        let now = chrono::Utc::now();
+
+        if let Ok(drafting) = db.list_todos_by_status("default", TodoStatus::Drafting).await {
+            for mut todo in drafting {
+                if now - todo.updated_at > stale_threshold {
+                    info!(todo_id = %todo.id, "Auto-finalizing stale draft todo");
+
+                    // Only fill in defaults for fields still at their initial values;
+                    // preserve anything the todo agent already set during enrichment.
+                    if todo.priority == 0 {
+                        todo.priority = 1; // Medium priority default
+                    }
+                    // todo_type, bucket, description, etc. are kept as-is
+                    todo.status = TodoStatus::Created;
+                    todo.updated_at = now;
+
+                    if let Err(e) = db.update_todo(&todo).await {
+                        warn!(todo_id = %todo.id, error = %e, "Failed to auto-finalize stale draft");
+                        continue;
+                    }
+                    let _ = todo_tx.send(TodoWsMessage::TodoUpdated { todo });
+                }
+            }
+        }
+    }
+
     /// Broadcast current agent status to iOS.
     fn broadcast_status(&self) {
         let _ = self.deps.todo_tx.send(TodoWsMessage::AgentStatus {

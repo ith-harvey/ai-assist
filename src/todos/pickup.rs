@@ -41,6 +41,7 @@ pub fn spawn_todo_pickup_loop(
         loop {
             scan_tick.tick().await;
             queue.scan_startable().await;
+            queue.scan_stale_drafts().await;
 
             if last_recovery.elapsed() >= recovery_interval {
                 queue.recover().await;

@@ -200,12 +200,13 @@ impl ToolRegistry {
         db: Arc<dyn Database>,
         todo_tx: tokio::sync::broadcast::Sender<crate::todos::model::TodoWsMessage>,
         navigate_tx: tokio::sync::broadcast::Sender<uuid::Uuid>,
+        agent_queue: Arc<crate::agent::agent_queue::AgentQueue>,
     ) {
         use crate::tools::builtin::todo::*;
         self.register_sync(Arc::new(CreateTodoTool::new(db.clone(), todo_tx.clone())));
         self.register_sync(Arc::new(UpdateTodoTool::new(db.clone(), todo_tx.clone())));
         self.register_sync(Arc::new(DeleteTodoTool::new(db.clone(), todo_tx.clone())));
-        self.register_sync(Arc::new(DraftTodoTool::new(db.clone(), todo_tx, navigate_tx)));
+        self.register_sync(Arc::new(DraftTodoTool::new(db.clone(), todo_tx, navigate_tx, agent_queue)));
         self.register_sync(Arc::new(ListTodosTool::new(db)));
     }
 

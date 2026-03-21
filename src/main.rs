@@ -287,7 +287,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         card_queue.clone(),
     );
     let (navigate_tx, navigate_rx) = tokio::sync::broadcast::channel::<uuid::Uuid>(16);
-    tools.register_todo_tools(Arc::clone(&db), todo_state.tx.clone(), navigate_tx);
+    tools.register_todo_tools(Arc::clone(&db), todo_state.tx.clone(), navigate_tx, Arc::clone(&agent_queue));
     let choice_registry = ai_assist::cards::choice_registry::ChoiceRegistry::new();
     tools.register_ask_user_tool(card_queue.clone(), choice_registry.clone());
     tools.register_message_tools(card_queue.clone());
