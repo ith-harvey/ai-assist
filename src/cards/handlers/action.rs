@@ -6,6 +6,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use tokio::sync::broadcast;
 use tracing::{info, warn};
+use uuid::Uuid;
 
 use super::{ApprovalHandler, CardActionContext};
 use crate::agent::agent_queue::AgentQueue;
@@ -13,12 +14,13 @@ use crate::cards::model::ApprovalCard;
 use crate::channels::IncomingMessage;
 use crate::store::Database;
 use crate::todos::activity::TodoActivityMessage;
+use crate::todos::activity_channel_map::ActivityChannelMap;
 use crate::todos::approval_registry::TodoApprovalRegistry;
 use crate::todos::model::{TodoStatus, TodoWsMessage};
 
 pub struct ActionHandler {
     pub approval_registry: TodoApprovalRegistry,
-    pub activity_tx: broadcast::Sender<TodoActivityMessage>,
+    pub activity_channels: Arc<ActivityChannelMap>,
     pub db: Arc<dyn Database>,
     pub todo_tx: broadcast::Sender<TodoWsMessage>,
     pub agent_queue: Option<Arc<AgentQueue>>,
@@ -27,16 +29,16 @@ pub struct ActionHandler {
 #[async_trait]
 impl ApprovalHandler for ActionHandler {
     async fn on_approve(&self, card: &ApprovalCard, _ctx: &CardActionContext) {
-        resolve_approval(card, true, &self.approval_registry, &self.activity_tx, &self.db, &self.todo_tx, &self.agent_queue).await;
+        resolve_approval(card, true, &self.approval_registry, &self.activity_channels, &self.db, &self.todo_tx, &self.agent_queue).await;
     }
 
     async fn on_dismiss(&self, card: &ApprovalCard, _ctx: &CardActionContext) {
-        resolve_approval(card, false, &self.approval_registry, &self.activity_tx, &self.db, &self.todo_tx, &self.agent_queue).await;
+        resolve_approval(card, false, &self.approval_registry, &self.activity_channels, &self.db, &self.todo_tx, &self.agent_queue).await;
     }
 
     async fn on_edit(&self, card: &ApprovalCard, _new_text: &str, _ctx: &CardActionContext) {
         // Edit on an Action card = approve with (potentially modified) details
-        resolve_approval(card, true, &self.approval_registry, &self.activity_tx, &self.db, &self.todo_tx, &self.agent_queue).await;
+        resolve_approval(card, true, &self.approval_registry, &self.activity_channels, &self.db, &self.todo_tx, &self.agent_queue).await;
     }
 }
 
@@ -49,7 +51,7 @@ async fn resolve_approval(
     card: &ApprovalCard,
     approved: bool,
     registry: &TodoApprovalRegistry,
-    activity_tx: &broadcast::Sender<TodoActivityMessage>,
+    activity_channels: &Arc<ActivityChannelMap>,
     db: &Arc<dyn Database>,
     todo_tx: &broadcast::Sender<TodoWsMessage>,
     agent_queue: &Option<Arc<AgentQueue>>,
@@ -82,9 +84,9 @@ async fn resolve_approval(
                     "Sent approval response to todo agent"
                 );
 
-                // Broadcast ApprovalResolved to activity stream
-                let _ = activity_tx.send(TodoActivityMessage::ApprovalResolved {
-                    job_id: pending.todo_id, // Use todo_id as job_id proxy for routing
+                // Broadcast ApprovalResolved to this todo's activity channel
+                activity_channels.send(pending.todo_id, TodoActivityMessage::ApprovalResolved {
+                    job_id: Uuid::nil(), // job_id not tracked in approval registry
                     card_id: card.id,
                     approved,
                 });
@@ -154,9 +156,8 @@ mod tests {
         }
     }
 
-    fn make_activity_tx() -> broadcast::Sender<TodoActivityMessage> {
-        let (tx, _rx) = broadcast::channel(16);
-        tx
+    fn make_activity_channels() -> Arc<ActivityChannelMap> {
+        Arc::new(ActivityChannelMap::new())
     }
 
     fn make_todo_tx() -> broadcast::Sender<TodoWsMessage> {
@@ -195,7 +196,7 @@ mod tests {
 
         let handler = ActionHandler {
             approval_registry: registry,
-            activity_tx: make_activity_tx(),
+            activity_channels: make_activity_channels(),
             db: make_db().await,
             todo_tx: make_todo_tx(),
             agent_queue: None,
@@ -223,7 +224,7 @@ mod tests {
 
         let handler = ActionHandler {
             approval_registry: registry,
-            activity_tx: make_activity_tx(),
+            activity_channels: make_activity_channels(),
             db: make_db().await,
             todo_tx: make_todo_tx(),
             agent_queue: None,
@@ -246,7 +247,7 @@ mod tests {
 
         let handler = ActionHandler {
             approval_registry: registry,
-            activity_tx: make_activity_tx(),
+            activity_channels: make_activity_channels(),
             db: make_db().await,
             todo_tx: make_todo_tx(),
             agent_queue: None,
@@ -265,7 +266,7 @@ mod tests {
 
         let handler = ActionHandler {
             approval_registry: registry,
-            activity_tx: make_activity_tx(),
+            activity_channels: make_activity_channels(),
             db: make_db().await,
             todo_tx: make_todo_tx(),
             agent_queue: None,
@@ -286,7 +287,7 @@ mod tests {
 
         let handler = ActionHandler {
             approval_registry: registry,
-            activity_tx: make_activity_tx(),
+            activity_channels: make_activity_channels(),
             db: make_db().await,
             todo_tx: make_todo_tx(),
             agent_queue: None,
@@ -308,7 +309,7 @@ mod tests {
 
         let handler = ActionHandler {
             approval_registry: registry,
-            activity_tx: make_activity_tx(),
+            activity_channels: make_activity_channels(),
             db: make_db().await,
             todo_tx: make_todo_tx(),
             agent_queue: None,
@@ -336,7 +337,7 @@ mod tests {
 
         let handler = ActionHandler {
             approval_registry: registry.clone(),
-            activity_tx: make_activity_tx(),
+            activity_channels: make_activity_channels(),
             db: make_db().await,
             todo_tx: make_todo_tx(),
             agent_queue: None,
@@ -353,14 +354,14 @@ mod tests {
         let card = make_action_card();
         let todo_id = uuid::Uuid::new_v4();
         let (tx, _rx) = mpsc::channel(8);
-        let activity_tx = make_activity_tx();
-        let mut activity_rx = activity_tx.subscribe();
+        let activity_channels = make_activity_channels();
+        let mut activity_rx = activity_channels.subscribe(todo_id);
 
         registry.register(card.id, make_approval_pending(tx, todo_id)).await;
 
         let handler = ActionHandler {
             approval_registry: registry,
-            activity_tx: activity_tx.clone(),
+            activity_channels: activity_channels.clone(),
             db: make_db().await,
             todo_tx: make_todo_tx(),
             agent_queue: None,
@@ -382,15 +383,16 @@ mod tests {
     async fn dismiss_broadcasts_approval_resolved_false() {
         let registry = TodoApprovalRegistry::new();
         let card = make_action_card();
+        let todo_id = uuid::Uuid::new_v4();
         let (tx, _rx) = mpsc::channel(8);
-        let activity_tx = make_activity_tx();
-        let mut activity_rx = activity_tx.subscribe();
+        let activity_channels = make_activity_channels();
+        let mut activity_rx = activity_channels.subscribe(todo_id);
 
-        registry.register(card.id, make_approval_pending(tx, uuid::Uuid::new_v4())).await;
+        registry.register(card.id, make_approval_pending(tx, todo_id)).await;
 
         let handler = ActionHandler {
             approval_registry: registry,
-            activity_tx: activity_tx.clone(),
+            activity_channels: activity_channels.clone(),
             db: make_db().await,
             todo_tx: make_todo_tx(),
             agent_queue: None,

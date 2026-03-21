@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::sync::{broadcast, oneshot, RwLock};
+use tokio::sync::{oneshot, RwLock};
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 
@@ -19,7 +19,6 @@ use crate::config::AgentConfig;
 use crate::error::{Error, JobError};
 use crate::safety::SafetyLayer;
 use crate::store::Database;
-use crate::todos::activity::TodoActivityMessage;
 use crate::tools::ToolRegistry;
 use crate::worker::context::ContextManager;
 use crate::worker::state::JobState;
@@ -44,7 +43,6 @@ pub struct Scheduler {
     safety: Arc<SafetyLayer>,
     tools: Arc<ToolRegistry>,
     store: Option<Arc<dyn Database>>,
-    activity_tx: broadcast::Sender<TodoActivityMessage>,
     /// Tracked jobs (for status queries and cancellation).
     jobs: Arc<RwLock<HashMap<Uuid, TrackedJob>>>,
     /// Running sub-tasks.
@@ -59,7 +57,6 @@ impl Scheduler {
         safety: Arc<SafetyLayer>,
         tools: Arc<ToolRegistry>,
         store: Option<Arc<dyn Database>>,
-        activity_tx: broadcast::Sender<TodoActivityMessage>,
     ) -> Self {
         Self {
             config,
@@ -67,7 +64,6 @@ impl Scheduler {
             safety,
             tools,
             store,
-            activity_tx,
             jobs: Arc::new(RwLock::new(HashMap::new())),
             subtasks: Arc::new(RwLock::new(HashMap::new())),
         }
@@ -372,10 +368,6 @@ impl Scheduler {
         &self.context_manager
     }
 
-    /// Get access to the activity broadcast sender.
-    pub fn activity_tx(&self) -> &broadcast::Sender<TodoActivityMessage> {
-        &self.activity_tx
-    }
 }
 
 #[cfg(test)]

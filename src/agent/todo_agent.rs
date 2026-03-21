@@ -5,8 +5,7 @@
 
 use std::sync::Arc;
 
-use tokio::sync::{Semaphore, broadcast};
-use tokio::sync::OwnedSemaphorePermit;
+use tokio::sync::{Semaphore, OwnedSemaphorePermit};
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 
@@ -21,6 +20,7 @@ use crate::llm::LlmProvider;
 use crate::safety::SafetyLayer;
 use crate::store::Database;
 use crate::todos::activity::TodoActivityMessage;
+use crate::todos::activity_channel_map::ActivityChannelMap;
 use crate::todos::approval_registry::TodoApprovalRegistry;
 use crate::todos::model::{TodoItem, TodoWsMessage};
 use crate::tools::registry::ToolRegistry;
@@ -38,8 +38,8 @@ pub struct TodoAgentDeps {
     pub safety: Arc<SafetyLayer>,
     pub tools: Arc<ToolRegistry>,
     pub workspace: Arc<Workspace>,
-    pub activity_tx: broadcast::Sender<TodoActivityMessage>,
-    pub todo_tx: broadcast::Sender<TodoWsMessage>,
+    pub activity_channels: Arc<ActivityChannelMap>,
+    pub todo_tx: tokio::sync::broadcast::Sender<TodoWsMessage>,
     pub card_queue: Arc<CardQueue>,
     pub approval_registry: TodoApprovalRegistry,
 }
@@ -88,7 +88,7 @@ pub async fn spawn_todo_agent(
         todo.title.clone(),
         description,
         override_content,
-        deps.activity_tx.clone(),
+        Arc::clone(&deps.activity_channels),
         Arc::clone(&deps.db),
         deps.todo_tx.clone(),
         Arc::clone(&deps.card_queue),
@@ -122,7 +122,7 @@ pub async fn spawn_todo_agent(
     };
 
     // Emit Started activity
-    let _ = deps.activity_tx.send(TodoActivityMessage::Started {
+    deps.activity_channels.send(todo.id, TodoActivityMessage::Started {
         job_id,
         todo_id: Some(todo.id),
     });

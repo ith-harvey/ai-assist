@@ -20,6 +20,7 @@ use uuid::Uuid;
 use crate::agent::agent_queue::AgentQueue;
 use crate::agent::todo_agent::TodoAgentDeps;
 use crate::store::Database;
+use crate::todos::activity_channel_map::ActivityChannelMap;
 use crate::todos::model::{TodoStatus, TodoWsMessage};
 
 /// A single message in an agent transcript dump.
@@ -165,8 +166,8 @@ impl TodoActivityMessage {
 #[derive(Clone)]
 pub struct ActivityState {
     pub db: Arc<dyn Database>,
-    /// Broadcast channel for activity events.
-    pub activity_tx: broadcast::Sender<TodoActivityMessage>,
+    /// Per-todo broadcast channels for activity events.
+    pub activity_channels: Arc<ActivityChannelMap>,
     /// Dependencies for spawning follow-up agents.
     pub agent_deps: TodoAgentDeps,
     /// Agent dispatch queue for enqueuing follow-ups.
@@ -176,11 +177,11 @@ pub struct ActivityState {
 impl ActivityState {
     pub fn new(
         db: Arc<dyn Database>,
-        activity_tx: broadcast::Sender<TodoActivityMessage>,
+        activity_channels: Arc<ActivityChannelMap>,
         agent_deps: TodoAgentDeps,
         queue: Arc<AgentQueue>,
     ) -> Self {
-        Self { db, activity_tx, agent_deps, queue }
+        Self { db, activity_channels, agent_deps, queue }
     }
 }
 
@@ -237,9 +238,9 @@ async fn handle_socket(mut socket: WebSocket, todo_id: Uuid, state: ActivityStat
         }
     }
 
-    // Subscribe to live events
-    let mut rx = state.activity_tx.subscribe();
-    info!(todo_id = %todo_id, "📡 Subscribed to live activity broadcast, entering main loop");
+    // Subscribe to this todo's activity channel (per-todo isolation)
+    let mut rx = state.activity_channels.subscribe(todo_id);
+    info!(todo_id = %todo_id, "📡 Subscribed to per-todo activity channel, entering main loop");
 
     loop {
         tokio::select! {
@@ -247,25 +248,8 @@ async fn handle_socket(mut socket: WebSocket, todo_id: Uuid, state: ActivityStat
                 match result {
                     Ok(msg) => {
                         let action_type = msg.action_type();
-                        // Only forward events related to this todo's job
-                        let relevant = match &msg {
-                            TodoActivityMessage::Started { todo_id: tid, .. } => {
-                                let r = *tid == Some(todo_id);
-                                info!(todo_id = %todo_id, started_todo_id = ?tid, relevant = r, "📡 Live Started event");
-                                r
-                            }
-                            _ => {
-                                info!(todo_id = %todo_id, action_type, "📡 Live event (non-Started, forwarding)");
-                                true
-                            }
-                        };
-
-                        if !relevant {
-                            continue;
-                        }
-
                         if let Ok(json) = serde_json::to_string(&msg) {
-                            info!(todo_id = %todo_id, action_type, bytes = json.len(), "📡 Sending live event to client");
+                            debug!(todo_id = %todo_id, action_type, bytes = json.len(), "📡 Sending live event to client");
                             if socket.send(Message::Text(json.into())).await.is_err() {
                                 info!(todo_id = %todo_id, "📡 Client disconnected during live send");
                                 break;
@@ -311,7 +295,7 @@ async fn handle_socket(mut socket: WebSocket, todo_id: Uuid, state: ActivityStat
                                         todo_id,
                                         content: content.clone(),
                                     };
-                                    let _ = state.activity_tx.send(user_msg.clone());
+                                    state.activity_channels.send(todo_id, user_msg.clone());
                                     let store = state.db.clone();
                                     let action_data = serde_json::to_string(&user_msg).unwrap_or_default();
                                     tokio::spawn(async move {

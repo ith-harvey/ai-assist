@@ -24,7 +24,7 @@ use crate::agent::agent_queue::AgentQueue;
 use crate::cards::choice_registry::ChoiceRegistry;
 use crate::channels::email::EmailConfig;
 use crate::store::Database;
-use crate::todos::activity::TodoActivityMessage;
+use crate::todos::activity_channel_map::ActivityChannelMap;
 use crate::todos::approval_registry::TodoApprovalRegistry;
 use crate::todos::model::TodoWsMessage;
 
@@ -35,7 +35,7 @@ pub struct AppState {
     pub email_config: Option<EmailConfig>,
     pub reply_drafter: Arc<ReplyDrafter>,
     pub approval_registry: TodoApprovalRegistry,
-    pub activity_tx: tokio::sync::broadcast::Sender<TodoActivityMessage>,
+    pub activity_channels: Arc<ActivityChannelMap>,
     pub choice_registry: ChoiceRegistry,
     pub db: Arc<dyn Database>,
     pub todo_tx: tokio::sync::broadcast::Sender<TodoWsMessage>,
@@ -61,7 +61,7 @@ impl AppState {
             CardPayload::Action { .. } => {
                 Box::new(super::handlers::ActionHandler {
                     approval_registry: self.approval_registry.clone(),
-                    activity_tx: self.activity_tx.clone(),
+                    activity_channels: Arc::clone(&self.activity_channels),
                     db: Arc::clone(&self.db),
                     todo_tx: self.todo_tx.clone(),
                     agent_queue: self.agent_queue.clone(),
@@ -86,7 +86,7 @@ pub fn card_routes(
     email_config: Option<EmailConfig>,
     reply_drafter: Arc<ReplyDrafter>,
     approval_registry: TodoApprovalRegistry,
-    activity_tx: tokio::sync::broadcast::Sender<TodoActivityMessage>,
+    activity_channels: Arc<ActivityChannelMap>,
     choice_registry: ChoiceRegistry,
     db: Arc<dyn Database>,
     todo_tx: tokio::sync::broadcast::Sender<TodoWsMessage>,
@@ -97,7 +97,7 @@ pub fn card_routes(
         email_config,
         reply_drafter,
         approval_registry,
-        activity_tx,
+        activity_channels,
         choice_registry,
         db,
         todo_tx,
