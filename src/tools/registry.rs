@@ -41,6 +41,10 @@ const PROTECTED_TOOL_NAMES: &[&str] = &[
     "draft_todo",
     "ask_user",
     "create_message",
+    "list_calendar_events",
+    "create_calendar_event",
+    "update_calendar_event",
+    "delete_calendar_event",
 ];
 
 /// Registry of available tools.
@@ -233,6 +237,19 @@ impl ToolRegistry {
         self.register_sync(Arc::new(MemoryWriteTool::new(workspace.clone())));
         self.register_sync(Arc::new(MemoryReadTool::new(workspace.clone())));
         self.register_sync(Arc::new(MemoryTreeTool::new(workspace)));
+    }
+
+    /// Register all calendar event tools.
+    pub fn register_calendar_tools(
+        &self,
+        db: Arc<dyn Database>,
+        oauth_config: Option<crate::config::GoogleOAuthConfig>,
+    ) {
+        use crate::tools::builtin::calendar::*;
+        self.register_sync(Arc::new(ListCalendarEventsTool::new(db.clone(), oauth_config.clone())));
+        self.register_sync(Arc::new(CreateCalendarEventTool::new(db.clone(), oauth_config.clone())));
+        self.register_sync(Arc::new(UpdateCalendarEventTool::new(db.clone(), oauth_config.clone())));
+        self.register_sync(Arc::new(DeleteCalendarEventTool::new(db, oauth_config)));
     }
 }
 

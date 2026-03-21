@@ -291,6 +291,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let choice_registry = ai_assist::cards::choice_registry::ChoiceRegistry::new();
     tools.register_ask_user_tool(card_queue.clone(), choice_registry.clone());
     tools.register_message_tools(card_queue.clone());
+    tools.register_calendar_tools(Arc::clone(&db), google_oauth_config.clone());
     let activity_state = ActivityState::new(
         Arc::clone(&db),
         Arc::clone(&activity_channels),

@@ -1,26 +1,33 @@
-//! Axum routes for Google Calendar OAuth.
+//! Axum routes for Google Calendar OAuth and event operations.
 //!
 //! Endpoints:
 //! - `GET  /auth/google/start`          — returns Google consent URL
 //! - `GET  /auth/google/callback`       — handles OAuth callback, stores tokens
 //! - `GET  /api/calendar/status`        — check if Google Calendar is connected
 //! - `DELETE /api/calendar/connection`  — disconnect Google Calendar
+//! - `GET  /api/calendar/events`        — list events for a date
+//! - `POST /api/calendar/events`        — create an event
+//! - `PATCH /api/calendar/events/:id`   — update an event
+//! - `DELETE /api/calendar/events/:id`  — delete an event
 
 use std::sync::Arc;
 
 use axum::{
     Json, Router,
-    extract::{Query, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     response::{Html, IntoResponse},
     routing::{delete, get},
 };
+use chrono::{NaiveDate, TimeZone, Utc};
 use serde::Deserialize;
 
 use super::{
     GCAL_EMAIL, GCAL_OAUTH_STATE, GCAL_REFRESH_TOKEN,
-    build_consent_url, delete_tokens, exchange_code_for_tokens, fetch_user_email, store_tokens,
+    build_consent_url, delete_tokens, exchange_code_for_tokens, fetch_user_email,
+    get_valid_access_token, store_tokens,
 };
+use super::events::{self, CreateEventRequest, UpdateEventRequest};
 use crate::config::GoogleOAuthConfig;
 use crate::store::Database;
 
@@ -31,13 +38,21 @@ pub struct CalendarState {
     pub oauth_config: Option<GoogleOAuthConfig>,
 }
 
-/// Build the Axum router for calendar OAuth endpoints.
+/// Build the Axum router for calendar OAuth and event endpoints.
 pub fn calendar_routes(state: CalendarState) -> Router {
     Router::new()
         .route("/auth/google/start", get(google_auth_start))
         .route("/auth/google/callback", get(google_auth_callback))
         .route("/api/calendar/status", get(calendar_status))
         .route("/api/calendar/connection", delete(calendar_disconnect))
+        .route(
+            "/api/calendar/events",
+            get(list_events_handler).post(create_event_handler),
+        )
+        .route(
+            "/api/calendar/events/:event_id",
+            axum::routing::patch(update_event_handler).delete(delete_event_handler),
+        )
         .with_state(state)
 }
 
@@ -260,4 +275,149 @@ async fn calendar_disconnect(State(state): State<CalendarState>) -> impl IntoRes
 
     tracing::info!("Google Calendar disconnected");
     Json(serde_json::json!({"disconnected": true})).into_response()
+}
+
+// ── Event endpoints ─────────────────────────────────────────────────
+
+/// Query parameters for listing events.
+#[derive(Debug, Deserialize)]
+struct ListEventsParams {
+    date: String,
+}
+
+/// Helper: get a valid access token or return 401.
+async fn require_access_token(state: &CalendarState) -> Result<String, axum::response::Response> {
+    let config = match &state.oauth_config {
+        Some(c) => c,
+        None => {
+            return Err((
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({"error": "Google Calendar is not configured"})),
+            )
+                .into_response());
+        }
+    };
+
+    match get_valid_access_token(state.db.as_ref(), "default", config).await {
+        Ok(Some(token)) => Ok(token),
+        Ok(None) => Err((
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"error": "Google Calendar is not connected"})),
+        )
+            .into_response()),
+        Err(e) => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": format!("Token error: {}", e)})),
+        )
+            .into_response()),
+    }
+}
+
+/// GET /api/calendar/events?date=YYYY-MM-DD
+async fn list_events_handler(
+    State(state): State<CalendarState>,
+    Query(params): Query<ListEventsParams>,
+) -> impl IntoResponse {
+    let token = match require_access_token(&state).await {
+        Ok(t) => t,
+        Err(e) => return e.into_response(),
+    };
+
+    let date = match NaiveDate::parse_from_str(&params.date, "%Y-%m-%d") {
+        Ok(d) => d,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "Invalid date format. Use YYYY-MM-DD"})),
+            )
+                .into_response();
+        }
+    };
+
+    let time_min = Utc.from_utc_datetime(
+        &date
+            .and_hms_opt(0, 0, 0)
+            .expect("valid midnight"),
+    );
+    let time_max = Utc.from_utc_datetime(
+        &date
+            .succ_opt()
+            .unwrap_or(date)
+            .and_hms_opt(0, 0, 0)
+            .expect("valid midnight"),
+    );
+
+    match events::list_events(&token, &time_min, &time_max).await {
+        Ok(evts) => Json(serde_json::json!({
+            "date": params.date,
+            "events": evts,
+        }))
+        .into_response(),
+        Err(e) => (
+            StatusCode::BAD_GATEWAY,
+            Json(serde_json::json!({"error": format!("Google Calendar API error: {}", e)})),
+        )
+            .into_response(),
+    }
+}
+
+/// POST /api/calendar/events
+async fn create_event_handler(
+    State(state): State<CalendarState>,
+    Json(req): Json<CreateEventRequest>,
+) -> impl IntoResponse {
+    let token = match require_access_token(&state).await {
+        Ok(t) => t,
+        Err(e) => return e.into_response(),
+    };
+
+    match events::create_event(&token, &req).await {
+        Ok(event) => (StatusCode::CREATED, Json(serde_json::json!(event))).into_response(),
+        Err(e) => (
+            StatusCode::BAD_GATEWAY,
+            Json(serde_json::json!({"error": format!("Failed to create event: {}", e)})),
+        )
+            .into_response(),
+    }
+}
+
+/// PATCH /api/calendar/events/:event_id
+async fn update_event_handler(
+    State(state): State<CalendarState>,
+    Path(event_id): Path<String>,
+    Json(req): Json<UpdateEventRequest>,
+) -> impl IntoResponse {
+    let token = match require_access_token(&state).await {
+        Ok(t) => t,
+        Err(e) => return e.into_response(),
+    };
+
+    match events::update_event(&token, &event_id, &req).await {
+        Ok(event) => Json(serde_json::json!(event)).into_response(),
+        Err(e) => (
+            StatusCode::BAD_GATEWAY,
+            Json(serde_json::json!({"error": format!("Failed to update event: {}", e)})),
+        )
+            .into_response(),
+    }
+}
+
+/// DELETE /api/calendar/events/:event_id
+async fn delete_event_handler(
+    State(state): State<CalendarState>,
+    Path(event_id): Path<String>,
+) -> impl IntoResponse {
+    let token = match require_access_token(&state).await {
+        Ok(t) => t,
+        Err(e) => return e.into_response(),
+    };
+
+    match events::delete_event(&token, &event_id).await {
+        Ok(()) => Json(serde_json::json!({"deleted": true})).into_response(),
+        Err(e) => (
+            StatusCode::BAD_GATEWAY,
+            Json(serde_json::json!({"error": format!("Failed to delete event: {}", e)})),
+        )
+            .into_response(),
+    }
 }
