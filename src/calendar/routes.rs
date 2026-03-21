@@ -50,7 +50,7 @@ pub fn calendar_routes(state: CalendarState) -> Router {
             get(list_events_handler).post(create_event_handler),
         )
         .route(
-            "/api/calendar/events/:event_id",
+            "/api/calendar/events/{event_id}",
             axum::routing::patch(update_event_handler).delete(delete_event_handler),
         )
         .with_state(state)
