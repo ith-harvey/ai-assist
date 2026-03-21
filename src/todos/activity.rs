@@ -335,8 +335,9 @@ async fn handle_socket(mut socket: WebSocket, todo_id: Uuid, state: ActivityStat
 
                                     // Spawn follow-up agent via queue
                                     let queue = Arc::clone(&state.queue);
+                                    let db = Arc::clone(&state.db);
                                     tokio::spawn(async move {
-                                        if let Err(e) = spawn_followup_agent(todo_id, &content, &queue).await {
+                                        if let Err(e) = spawn_followup_agent(todo_id, &content, &queue, &db).await {
                                             warn!(todo_id = %todo_id, error = %e, "Failed to spawn follow-up agent");
                                         }
                                     });
@@ -359,13 +360,24 @@ async fn handle_socket(mut socket: WebSocket, todo_id: Uuid, state: ActivityStat
 
 /// Spawn a follow-up agent for a todo, building context from prior activity history.
 ///
+/// Includes the todo's current DB state so the agent knows which fields are already filled.
 /// Delegates to `AgentQueue::enqueue_followup` which handles concurrency via semaphore.
 async fn spawn_followup_agent(
     todo_id: Uuid,
     user_message: &str,
     queue: &Arc<AgentQueue>,
+    db: &Arc<dyn Database>,
 ) -> Result<(), String> {
-    queue.enqueue_followup(todo_id, user_message.to_string()).await
+    let context = if let Ok(Some(todo)) = db.get_todo(todo_id).await {
+        format!(
+            "[todo_id: {}]\nCurrent state: type={:?}, bucket={:?}, priority={}, status={:?}, desc={}\n\nUser: {}",
+            todo_id, todo.todo_type, todo.bucket, todo.priority, todo.status,
+            todo.description.as_deref().unwrap_or("(none)"), user_message
+        )
+    } else {
+        format!("[todo_id: {}]\n\nUser: {}", todo_id, user_message)
+    };
+    queue.enqueue_followup(todo_id, context).await
 }
 
 #[cfg(test)]

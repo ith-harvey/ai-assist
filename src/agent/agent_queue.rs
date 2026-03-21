@@ -15,7 +15,7 @@ use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use crate::agent::todo_agent::{TodoAgentDeps, spawn_todo_agent};
-use crate::todos::model::{TodoBucket, TodoStatus, TodoWsMessage};
+use crate::todos::model::{TodoBucket, TodoStatus, TodoType, TodoWsMessage};
 
 /// Central orchestrator for todo agent concurrency and dispatch.
 ///
@@ -167,6 +167,42 @@ impl AgentQueue {
                     if let Err(e) = self.tx.send(todo.id) {
                         warn!(todo_id = %todo.id, error = %e, "Failed to enqueue todo");
                     }
+                }
+            }
+        }
+    }
+
+    /// Scan for stale Drafting todos and auto-finalize them to Created with defaults.
+    ///
+    /// If a Drafting todo hasn't been updated in 5 minutes, the enrichment interview
+    /// is assumed abandoned. Auto-finalize by setting defaults and transitioning to Created.
+    pub async fn scan_stale_drafts(&self) {
+        let db = &self.deps.db;
+        let todo_tx = &self.deps.todo_tx;
+        let stale_threshold = chrono::Duration::minutes(5);
+        let now = chrono::Utc::now();
+
+        if let Ok(drafting) = db.list_todos_by_status("default", TodoStatus::Drafting).await {
+            for mut todo in drafting {
+                if now - todo.updated_at > stale_threshold {
+                    info!(todo_id = %todo.id, "Auto-finalizing stale draft todo");
+
+                    // Apply sensible defaults for unfilled fields
+                    if todo.todo_type == TodoType::Deliverable && todo.description.is_none() {
+                        // Keep default type but mark as generic
+                        todo.todo_type = TodoType::Deliverable;
+                    }
+                    if todo.priority == 0 {
+                        todo.priority = 1; // Medium priority
+                    }
+                    todo.status = TodoStatus::Created;
+                    todo.updated_at = now;
+
+                    if let Err(e) = db.update_todo(&todo).await {
+                        warn!(todo_id = %todo.id, error = %e, "Failed to auto-finalize stale draft");
+                        continue;
+                    }
+                    let _ = todo_tx.send(TodoWsMessage::TodoUpdated { todo });
                 }
             }
         }
