@@ -4,41 +4,33 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use tokio::sync::broadcast;
 use tracing::{info, warn};
 use uuid::Uuid;
 
 use super::{ApprovalHandler, CardActionContext};
-use crate::agent::agent_queue::AgentQueue;
 use crate::cards::model::ApprovalCard;
 use crate::channels::IncomingMessage;
-use crate::store::Database;
+use crate::context::AppContext;
 use crate::todos::activity::TodoActivityMessage;
-use crate::todos::activity_channel_map::ActivityChannelMap;
-use crate::todos::approval_registry::TodoApprovalRegistry;
 use crate::todos::model::{TodoStatus, TodoWsMessage};
 
 pub struct ActionHandler {
-    pub approval_registry: TodoApprovalRegistry,
-    pub activity_channels: Arc<ActivityChannelMap>,
-    pub db: Arc<dyn Database>,
-    pub todo_tx: broadcast::Sender<TodoWsMessage>,
-    pub agent_queue: Option<Arc<AgentQueue>>,
+    pub ctx: Arc<AppContext>,
 }
 
 #[async_trait]
 impl ApprovalHandler for ActionHandler {
     async fn on_approve(&self, card: &ApprovalCard, _ctx: &CardActionContext) {
-        resolve_approval(card, true, &self.approval_registry, &self.activity_channels, &self.db, &self.todo_tx, &self.agent_queue).await;
+        resolve_approval(card, true, &self.ctx).await;
     }
 
     async fn on_dismiss(&self, card: &ApprovalCard, _ctx: &CardActionContext) {
-        resolve_approval(card, false, &self.approval_registry, &self.activity_channels, &self.db, &self.todo_tx, &self.agent_queue).await;
+        resolve_approval(card, false, &self.ctx).await;
     }
 
     async fn on_edit(&self, card: &ApprovalCard, _new_text: &str, _ctx: &CardActionContext) {
         // Edit on an Action card = approve with (potentially modified) details
-        resolve_approval(card, true, &self.approval_registry, &self.activity_channels, &self.db, &self.todo_tx, &self.agent_queue).await;
+        resolve_approval(card, true, &self.ctx).await;
     }
 }
 
@@ -50,14 +42,10 @@ impl ApprovalHandler for ActionHandler {
 async fn resolve_approval(
     card: &ApprovalCard,
     approved: bool,
-    registry: &TodoApprovalRegistry,
-    activity_channels: &Arc<ActivityChannelMap>,
-    db: &Arc<dyn Database>,
-    todo_tx: &broadcast::Sender<TodoWsMessage>,
-    agent_queue: &Option<Arc<AgentQueue>>,
+    ctx: &Arc<AppContext>,
 ) {
     // First check if this is a tool approval (agent waiting for response)
-    if let Some(pending) = registry.take(card.id).await {
+    if let Some(pending) = ctx.approval_registry.take(card.id).await {
         // Re-acquire a concurrency permit before resuming the agent
         match pending.semaphore.clone().acquire_owned().await {
             Ok(permit) => {
@@ -85,7 +73,7 @@ async fn resolve_approval(
                 );
 
                 // Broadcast ApprovalResolved to this todo's activity channel
-                activity_channels.send(pending.todo_id, TodoActivityMessage::ApprovalResolved {
+                ctx.activity_channels.send(pending.todo_id, TodoActivityMessage::ApprovalResolved {
                     job_id: Uuid::nil(), // job_id not tracked in approval registry
                     card_id: card.id,
                     approved,
@@ -106,19 +94,19 @@ async fn resolve_approval(
     if let Some(todo_id) = card.todo_id {
         if approved {
             // Enqueue via AgentQueue (sets DB status + sends to dispatch channel)
-            if let Some(queue) = agent_queue {
+            if let Some(queue) = ctx.agent_queue.get() {
                 if let Err(e) = queue.enqueue(todo_id).await {
                     warn!(todo_id = %todo_id, error = %e, "Failed to enqueue todo");
                     return;
                 }
             } else {
                 // Fallback: just set DB status (no queue available)
-                if let Err(e) = db.update_todo_status(todo_id, TodoStatus::AgentQueued).await {
+                if let Err(e) = ctx.db.update_todo_status(todo_id, TodoStatus::AgentQueued).await {
                     warn!(todo_id = %todo_id, error = %e, "Failed to update todo to AgentQueued");
                     return;
                 }
-                if let Ok(Some(updated)) = db.get_todo(todo_id).await {
-                    let _ = todo_tx.send(TodoWsMessage::TodoUpdated { todo: updated });
+                if let Ok(Some(updated)) = ctx.db.get_todo(todo_id).await {
+                    let _ = ctx.todo_tx.send(TodoWsMessage::TodoUpdated { todo: updated });
                 }
             }
             info!(
@@ -139,34 +127,61 @@ async fn resolve_approval(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::OnceLock;
     use crate::cards::model::CardSilo;
     use crate::cards::queue::CardQueue;
+    use crate::cards::choice_registry::ChoiceRegistry;
+    use crate::cards::reply_drafter::{GeneratorConfig, ReplyDrafter};
     use crate::store::LibSqlBackend;
-    use crate::todos::approval_registry::TodoApprovalPending;
+    use crate::todos::activity_channel_map::ActivityChannelMap;
+    use crate::todos::approval_registry::{TodoApprovalPending, TodoApprovalRegistry};
+    use crate::llm::provider::{CompletionRequest, CompletionResponse, FinishReason, LlmProvider, ToolCompletionRequest, ToolCompletionResponse};
+    use crate::error::LlmError;
+    use rust_decimal::Decimal;
     use std::sync::Arc;
-    use tokio::sync::{Mutex, Semaphore, mpsc};
+    use tokio::sync::{Mutex, Semaphore, broadcast, mpsc};
+
+    struct StubLlm;
+    #[async_trait]
+    impl LlmProvider for StubLlm {
+        fn model_name(&self) -> &str { "stub" }
+        fn cost_per_token(&self) -> (Decimal, Decimal) { (Decimal::ZERO, Decimal::ZERO) }
+        async fn complete(&self, _: CompletionRequest) -> Result<CompletionResponse, LlmError> {
+            Ok(CompletionResponse { content: "stub".into(), input_tokens: 0, output_tokens: 0, finish_reason: FinishReason::Stop, response_id: None })
+        }
+        async fn complete_with_tools(&self, _: ToolCompletionRequest) -> Result<ToolCompletionResponse, LlmError> { unimplemented!() }
+    }
+
+    async fn make_test_ctx() -> Arc<AppContext> {
+        let llm: Arc<dyn LlmProvider> = Arc::new(StubLlm);
+        let db: Arc<dyn crate::store::Database> = Arc::new(LibSqlBackend::new_memory().await.unwrap());
+        let (todo_tx, _) = broadcast::channel(16);
+        Arc::new(AppContext {
+            db,
+            llm: llm.clone(),
+            safety: Arc::new(crate::safety::SafetyLayer::new()),
+            tools: Arc::new(crate::tools::registry::ToolRegistry::new()),
+            workspace: Arc::new(crate::workspace::Workspace::new(std::path::PathBuf::from("/tmp/test-workspace"))),
+            todo_tx,
+            activity_channels: Arc::new(ActivityChannelMap::new()),
+            card_queue: CardQueue::new(),
+            approval_registry: TodoApprovalRegistry::new(),
+            choice_registry: ChoiceRegistry::new(),
+            email_config: None,
+            reply_drafter: Arc::new(ReplyDrafter::new(llm, GeneratorConfig::default())),
+            oauth_config: None,
+            agent_queue: OnceLock::new(),
+        })
+    }
 
     fn make_action_card() -> ApprovalCard {
         ApprovalCard::new_action("run shell command", Some("ls -la".into()), CardSilo::Todos, 15)
     }
 
-    fn make_ctx() -> CardActionContext {
+    fn make_card_ctx() -> CardActionContext {
         CardActionContext {
             queue: CardQueue::new(),
         }
-    }
-
-    fn make_activity_channels() -> Arc<ActivityChannelMap> {
-        Arc::new(ActivityChannelMap::new())
-    }
-
-    fn make_todo_tx() -> broadcast::Sender<TodoWsMessage> {
-        let (tx, _rx) = broadcast::channel(16);
-        tx
-    }
-
-    async fn make_db() -> Arc<dyn Database> {
-        Arc::new(LibSqlBackend::new_memory().await.unwrap())
     }
 
     fn make_approval_pending(
@@ -184,7 +199,7 @@ mod tests {
 
     #[tokio::test]
     async fn approve_sends_exec_approval_true() {
-        let registry = TodoApprovalRegistry::new();
+        let ctx = make_test_ctx().await;
         let card = make_action_card();
         let request_id = uuid::Uuid::new_v4();
         let todo_id = uuid::Uuid::new_v4();
@@ -192,17 +207,11 @@ mod tests {
 
         let mut pending = make_approval_pending(tx, todo_id);
         pending.request_id = request_id;
-        registry.register(card.id, pending).await;
+        ctx.approval_registry.register(card.id, pending).await;
 
-        let handler = ActionHandler {
-            approval_registry: registry,
-            activity_channels: make_activity_channels(),
-            db: make_db().await,
-            todo_tx: make_todo_tx(),
-            agent_queue: None,
-        };
-        let ctx = make_ctx();
-        handler.on_approve(&card, &ctx).await;
+        let handler = ActionHandler { ctx: ctx.clone() };
+        let card_ctx = make_card_ctx();
+        handler.on_approve(&card, &card_ctx).await;
 
         let msg = rx.recv().await.expect("should receive approval message");
         assert_eq!(msg.channel, "todo");
@@ -213,24 +222,18 @@ mod tests {
 
     #[tokio::test]
     async fn dismiss_sends_exec_approval_false() {
-        let registry = TodoApprovalRegistry::new();
+        let ctx = make_test_ctx().await;
         let card = make_action_card();
         let request_id = uuid::Uuid::new_v4();
         let (tx, mut rx) = mpsc::channel(8);
 
         let mut pending = make_approval_pending(tx, uuid::Uuid::new_v4());
         pending.request_id = request_id;
-        registry.register(card.id, pending).await;
+        ctx.approval_registry.register(card.id, pending).await;
 
-        let handler = ActionHandler {
-            approval_registry: registry,
-            activity_channels: make_activity_channels(),
-            db: make_db().await,
-            todo_tx: make_todo_tx(),
-            agent_queue: None,
-        };
-        let ctx = make_ctx();
-        handler.on_dismiss(&card, &ctx).await;
+        let handler = ActionHandler { ctx: ctx.clone() };
+        let card_ctx = make_card_ctx();
+        handler.on_dismiss(&card, &card_ctx).await;
 
         let msg = rx.recv().await.expect("should receive rejection message");
         assert!(msg.content.contains("\"approved\":false"));
@@ -239,21 +242,15 @@ mod tests {
 
     #[tokio::test]
     async fn edit_sends_approval_true() {
-        let registry = TodoApprovalRegistry::new();
+        let ctx = make_test_ctx().await;
         let card = make_action_card();
         let (tx, mut rx) = mpsc::channel(8);
 
-        registry.register(card.id, make_approval_pending(tx, uuid::Uuid::new_v4())).await;
+        ctx.approval_registry.register(card.id, make_approval_pending(tx, uuid::Uuid::new_v4())).await;
 
-        let handler = ActionHandler {
-            approval_registry: registry,
-            activity_channels: make_activity_channels(),
-            db: make_db().await,
-            todo_tx: make_todo_tx(),
-            agent_queue: None,
-        };
-        let ctx = make_ctx();
-        handler.on_edit(&card, "modified command", &ctx).await;
+        let handler = ActionHandler { ctx: ctx.clone() };
+        let card_ctx = make_card_ctx();
+        handler.on_edit(&card, "modified command", &card_ctx).await;
 
         let msg = rx.recv().await.expect("edit should send approval");
         assert!(msg.content.contains("\"approved\":true"));
@@ -261,61 +258,43 @@ mod tests {
 
     #[tokio::test]
     async fn approve_without_registry_entry_is_noop() {
-        let registry = TodoApprovalRegistry::new();
+        let ctx = make_test_ctx().await;
         let card = make_action_card();
 
-        let handler = ActionHandler {
-            approval_registry: registry,
-            activity_channels: make_activity_channels(),
-            db: make_db().await,
-            todo_tx: make_todo_tx(),
-            agent_queue: None,
-        };
-        let ctx = make_ctx();
-        handler.on_approve(&card, &ctx).await;
+        let handler = ActionHandler { ctx };
+        let card_ctx = make_card_ctx();
+        handler.on_approve(&card, &card_ctx).await;
     }
 
     #[tokio::test]
     async fn approve_with_dead_receiver_does_not_panic() {
-        let registry = TodoApprovalRegistry::new();
+        let ctx = make_test_ctx().await;
         let card = make_action_card();
         let (tx, rx) = mpsc::channel(1);
 
-        registry.register(card.id, make_approval_pending(tx, uuid::Uuid::new_v4())).await;
+        ctx.approval_registry.register(card.id, make_approval_pending(tx, uuid::Uuid::new_v4())).await;
 
         drop(rx);
 
-        let handler = ActionHandler {
-            approval_registry: registry,
-            activity_channels: make_activity_channels(),
-            db: make_db().await,
-            todo_tx: make_todo_tx(),
-            agent_queue: None,
-        };
-        let ctx = make_ctx();
-        handler.on_approve(&card, &ctx).await;
+        let handler = ActionHandler { ctx };
+        let card_ctx = make_card_ctx();
+        handler.on_approve(&card, &card_ctx).await;
     }
 
     #[tokio::test]
     async fn exec_approval_json_is_parseable() {
-        let registry = TodoApprovalRegistry::new();
+        let ctx = make_test_ctx().await;
         let card = make_action_card();
         let request_id = uuid::Uuid::new_v4();
         let (tx, mut rx) = mpsc::channel(8);
 
         let mut pending = make_approval_pending(tx, uuid::Uuid::new_v4());
         pending.request_id = request_id;
-        registry.register(card.id, pending).await;
+        ctx.approval_registry.register(card.id, pending).await;
 
-        let handler = ActionHandler {
-            approval_registry: registry,
-            activity_channels: make_activity_channels(),
-            db: make_db().await,
-            todo_tx: make_todo_tx(),
-            agent_queue: None,
-        };
-        let ctx = make_ctx();
-        handler.on_approve(&card, &ctx).await;
+        let handler = ActionHandler { ctx: ctx.clone() };
+        let card_ctx = make_card_ctx();
+        handler.on_approve(&card, &card_ctx).await;
 
         let msg = rx.recv().await.unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&msg.content).unwrap();
@@ -327,47 +306,34 @@ mod tests {
 
     #[tokio::test]
     async fn registry_empty_after_resolve() {
-        let registry = TodoApprovalRegistry::new();
+        let ctx = make_test_ctx().await;
         let card = make_action_card();
         let (tx, _rx) = mpsc::channel(8);
 
-        registry.register(card.id, make_approval_pending(tx, uuid::Uuid::new_v4())).await;
+        ctx.approval_registry.register(card.id, make_approval_pending(tx, uuid::Uuid::new_v4())).await;
 
-        assert_eq!(registry.len().await, 1);
+        assert_eq!(ctx.approval_registry.len().await, 1);
 
-        let handler = ActionHandler {
-            approval_registry: registry.clone(),
-            activity_channels: make_activity_channels(),
-            db: make_db().await,
-            todo_tx: make_todo_tx(),
-            agent_queue: None,
-        };
-        let ctx = make_ctx();
-        handler.on_approve(&card, &ctx).await;
+        let handler = ActionHandler { ctx: ctx.clone() };
+        let card_ctx = make_card_ctx();
+        handler.on_approve(&card, &card_ctx).await;
 
-        assert_eq!(registry.len().await, 0);
+        assert_eq!(ctx.approval_registry.len().await, 0);
     }
 
     #[tokio::test]
     async fn approve_broadcasts_approval_resolved() {
-        let registry = TodoApprovalRegistry::new();
+        let ctx = make_test_ctx().await;
         let card = make_action_card();
         let todo_id = uuid::Uuid::new_v4();
         let (tx, _rx) = mpsc::channel(8);
-        let activity_channels = make_activity_channels();
-        let mut activity_rx = activity_channels.subscribe(todo_id);
+        let mut activity_rx = ctx.activity_channels.subscribe(todo_id);
 
-        registry.register(card.id, make_approval_pending(tx, todo_id)).await;
+        ctx.approval_registry.register(card.id, make_approval_pending(tx, todo_id)).await;
 
-        let handler = ActionHandler {
-            approval_registry: registry,
-            activity_channels: activity_channels.clone(),
-            db: make_db().await,
-            todo_tx: make_todo_tx(),
-            agent_queue: None,
-        };
-        let ctx = make_ctx();
-        handler.on_approve(&card, &ctx).await;
+        let handler = ActionHandler { ctx: ctx.clone() };
+        let card_ctx = make_card_ctx();
+        handler.on_approve(&card, &card_ctx).await;
 
         let msg = activity_rx.recv().await.expect("should receive activity");
         match msg {
@@ -381,24 +347,17 @@ mod tests {
 
     #[tokio::test]
     async fn dismiss_broadcasts_approval_resolved_false() {
-        let registry = TodoApprovalRegistry::new();
+        let ctx = make_test_ctx().await;
         let card = make_action_card();
         let todo_id = uuid::Uuid::new_v4();
         let (tx, _rx) = mpsc::channel(8);
-        let activity_channels = make_activity_channels();
-        let mut activity_rx = activity_channels.subscribe(todo_id);
+        let mut activity_rx = ctx.activity_channels.subscribe(todo_id);
 
-        registry.register(card.id, make_approval_pending(tx, todo_id)).await;
+        ctx.approval_registry.register(card.id, make_approval_pending(tx, todo_id)).await;
 
-        let handler = ActionHandler {
-            approval_registry: registry,
-            activity_channels: activity_channels.clone(),
-            db: make_db().await,
-            todo_tx: make_todo_tx(),
-            agent_queue: None,
-        };
-        let ctx = make_ctx();
-        handler.on_dismiss(&card, &ctx).await;
+        let handler = ActionHandler { ctx: ctx.clone() };
+        let card_ctx = make_card_ctx();
+        handler.on_dismiss(&card, &card_ctx).await;
 
         let msg = activity_rx.recv().await.expect("should receive activity");
         match msg {

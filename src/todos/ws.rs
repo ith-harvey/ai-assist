@@ -16,66 +16,30 @@ use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use super::model::{TodoAction, TodoBucket, TodoItem, TodoStatus, TodoType, TodoWsMessage};
-use crate::agent::agent_queue::AgentQueue;
 use crate::cards::model::{ApprovalCard, CardSilo};
-use crate::cards::queue::CardQueue;
-use crate::store::Database;
-
-/// Shared state for the todo WebSocket.
-#[derive(Clone)]
-pub struct TodoState {
-    pub db: Arc<dyn Database>,
-    /// Broadcast channel for pushing updates to all connected clients.
-    pub tx: broadcast::Sender<TodoWsMessage>,
-    /// Agent dispatch queue for enqueuing todos.
-    pub queue: Option<Arc<AgentQueue>>,
-    /// Card queue for creating approval cards.
-    pub card_queue: Option<Arc<CardQueue>>,
-}
-
-impl TodoState {
-    pub fn new(db: Arc<dyn Database>) -> Self {
-        let (tx, _) = broadcast::channel(256);
-        Self { db, tx, queue: None, card_queue: None }
-    }
-
-    /// Create with agent queue and card queue attached.
-    pub fn with_agents(
-        db: Arc<dyn Database>,
-        queue: Arc<AgentQueue>,
-        card_queue: Arc<CardQueue>,
-    ) -> Self {
-        let (tx, _) = broadcast::channel(256);
-        Self {
-            db,
-            tx,
-            queue: Some(queue),
-            card_queue: Some(card_queue),
-        }
-    }
-}
+use crate::context::AppContext;
 
 /// Build the Axum router for `/ws/todos`, `/api/todos/{id}`, `/api/todos/{id}/deliverables`, and `/api/todos/test`.
-pub fn todo_routes(state: TodoState) -> Router {
+pub fn todo_routes(ctx: Arc<AppContext>) -> Router {
     Router::new()
         .route("/ws/todos", get(ws_handler))
         .route("/api/todos/test", post(create_test_todo))
         .route("/api/todos/{id}", get(get_todo_detail))
         .route("/api/todos/{id}/deliverables", get(get_todo_deliverables))
-        .with_state(state)
+        .with_state(ctx)
 }
 
-async fn ws_handler(ws: WebSocketUpgrade, State(state): State<TodoState>) -> impl IntoResponse {
+async fn ws_handler(ws: WebSocketUpgrade, State(ctx): State<Arc<AppContext>>) -> impl IntoResponse {
     info!("Todo WebSocket client connecting");
-    ws.on_upgrade(|socket| handle_socket(socket, state))
+    ws.on_upgrade(|socket| handle_socket(socket, ctx))
 }
 
-async fn handle_socket(mut socket: WebSocket, state: TodoState) {
+async fn handle_socket(mut socket: WebSocket, ctx: Arc<AppContext>) {
     info!("Todo WebSocket client connected");
 
     // Send all non-completed, user-visible todos on connect
     let default_user = "default";
-    match state.db.list_user_todos(default_user).await {
+    match ctx.db.list_user_todos(default_user).await {
         Ok(todos) => {
             let non_completed: Vec<TodoItem> = todos
                 .into_iter()
@@ -94,7 +58,7 @@ async fn handle_socket(mut socket: WebSocket, state: TodoState) {
         }
     }
 
-    let mut rx = state.tx.subscribe();
+    let mut rx = ctx.todo_tx.subscribe();
 
     loop {
         tokio::select! {
@@ -121,7 +85,7 @@ async fn handle_socket(mut socket: WebSocket, state: TodoState) {
                     Err(broadcast::error::RecvError::Lagged(n)) => {
                         warn!(missed = n, "Todo WS client lagged behind broadcast");
                         // Re-sync with user-visible todos only
-                        if let Ok(todos) = state.db.list_user_todos(default_user).await {
+                        if let Ok(todos) = ctx.db.list_user_todos(default_user).await {
                             let non_completed: Vec<TodoItem> = todos
                                 .into_iter()
                                 .filter(|t| t.status != TodoStatus::Completed)
@@ -146,7 +110,7 @@ async fn handle_socket(mut socket: WebSocket, state: TodoState) {
                 match result {
                     Some(Ok(Message::Text(text))) => {
                         // handle_client_action returns Some for directed responses (e.g. search)
-                        if let Some(response) = handle_client_action(&text, &state).await {
+                        if let Some(response) = handle_client_action(&text, &ctx).await {
                             if let Ok(json) = serde_json::to_string(&response) {
                                 if socket.send(Message::Text(json.into())).await.is_err() {
                                     break;
@@ -178,7 +142,7 @@ async fn handle_socket(mut socket: WebSocket, state: TodoState) {
 
 /// Handle a client action. Returns `Some(msg)` for directed responses (search),
 /// `None` for broadcast-only actions (create, update, delete, etc.).
-async fn handle_client_action(text: &str, state: &TodoState) -> Option<TodoWsMessage> {
+async fn handle_client_action(text: &str, ctx: &Arc<AppContext>) -> Option<TodoWsMessage> {
     let default_user = "default";
 
     match serde_json::from_str::<TodoAction>(text) {
@@ -207,27 +171,25 @@ async fn handle_client_action(text: &str, state: &TodoState) -> Option<TodoWsMes
                     todo = todo.with_context(ctx);
                 }
 
-                match state.db.create_todo(&todo).await {
+                match ctx.db.create_todo(&todo).await {
                     Ok(()) => {
                         info!(id = %todo.id, title = %todo.title, "Todo created via WS");
                         let is_agent_startable = todo.bucket == TodoBucket::AgentStartable;
                         let todo_id = todo.id;
                         let todo_desc = todo.description.clone();
                         let todo_title = todo.title.clone();
-                        let _ = state.tx.send(TodoWsMessage::TodoCreated { todo });
+                        let _ = ctx.todo_tx.send(TodoWsMessage::TodoCreated { todo });
 
                         // Create approval card for agent-startable todos
                         if is_agent_startable {
-                            if let Some(cq) = &state.card_queue {
-                                let card = ApprovalCard::new_action(
-                                    format!("Do you want me to start on {}?", todo_title),
-                                    todo_desc,
-                                    CardSilo::Todos,
-                                    60,
-                                )
-                                .with_todo_id(todo_id);
-                                cq.push(card).await;
-                            }
+                            let card = ApprovalCard::new_action(
+                                format!("Do you want me to start on {}?", todo_title),
+                                todo_desc,
+                                CardSilo::Todos,
+                                60,
+                            )
+                            .with_todo_id(todo_id);
+                            ctx.card_queue.push(card).await;
                         }
                     }
                     Err(e) => warn!(error = %e, "Failed to create todo"),
@@ -236,16 +198,16 @@ async fn handle_client_action(text: &str, state: &TodoState) -> Option<TodoWsMes
             }
 
             TodoAction::Complete { id } => {
-                match state.db.complete_todo(id).await {
+                match ctx.db.complete_todo(id).await {
                     Ok(()) => {
                         info!(id = %id, "Todo completed via WS");
                         // Send updated todo if we can fetch it, otherwise just send deleted
-                        match state.db.get_todo(id).await {
+                        match ctx.db.get_todo(id).await {
                             Ok(Some(todo)) => {
-                                let _ = state.tx.send(TodoWsMessage::TodoUpdated { todo });
+                                let _ = ctx.todo_tx.send(TodoWsMessage::TodoUpdated { todo });
                             }
                             _ => {
-                                let _ = state.tx.send(TodoWsMessage::TodoDeleted { id });
+                                let _ = ctx.todo_tx.send(TodoWsMessage::TodoDeleted { id });
                             }
                         }
                     }
@@ -255,10 +217,10 @@ async fn handle_client_action(text: &str, state: &TodoState) -> Option<TodoWsMes
             }
 
             TodoAction::Delete { id } => {
-                match state.db.delete_todo(id).await {
+                match ctx.db.delete_todo(id).await {
                     Ok(true) => {
                         info!(id = %id, "Todo deleted via WS");
-                        let _ = state.tx.send(TodoWsMessage::TodoDeleted { id });
+                        let _ = ctx.todo_tx.send(TodoWsMessage::TodoDeleted { id });
                     }
                     Ok(false) => {
                         warn!(id = %id, "Delete failed — todo not found");
@@ -277,7 +239,7 @@ async fn handle_client_action(text: &str, state: &TodoState) -> Option<TodoWsMes
                 due_date,
                 context,
             } => {
-                match state.db.get_todo(id).await {
+                match ctx.db.get_todo(id).await {
                     Ok(Some(mut todo)) => {
                         if let Some(t) = title { todo.title = t; }
                         if let Some(d) = description { todo.description = Some(d); }
@@ -287,10 +249,10 @@ async fn handle_client_action(text: &str, state: &TodoState) -> Option<TodoWsMes
                         if let Some(ctx) = context { todo.context = Some(ctx); }
                         todo.updated_at = chrono::Utc::now();
 
-                        match state.db.update_todo(&todo).await {
+                        match ctx.db.update_todo(&todo).await {
                             Ok(()) => {
                                 info!(id = %id, "Todo updated via WS");
-                                let _ = state.tx.send(TodoWsMessage::TodoUpdated { todo });
+                                let _ = ctx.todo_tx.send(TodoWsMessage::TodoUpdated { todo });
                             }
                             Err(e) => warn!(id = %id, error = %e, "Failed to update todo"),
                         }
@@ -320,7 +282,7 @@ async fn handle_client_action(text: &str, state: &TodoState) -> Option<TodoWsMes
                     subtask = subtask.with_description(desc);
                 }
 
-                match state.db.create_todo(&subtask).await {
+                match ctx.db.create_todo(&subtask).await {
                     Ok(()) => {
                         info!(
                             id = %subtask.id,
@@ -336,16 +298,16 @@ async fn handle_client_action(text: &str, state: &TodoState) -> Option<TodoWsMes
             }
 
             TodoAction::Snooze { id, until } => {
-                match state.db.get_todo(id).await {
+                match ctx.db.get_todo(id).await {
                     Ok(Some(mut todo)) => {
                         todo.status = TodoStatus::Snoozed;
                         todo.snoozed_until = Some(until);
                         todo.updated_at = chrono::Utc::now();
 
-                        match state.db.update_todo(&todo).await {
+                        match ctx.db.update_todo(&todo).await {
                             Ok(()) => {
                                 info!(id = %id, until = %until, "Todo snoozed via WS");
-                                let _ = state.tx.send(TodoWsMessage::TodoUpdated { todo });
+                                let _ = ctx.todo_tx.send(TodoWsMessage::TodoUpdated { todo });
                             }
                             Err(e) => warn!(id = %id, error = %e, "Failed to snooze todo"),
                         }
@@ -358,7 +320,7 @@ async fn handle_client_action(text: &str, state: &TodoState) -> Option<TodoWsMes
 
             TodoAction::Search { query, limit } => {
                 let limit = limit.min(100); // Cap at 100
-                match state.db.search_todos("default", &query, limit).await {
+                match ctx.db.search_todos("default", &query, limit).await {
                     Ok(results) => {
                         debug!(query = %query, count = results.len(), "Todo search");
                         Some(TodoWsMessage::SearchResults { query, results })
@@ -384,7 +346,7 @@ async fn handle_client_action(text: &str, state: &TodoState) -> Option<TodoWsMes
 
 /// GET /api/todos/{id} — returns the todo and, if completed, its documents.
 async fn get_todo_detail(
-    State(state): State<TodoState>,
+    State(ctx): State<Arc<AppContext>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
     let todo_id = match Uuid::parse_str(&id) {
@@ -398,13 +360,13 @@ async fn get_todo_detail(
         }
     };
 
-    match state.db.get_todo(todo_id).await {
+    match ctx.db.get_todo(todo_id).await {
         Ok(Some(todo)) => {
             let is_completed = todo.status == TodoStatus::Completed
                 || todo.status == TodoStatus::ReadyForReview;
 
             let documents = if is_completed {
-                state.db.list_documents_by_todo(todo_id).await.unwrap_or_default()
+                ctx.db.list_documents_by_todo(todo_id).await.unwrap_or_default()
             } else {
                 vec![]
             };
@@ -432,7 +394,7 @@ async fn get_todo_detail(
 
 /// GET /api/todos/{id}/deliverables — returns documents and messages linked to a todo.
 async fn get_todo_deliverables(
-    State(state): State<TodoState>,
+    State(ctx): State<Arc<AppContext>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
     let todo_id = match Uuid::parse_str(&id) {
@@ -446,7 +408,7 @@ async fn get_todo_deliverables(
         }
     };
 
-    let documents = match state.db.list_documents_by_todo(todo_id).await {
+    let documents = match ctx.db.list_documents_by_todo(todo_id).await {
         Ok(docs) => docs,
         Err(e) => {
             return (
@@ -457,7 +419,7 @@ async fn get_todo_deliverables(
         }
     };
 
-    let messages = match state.db.get_cards_by_todo(todo_id).await {
+    let messages = match ctx.db.get_cards_by_todo(todo_id).await {
         Ok(cards) => cards,
         Err(e) => {
             return (
@@ -507,7 +469,7 @@ fn default_todo_type() -> TodoType {
 
 /// Create a test todo via REST (no WebSocket needed).
 async fn create_test_todo(
-    State(state): State<TodoState>,
+    State(ctx): State<Arc<AppContext>>,
     Json(body): Json<TestTodoRequest>,
 ) -> impl IntoResponse {
     let bucket = body.bucket.unwrap_or(TodoBucket::HumanOnly);
@@ -537,25 +499,23 @@ async fn create_test_todo(
 
     let todo_id = todo.id;
     let is_agent_startable = todo.bucket == TodoBucket::AgentStartable;
-    match state.db.create_todo(&todo).await {
+    match ctx.db.create_todo(&todo).await {
         Ok(()) => {
             info!(id = %todo_id, title = %todo.title, "Test todo created via REST");
             let todo_desc = todo.description.clone();
             let todo_title = todo.title.clone();
-            let _ = state.tx.send(TodoWsMessage::TodoCreated { todo });
+            let _ = ctx.todo_tx.send(TodoWsMessage::TodoCreated { todo });
 
             // Create approval card for agent-startable todos
             if is_agent_startable {
-                if let Some(cq) = &state.card_queue {
-                    let card = ApprovalCard::new_action(
-                        format!("Do you want me to start on {}?", todo_title),
-                        todo_desc,
-                        CardSilo::Todos,
-                        60,
-                    )
-                    .with_todo_id(todo_id);
-                    cq.push(card).await;
-                }
+                let card = ApprovalCard::new_action(
+                    format!("Do you want me to start on {}?", todo_title),
+                    todo_desc,
+                    CardSilo::Todos,
+                    60,
+                )
+                .with_todo_id(todo_id);
+                ctx.card_queue.push(card).await;
             }
 
             (

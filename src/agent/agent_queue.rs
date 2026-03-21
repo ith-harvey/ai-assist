@@ -14,7 +14,8 @@ use tokio::sync::{Mutex, Semaphore, mpsc};
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
-use crate::agent::todo_agent::{TodoAgentDeps, spawn_todo_agent};
+use crate::agent::todo_agent::spawn_todo_agent;
+use crate::context::AppContext;
 use crate::todos::model::{TodoBucket, TodoStatus, TodoWsMessage};
 
 /// Central orchestrator for todo agent concurrency and dispatch.
@@ -27,14 +28,14 @@ pub struct AgentQueue {
     semaphore: Arc<Semaphore>,
     max_concurrency: usize,
     tx: mpsc::UnboundedSender<Uuid>,
-    deps: TodoAgentDeps,
+    ctx: Arc<AppContext>,
     /// Override content for follow-up agents (keyed by todo_id).
     followup_context: Mutex<HashMap<Uuid, String>>,
 }
 
 impl AgentQueue {
     /// Create a new AgentQueue and spawn the dispatch loop.
-    pub fn new(max_concurrency: usize, deps: TodoAgentDeps) -> Arc<Self> {
+    pub fn new(max_concurrency: usize, ctx: Arc<AppContext>) -> Arc<Self> {
         let semaphore = Arc::new(Semaphore::new(max_concurrency));
         let (tx, rx) = mpsc::unbounded_channel();
 
@@ -42,7 +43,7 @@ impl AgentQueue {
             semaphore,
             max_concurrency,
             tx,
-            deps,
+            ctx,
             followup_context: Mutex::new(HashMap::new()),
         });
 
@@ -74,13 +75,13 @@ impl AgentQueue {
     /// The dispatch loop will pick it up when a semaphore permit is available.
     pub async fn enqueue(&self, todo_id: Uuid) -> Result<(), String> {
         // Update DB status
-        if let Err(e) = self.deps.db.update_todo_status(todo_id, TodoStatus::AgentQueued).await {
+        if let Err(e) = self.ctx.db.update_todo_status(todo_id, TodoStatus::AgentQueued).await {
             return Err(format!("Failed to set AgentQueued: {e}"));
         }
 
         // Broadcast update to iOS
-        if let Ok(Some(updated)) = self.deps.db.get_todo(todo_id).await {
-            let _ = self.deps.todo_tx.send(TodoWsMessage::TodoUpdated { todo: updated });
+        if let Ok(Some(updated)) = self.ctx.db.get_todo(todo_id).await {
+            let _ = self.ctx.todo_tx.send(TodoWsMessage::TodoUpdated { todo: updated });
         }
 
         // Send into dispatch channel
@@ -106,8 +107,8 @@ impl AgentQueue {
     /// - Resets `AgentWorking` → `AgentQueued` (no agents survive restart)
     /// - Enqueues all `AgentQueued` todos into the dispatch channel
     pub async fn recover(&self) {
-        let db = &self.deps.db;
-        let todo_tx = &self.deps.todo_tx;
+        let db = &self.ctx.db;
+        let todo_tx = &self.ctx.todo_tx;
 
         // Reset stale AgentWorking todos
         if let Ok(working) = db.list_todos_by_status("default", TodoStatus::AgentWorking).await {
@@ -146,8 +147,8 @@ impl AgentQueue {
     /// Lightweight check intended to run frequently (e.g. every 30s) so that
     /// newly-seeded todos are picked up promptly.
     pub async fn scan_startable(&self) {
-        let db = &self.deps.db;
-        let todo_tx = &self.deps.todo_tx;
+        let db = &self.ctx.db;
+        let todo_tx = &self.ctx.todo_tx;
 
         if let Ok(created) = db.list_todos_by_status("default", TodoStatus::Created).await {
             let eligible: Vec<_> = created
@@ -177,8 +178,8 @@ impl AgentQueue {
     /// If a Drafting todo hasn't been updated in 5 minutes, the enrichment interview
     /// is assumed abandoned. Auto-finalize by setting defaults and transitioning to Created.
     pub async fn scan_stale_drafts(&self) {
-        let db = &self.deps.db;
-        let todo_tx = &self.deps.todo_tx;
+        let db = &self.ctx.db;
+        let todo_tx = &self.ctx.todo_tx;
         let stale_threshold = chrono::Duration::minutes(5);
         let now = chrono::Utc::now();
 
@@ -208,7 +209,7 @@ impl AgentQueue {
 
     /// Broadcast current agent status to iOS.
     fn broadcast_status(&self) {
-        let _ = self.deps.todo_tx.send(TodoWsMessage::AgentStatus {
+        let _ = self.ctx.todo_tx.send(TodoWsMessage::AgentStatus {
             active_count: self.active_count(),
             max_count: self.max_concurrency,
         });
@@ -229,7 +230,7 @@ impl AgentQueue {
             };
 
             // Verify todo is still eligible (may have been deleted or status changed)
-            let todo = match queue.deps.db.get_todo(todo_id).await {
+            let todo = match queue.ctx.db.get_todo(todo_id).await {
                 Ok(Some(t)) if t.status == TodoStatus::AgentQueued => t,
                 Ok(Some(t)) => {
                     debug!(
@@ -253,15 +254,15 @@ impl AgentQueue {
             };
 
             // Transition to AgentWorking
-            if let Err(e) = queue.deps.db.update_todo_status(todo_id, TodoStatus::AgentWorking).await {
+            if let Err(e) = queue.ctx.db.update_todo_status(todo_id, TodoStatus::AgentWorking).await {
                 warn!(todo_id = %todo_id, error = %e, "Failed to set AgentWorking");
                 drop(permit);
                 continue;
             }
 
             // Broadcast status update
-            if let Ok(Some(updated)) = queue.deps.db.get_todo(todo_id).await {
-                let _ = queue.deps.todo_tx.send(TodoWsMessage::TodoUpdated { todo: updated });
+            if let Ok(Some(updated)) = queue.ctx.db.get_todo(todo_id).await {
+                let _ = queue.ctx.todo_tx.send(TodoWsMessage::TodoUpdated { todo: updated });
             }
             queue.broadcast_status();
 
@@ -270,7 +271,7 @@ impl AgentQueue {
 
             // Spawn the agent with the permit
             let semaphore = Arc::clone(&queue.semaphore);
-            match spawn_todo_agent(&todo, &queue.deps, permit, semaphore, override_content).await {
+            match spawn_todo_agent(&todo, &queue.ctx, permit, semaphore, override_content).await {
                 Ok(handle) => {
                     info!(todo_id = %todo_id, "Agent dispatched");
                     // The permit is now inside the TodoChannel — RAII handles cleanup.
@@ -284,7 +285,7 @@ impl AgentQueue {
                 Err(e) => {
                     warn!(todo_id = %todo_id, error = %e, "Failed to spawn agent");
                     // Reset status so it can be retried
-                    let _ = queue.deps.db.update_todo_status(todo_id, TodoStatus::AgentQueued).await;
+                    let _ = queue.ctx.db.update_todo_status(todo_id, TodoStatus::AgentQueued).await;
                     // permit is dropped here — slot freed
                 }
             }

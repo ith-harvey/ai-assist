@@ -17,9 +17,11 @@ use async_trait::async_trait;
 use rust_decimal::Decimal;
 
 use ai_assist::cards::reply_drafter::{GeneratorConfig, ReplyDrafter};
+use ai_assist::cards::choice_registry::ChoiceRegistry;
 use ai_assist::cards::model::{ApprovalCard, CardAction, CardSilo};
 use ai_assist::cards::queue::CardQueue;
 use ai_assist::cards::ws::card_routes;
+use ai_assist::context::AppContext;
 use ai_assist::error::LlmError;
 use ai_assist::llm::provider::{
     CompletionRequest, CompletionResponse, FinishReason, LlmProvider, ToolCompletionRequest,
@@ -59,32 +61,32 @@ impl LlmProvider for StubLlm {
     }
 }
 
-/// Start an Axum server on a random port, return (port, queue, registry).
-async fn start_server() -> (u16, Arc<CardQueue>, TodoApprovalRegistry) {
-    let queue = CardQueue::new();
-    let registry = TodoApprovalRegistry::new();
+/// Start an Axum server on a random port, return (port, ctx).
+async fn start_server() -> (u16, Arc<AppContext>) {
     let llm: Arc<dyn LlmProvider> = Arc::new(StubLlm);
-    let reply_drafter = Arc::new(ReplyDrafter::new(
-        llm,
-        GeneratorConfig::default(),
-    ));
-    let activity_channels = Arc::new(ActivityChannelMap::new());
-    let choice_registry = ai_assist::cards::choice_registry::ChoiceRegistry::new();
     let db: Arc<dyn ai_assist::store::Database> = Arc::new(
         ai_assist::store::LibSqlBackend::new_memory().await.unwrap()
     );
     let (todo_tx, _todo_rx) = tokio::sync::broadcast::channel::<ai_assist::todos::model::TodoWsMessage>(16);
-    let app = card_routes(
-        Arc::clone(&queue),
-        None,
-        reply_drafter,
-        registry.clone(),
-        activity_channels,
-        choice_registry,
+
+    let ctx = Arc::new(AppContext {
         db,
+        llm: llm.clone(),
+        safety: Arc::new(ai_assist::safety::SafetyLayer::new()),
+        tools: Arc::new(ai_assist::tools::registry::ToolRegistry::new()),
+        workspace: Arc::new(ai_assist::workspace::Workspace::new(std::path::PathBuf::from("/tmp/test-workspace"))),
         todo_tx,
-        None,
-    );
+        activity_channels: Arc::new(ActivityChannelMap::new()),
+        card_queue: CardQueue::new(),
+        approval_registry: TodoApprovalRegistry::new(),
+        choice_registry: ChoiceRegistry::new(),
+        email_config: None,
+        reply_drafter: Arc::new(ReplyDrafter::new(llm, GeneratorConfig::default())),
+        oauth_config: None,
+        agent_queue: std::sync::OnceLock::new(),
+    });
+
+    let app = card_routes(Arc::clone(&ctx));
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
@@ -96,7 +98,7 @@ async fn start_server() -> (u16, Arc<CardQueue>, TodoApprovalRegistry) {
     // Give the server a moment to start accepting connections.
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    (port, queue, registry)
+    (port, ctx)
 }
 
 /// Helper: create a test Reply card.
@@ -169,7 +171,7 @@ async fn next_silo_counts(
 #[tokio::test]
 async fn ws_connect_receives_empty_sync() {
     timeout(TEST_TIMEOUT, async {
-        let (port, _queue, _reg) = start_server().await;
+        let (port, ctx) = start_server().await;
 
         let (mut ws, _resp) = connect_async(format!("ws://127.0.0.1:{port}/ws"))
             .await
@@ -189,12 +191,12 @@ async fn ws_connect_receives_empty_sync() {
 #[tokio::test]
 async fn ws_connect_receives_pending_cards_on_sync() {
     timeout(TEST_TIMEOUT, async {
-        let (port, queue, _reg) = start_server().await;
+        let (port, ctx) = start_server().await;
 
         // Push a card before any WS client connects.
         let card = make_card("hey back!");
         let card_id = card.id;
-        queue.push(card).await;
+        ctx.card_queue.push(card).await;
 
         let (mut ws, _) = connect_async(format!("ws://127.0.0.1:{port}/ws"))
             .await
@@ -216,7 +218,7 @@ async fn ws_connect_receives_pending_cards_on_sync() {
 #[tokio::test]
 async fn ws_receives_new_card_broadcast() {
     timeout(TEST_TIMEOUT, async {
-        let (port, queue, _reg) = start_server().await;
+        let (port, ctx) = start_server().await;
 
         let (mut ws, _) = connect_async(format!("ws://127.0.0.1:{port}/ws"))
             .await
@@ -228,7 +230,7 @@ async fn ws_receives_new_card_broadcast() {
         // Push a card after connect — client should receive a new_card event.
         let card = make_card("nice to meet you");
         let card_id = card.id;
-        queue.push(card).await;
+        ctx.card_queue.push(card).await;
 
         let json = next_skipping_silo_counts(&mut ws).await;
         assert_eq!(json["type"], "new_card");
@@ -245,11 +247,11 @@ async fn ws_receives_new_card_broadcast() {
 #[tokio::test]
 async fn ws_approve_card_via_action() {
     timeout(TEST_TIMEOUT, async {
-        let (port, queue, _reg) = start_server().await;
+        let (port, ctx) = start_server().await;
 
         let card = make_card("sounds good");
         let card_id = card.id;
-        queue.push(card).await;
+        ctx.card_queue.push(card).await;
 
         let (mut ws, _) = connect_async(format!("ws://127.0.0.1:{port}/ws"))
             .await
@@ -270,7 +272,7 @@ async fn ws_approve_card_via_action() {
         assert_eq!(json["status"], "approved");
 
         // Pending list should now be empty.
-        let pending = queue.pending().await;
+        let pending = ctx.card_queue.pending().await;
         assert!(pending.is_empty());
     })
     .await
@@ -280,11 +282,11 @@ async fn ws_approve_card_via_action() {
 #[tokio::test]
 async fn ws_dismiss_card_via_action() {
     timeout(TEST_TIMEOUT, async {
-        let (port, queue, _reg) = start_server().await;
+        let (port, ctx) = start_server().await;
 
         let card = make_card("see ya");
         let card_id = card.id;
-        queue.push(card).await;
+        ctx.card_queue.push(card).await;
 
         let (mut ws, _) = connect_async(format!("ws://127.0.0.1:{port}/ws"))
             .await
@@ -305,7 +307,7 @@ async fn ws_dismiss_card_via_action() {
         assert_eq!(json["status"], "dismissed");
 
         // Queue should have no pending cards.
-        let pending = queue.pending().await;
+        let pending = ctx.card_queue.pending().await;
         assert!(pending.is_empty());
     })
     .await
@@ -315,11 +317,11 @@ async fn ws_dismiss_card_via_action() {
 #[tokio::test]
 async fn ws_edit_card_via_action() {
     timeout(TEST_TIMEOUT, async {
-        let (port, queue, _reg) = start_server().await;
+        let (port, ctx) = start_server().await;
 
         let card = make_card("original reply");
         let card_id = card.id;
-        queue.push(card).await;
+        ctx.card_queue.push(card).await;
 
         let (mut ws, _) = connect_async(format!("ws://127.0.0.1:{port}/ws"))
             .await
@@ -343,7 +345,7 @@ async fn ws_edit_card_via_action() {
         assert_eq!(json["status"], "approved");
 
         // Queue pending should be empty (card is now approved).
-        assert!(queue.pending().await.is_empty());
+        assert!(ctx.card_queue.pending().await.is_empty());
     })
     .await
     .expect("test timed out");
@@ -354,7 +356,7 @@ async fn ws_edit_card_via_action() {
 #[tokio::test]
 async fn ws_receives_silo_counts_on_push() {
     timeout(TEST_TIMEOUT, async {
-        let (port, queue, _reg) = start_server().await;
+        let (port, ctx) = start_server().await;
 
         let (mut ws, _) = connect_async(format!("ws://127.0.0.1:{port}/ws"))
             .await
@@ -364,7 +366,7 @@ async fn ws_receives_silo_counts_on_push() {
         let _ = ws.next().await.unwrap().unwrap();
 
         // Push a Reply card (Messages silo).
-        queue.push(make_card("test")).await;
+        ctx.card_queue.push(make_card("test")).await;
 
         // We should get a silo_counts broadcast (may arrive before or after new_card).
         let json = next_silo_counts(&mut ws).await;
@@ -380,11 +382,11 @@ async fn ws_receives_silo_counts_on_push() {
 #[tokio::test]
 async fn ws_silo_counts_decrements_on_approve() {
     timeout(TEST_TIMEOUT, async {
-        let (port, queue, _reg) = start_server().await;
+        let (port, ctx) = start_server().await;
 
         let card = make_card("test");
         let card_id = card.id;
-        queue.push(card).await;
+        ctx.card_queue.push(card).await;
 
         let (mut ws, _) = connect_async(format!("ws://127.0.0.1:{port}/ws"))
             .await
@@ -410,7 +412,7 @@ async fn ws_silo_counts_decrements_on_approve() {
 #[tokio::test]
 async fn ws_silo_counts_tracks_multiple_silos() {
     timeout(TEST_TIMEOUT, async {
-        let (port, queue, _reg) = start_server().await;
+        let (port, ctx) = start_server().await;
 
         let (mut ws, _) = connect_async(format!("ws://127.0.0.1:{port}/ws"))
             .await
@@ -420,8 +422,8 @@ async fn ws_silo_counts_tracks_multiple_silos() {
         let _ = ws.next().await.unwrap().unwrap();
 
         // Push a Reply (Messages) and an Action (Todos).
-        queue.push(make_card("msg")).await;
-        queue.push(make_action_card("do thing")).await;
+        ctx.card_queue.push(make_card("msg")).await;
+        ctx.card_queue.push(make_action_card("do thing")).await;
 
         // Drain until we get a silo_counts with both silos populated.
         // The second push's silo_counts will have both.
@@ -447,11 +449,11 @@ async fn ws_silo_counts_tracks_multiple_silos() {
 #[tokio::test]
 async fn ws_approve_action_card() {
     timeout(TEST_TIMEOUT, async {
-        let (port, queue, _reg) = start_server().await;
+        let (port, ctx) = start_server().await;
 
         let card = make_action_card("run deploy");
         let card_id = card.id;
-        queue.push(card).await;
+        ctx.card_queue.push(card).await;
 
         let (mut ws, _) = connect_async(format!("ws://127.0.0.1:{port}/ws"))
             .await
@@ -476,11 +478,11 @@ async fn ws_approve_action_card() {
 #[tokio::test]
 async fn ws_dismiss_action_card() {
     timeout(TEST_TIMEOUT, async {
-        let (port, queue, _reg) = start_server().await;
+        let (port, ctx) = start_server().await;
 
         let card = make_action_card("dangerous op");
         let card_id = card.id;
-        queue.push(card).await;
+        ctx.card_queue.push(card).await;
 
         let (mut ws, _) = connect_async(format!("ws://127.0.0.1:{port}/ws"))
             .await
@@ -496,7 +498,7 @@ async fn ws_dismiss_action_card() {
         let json = next_skipping_silo_counts(&mut ws).await;
         assert_eq!(json["type"], "card_update");
         assert_eq!(json["status"], "dismissed");
-        assert!(queue.pending().await.is_empty());
+        assert!(ctx.card_queue.pending().await.is_empty());
     })
     .await
     .expect("test timed out");
@@ -507,11 +509,11 @@ async fn ws_dismiss_action_card() {
 #[tokio::test]
 async fn ws_approve_compose_card() {
     timeout(TEST_TIMEOUT, async {
-        let (port, queue, _reg) = start_server().await;
+        let (port, ctx) = start_server().await;
 
         let card = make_compose_card();
         let card_id = card.id;
-        queue.push(card).await;
+        ctx.card_queue.push(card).await;
 
         let (mut ws, _) = connect_async(format!("ws://127.0.0.1:{port}/ws"))
             .await
@@ -535,11 +537,11 @@ async fn ws_approve_compose_card() {
 #[tokio::test]
 async fn ws_dismiss_compose_card() {
     timeout(TEST_TIMEOUT, async {
-        let (port, queue, _reg) = start_server().await;
+        let (port, ctx) = start_server().await;
 
         let card = make_compose_card();
         let card_id = card.id;
-        queue.push(card).await;
+        ctx.card_queue.push(card).await;
 
         let (mut ws, _) = connect_async(format!("ws://127.0.0.1:{port}/ws"))
             .await
@@ -565,11 +567,11 @@ async fn ws_dismiss_compose_card() {
 #[tokio::test]
 async fn ws_approve_decision_card() {
     timeout(TEST_TIMEOUT, async {
-        let (port, queue, _reg) = start_server().await;
+        let (port, ctx) = start_server().await;
 
         let card = make_decision_card();
         let card_id = card.id;
-        queue.push(card).await;
+        ctx.card_queue.push(card).await;
 
         let (mut ws, _) = connect_async(format!("ws://127.0.0.1:{port}/ws"))
             .await
@@ -593,11 +595,11 @@ async fn ws_approve_decision_card() {
 #[tokio::test]
 async fn ws_dismiss_decision_card() {
     timeout(TEST_TIMEOUT, async {
-        let (port, queue, _reg) = start_server().await;
+        let (port, ctx) = start_server().await;
 
         let card = make_decision_card();
         let card_id = card.id;
-        queue.push(card).await;
+        ctx.card_queue.push(card).await;
 
         let (mut ws, _) = connect_async(format!("ws://127.0.0.1:{port}/ws"))
             .await
@@ -623,7 +625,7 @@ async fn ws_dismiss_decision_card() {
 #[tokio::test]
 async fn rest_health_endpoint() {
     timeout(TEST_TIMEOUT, async {
-        let (port, _queue, _reg) = start_server().await;
+        let (port, ctx) = start_server().await;
 
         let resp = reqwest::get(format!("http://127.0.0.1:{port}/health"))
             .await
@@ -641,7 +643,7 @@ async fn rest_health_endpoint() {
 #[tokio::test]
 async fn rest_list_cards_empty() {
     timeout(TEST_TIMEOUT, async {
-        let (port, _queue, _reg) = start_server().await;
+        let (port, ctx) = start_server().await;
 
         let resp = reqwest::get(format!("http://127.0.0.1:{port}/api/cards"))
             .await
@@ -658,11 +660,11 @@ async fn rest_list_cards_empty() {
 #[tokio::test]
 async fn rest_list_cards_returns_pending() {
     timeout(TEST_TIMEOUT, async {
-        let (port, queue, _reg) = start_server().await;
+        let (port, ctx) = start_server().await;
 
         let card = make_card("test reply");
         let card_id = card.id;
-        queue.push(card).await;
+        ctx.card_queue.push(card).await;
 
         let resp = reqwest::get(format!("http://127.0.0.1:{port}/api/cards"))
             .await
@@ -680,11 +682,11 @@ async fn rest_list_cards_returns_pending() {
 #[tokio::test]
 async fn rest_approve_card() {
     timeout(TEST_TIMEOUT, async {
-        let (port, queue, _reg) = start_server().await;
+        let (port, ctx) = start_server().await;
 
         let card = make_card("yes!");
         let card_id = card.id;
-        queue.push(card).await;
+        ctx.card_queue.push(card).await;
 
         let client = reqwest::Client::new();
         let resp = client
@@ -700,7 +702,7 @@ async fn rest_approve_card() {
         assert_eq!(body["status"], "approved");
 
         // Card should no longer be pending.
-        assert!(queue.pending().await.is_empty());
+        assert!(ctx.card_queue.pending().await.is_empty());
     })
     .await
     .expect("test timed out");
@@ -709,11 +711,11 @@ async fn rest_approve_card() {
 #[tokio::test]
 async fn rest_dismiss_card() {
     timeout(TEST_TIMEOUT, async {
-        let (port, queue, _reg) = start_server().await;
+        let (port, ctx) = start_server().await;
 
         let card = make_card("nah");
         let card_id = card.id;
-        queue.push(card).await;
+        ctx.card_queue.push(card).await;
 
         let client = reqwest::Client::new();
         let resp = client
@@ -728,7 +730,7 @@ async fn rest_dismiss_card() {
         let body: Value = resp.json().await.unwrap();
         assert_eq!(body["status"], "dismissed");
 
-        assert!(queue.pending().await.is_empty());
+        assert!(ctx.card_queue.pending().await.is_empty());
     })
     .await
     .expect("test timed out");
@@ -737,11 +739,11 @@ async fn rest_dismiss_card() {
 #[tokio::test]
 async fn rest_edit_card() {
     timeout(TEST_TIMEOUT, async {
-        let (port, queue, _reg) = start_server().await;
+        let (port, ctx) = start_server().await;
 
         let card = make_card("original");
         let card_id = card.id;
-        queue.push(card).await;
+        ctx.card_queue.push(card).await;
 
         let client = reqwest::Client::new();
         let resp = client
@@ -763,7 +765,7 @@ async fn rest_edit_card() {
 #[tokio::test]
 async fn rest_approve_nonexistent_card_returns_404() {
     timeout(TEST_TIMEOUT, async {
-        let (port, _queue, _reg) = start_server().await;
+        let (port, ctx) = start_server().await;
 
         let fake_id = uuid::Uuid::new_v4();
         let client = reqwest::Client::new();
@@ -783,7 +785,7 @@ async fn rest_approve_nonexistent_card_returns_404() {
 #[tokio::test]
 async fn rest_invalid_card_id_returns_400() {
     timeout(TEST_TIMEOUT, async {
-        let (port, _queue, _reg) = start_server().await;
+        let (port, ctx) = start_server().await;
 
         let client = reqwest::Client::new();
         let resp = client
@@ -804,11 +806,11 @@ async fn rest_invalid_card_id_returns_400() {
 #[tokio::test]
 async fn rest_approve_action_card() {
     timeout(TEST_TIMEOUT, async {
-        let (port, queue, _reg) = start_server().await;
+        let (port, ctx) = start_server().await;
 
         let card = make_action_card("deploy v2");
         let card_id = card.id;
-        queue.push(card).await;
+        ctx.card_queue.push(card).await;
 
         let client = reqwest::Client::new();
         let resp = client
@@ -823,7 +825,7 @@ async fn rest_approve_action_card() {
         let body: Value = resp.json().await.unwrap();
         assert_eq!(body["status"], "approved");
         assert_eq!(body["card_type"], "action");
-        assert!(queue.pending().await.is_empty());
+        assert!(ctx.card_queue.pending().await.is_empty());
     })
     .await
     .expect("test timed out");
@@ -832,11 +834,11 @@ async fn rest_approve_action_card() {
 #[tokio::test]
 async fn rest_dismiss_action_card() {
     timeout(TEST_TIMEOUT, async {
-        let (port, queue, _reg) = start_server().await;
+        let (port, ctx) = start_server().await;
 
         let card = make_action_card("dangerous op");
         let card_id = card.id;
-        queue.push(card).await;
+        ctx.card_queue.push(card).await;
 
         let client = reqwest::Client::new();
         let resp = client
@@ -847,7 +849,7 @@ async fn rest_dismiss_action_card() {
             .await
             .unwrap();
         assert_eq!(resp.status(), 200);
-        assert!(queue.pending().await.is_empty());
+        assert!(ctx.card_queue.pending().await.is_empty());
     })
     .await
     .expect("test timed out");
@@ -858,11 +860,11 @@ async fn rest_dismiss_action_card() {
 #[tokio::test]
 async fn rest_approve_compose_card() {
     timeout(TEST_TIMEOUT, async {
-        let (port, queue, _reg) = start_server().await;
+        let (port, ctx) = start_server().await;
 
         let card = make_compose_card();
         let card_id = card.id;
-        queue.push(card).await;
+        ctx.card_queue.push(card).await;
 
         let client = reqwest::Client::new();
         let resp = client
@@ -873,7 +875,7 @@ async fn rest_approve_compose_card() {
             .await
             .unwrap();
         assert_eq!(resp.status(), 200);
-        assert!(queue.pending().await.is_empty());
+        assert!(ctx.card_queue.pending().await.is_empty());
     })
     .await
     .expect("test timed out");
@@ -884,11 +886,11 @@ async fn rest_approve_compose_card() {
 #[tokio::test]
 async fn rest_approve_decision_card() {
     timeout(TEST_TIMEOUT, async {
-        let (port, queue, _reg) = start_server().await;
+        let (port, ctx) = start_server().await;
 
         let card = make_decision_card();
         let card_id = card.id;
-        queue.push(card).await;
+        ctx.card_queue.push(card).await;
 
         let client = reqwest::Client::new();
         let resp = client
@@ -899,7 +901,7 @@ async fn rest_approve_decision_card() {
             .await
             .unwrap();
         assert_eq!(resp.status(), 200);
-        assert!(queue.pending().await.is_empty());
+        assert!(ctx.card_queue.pending().await.is_empty());
     })
     .await
     .expect("test timed out");
@@ -908,11 +910,11 @@ async fn rest_approve_decision_card() {
 #[tokio::test]
 async fn rest_dismiss_decision_card() {
     timeout(TEST_TIMEOUT, async {
-        let (port, queue, _reg) = start_server().await;
+        let (port, ctx) = start_server().await;
 
         let card = make_decision_card();
         let card_id = card.id;
-        queue.push(card).await;
+        ctx.card_queue.push(card).await;
 
         let client = reqwest::Client::new();
         let resp = client
@@ -923,7 +925,7 @@ async fn rest_dismiss_decision_card() {
             .await
             .unwrap();
         assert_eq!(resp.status(), 200);
-        assert!(queue.pending().await.is_empty());
+        assert!(ctx.card_queue.pending().await.is_empty());
     })
     .await
     .expect("test timed out");
@@ -934,11 +936,11 @@ async fn rest_dismiss_decision_card() {
 #[tokio::test]
 async fn rest_dismiss_already_approved_returns_404() {
     timeout(TEST_TIMEOUT, async {
-        let (port, queue, _reg) = start_server().await;
+        let (port, ctx) = start_server().await;
 
         let card = make_card("test");
         let card_id = card.id;
-        queue.push(card).await;
+        ctx.card_queue.push(card).await;
 
         let client = reqwest::Client::new();
 
@@ -969,11 +971,11 @@ async fn rest_dismiss_already_approved_returns_404() {
 #[tokio::test]
 async fn rest_approve_twice_returns_404_second_time() {
     timeout(TEST_TIMEOUT, async {
-        let (port, queue, _reg) = start_server().await;
+        let (port, ctx) = start_server().await;
 
         let card = make_card("test");
         let card_id = card.id;
-        queue.push(card).await;
+        ctx.card_queue.push(card).await;
 
         let client = reqwest::Client::new();
 
@@ -1003,11 +1005,11 @@ async fn rest_approve_twice_returns_404_second_time() {
 #[tokio::test]
 async fn rest_edit_already_dismissed_returns_404() {
     timeout(TEST_TIMEOUT, async {
-        let (port, queue, _reg) = start_server().await;
+        let (port, ctx) = start_server().await;
 
         let card = make_card("test");
         let card_id = card.id;
-        queue.push(card).await;
+        ctx.card_queue.push(card).await;
 
         let client = reqwest::Client::new();
 
@@ -1062,12 +1064,12 @@ async fn card_expiry_removes_from_pending() {
 #[tokio::test]
 async fn ws_receives_card_expired_broadcast() {
     timeout(TEST_TIMEOUT, async {
-        let (port, queue, _reg) = start_server().await;
+        let (port, ctx) = start_server().await;
 
         // Create an already-expired card.
         let card = ApprovalCard::new_reply("telegram", "Bob", "hi", "hey", 0.8, "chat_1", 0);
         let card_id = card.id;
-        queue.push(card).await;
+        ctx.card_queue.push(card).await;
 
         let (mut ws, _) = connect_async(format!("ws://127.0.0.1:{port}/ws"))
             .await
@@ -1079,7 +1081,7 @@ async fn ws_receives_card_expired_broadcast() {
         assert_eq!(json["type"], "cards_sync");
 
         // Trigger expiry.
-        queue.expire_old().await;
+        ctx.card_queue.expire_old().await;
 
         // Should receive card_expired event.
         let json = next_skipping_silo_counts(&mut ws).await;
@@ -1132,7 +1134,7 @@ async fn expired_decision_card_not_in_pending() {
 #[tokio::test]
 async fn multiple_ws_clients_receive_broadcasts() {
     timeout(TEST_TIMEOUT, async {
-        let (port, queue, _reg) = start_server().await;
+        let (port, ctx) = start_server().await;
 
         // Connect two clients.
         let (mut ws1, _) = connect_async(format!("ws://127.0.0.1:{port}/ws"))
@@ -1149,7 +1151,7 @@ async fn multiple_ws_clients_receive_broadcasts() {
         // Push a card — both clients should get the new_card event.
         let card = make_card("broadcast test");
         let card_id = card.id;
-        queue.push(card).await;
+        ctx.card_queue.push(card).await;
 
         let json1 = next_skipping_silo_counts(&mut ws1).await;
         assert_eq!(json1["type"], "new_card");
@@ -1168,12 +1170,12 @@ async fn multiple_ws_clients_receive_broadcasts() {
 #[tokio::test]
 async fn cannot_approve_already_dismissed_via_rest() {
     timeout(TEST_TIMEOUT, async {
-        let (port, queue, _reg) = start_server().await;
+        let (port, ctx) = start_server().await;
 
         let card = make_card("dismissed card");
         let card_id = card.id;
-        queue.push(card).await;
-        queue.dismiss(card_id).await;
+        ctx.card_queue.push(card).await;
+        ctx.card_queue.dismiss(card_id).await;
 
         let client = reqwest::Client::new();
         let resp = client
@@ -1194,12 +1196,12 @@ async fn cannot_approve_already_dismissed_via_rest() {
 #[tokio::test]
 async fn rest_list_excludes_approved_cards() {
     timeout(TEST_TIMEOUT, async {
-        let (port, queue, _reg) = start_server().await;
+        let (port, ctx) = start_server().await;
 
         let card = make_card("test");
         let card_id = card.id;
-        queue.push(card).await;
-        queue.approve(card_id).await;
+        ctx.card_queue.push(card).await;
+        ctx.card_queue.approve(card_id).await;
 
         let resp = reqwest::get(format!("http://127.0.0.1:{port}/api/cards"))
             .await
@@ -1214,12 +1216,12 @@ async fn rest_list_excludes_approved_cards() {
 #[tokio::test]
 async fn rest_list_shows_mixed_card_types() {
     timeout(TEST_TIMEOUT, async {
-        let (port, queue, _reg) = start_server().await;
+        let (port, ctx) = start_server().await;
 
-        queue.push(make_card("reply")).await;
-        queue.push(make_action_card("action")).await;
-        queue.push(make_compose_card()).await;
-        queue.push(make_decision_card()).await;
+        ctx.card_queue.push(make_card("reply")).await;
+        ctx.card_queue.push(make_action_card("action")).await;
+        ctx.card_queue.push(make_compose_card()).await;
+        ctx.card_queue.push(make_decision_card()).await;
 
         let resp = reqwest::get(format!("http://127.0.0.1:{port}/api/cards"))
             .await
@@ -1242,7 +1244,7 @@ async fn rest_list_shows_mixed_card_types() {
 #[tokio::test]
 async fn ws_garbage_message_is_ignored() {
     timeout(TEST_TIMEOUT, async {
-        let (port, queue, _reg) = start_server().await;
+        let (port, ctx) = start_server().await;
 
         let (mut ws, _) = connect_async(format!("ws://127.0.0.1:{port}/ws"))
             .await
@@ -1259,7 +1261,7 @@ async fn ws_garbage_message_is_ignored() {
         // Verify the server is still alive by pushing a card.
         let card = make_card("still alive");
         let card_id = card.id;
-        queue.push(card).await;
+        ctx.card_queue.push(card).await;
 
         let json = next_skipping_silo_counts(&mut ws).await;
         assert_eq!(json["type"], "new_card");
@@ -1274,12 +1276,12 @@ async fn ws_garbage_message_is_ignored() {
 #[tokio::test]
 async fn ws_sync_includes_all_pending_card_types() {
     timeout(TEST_TIMEOUT, async {
-        let (port, queue, _reg) = start_server().await;
+        let (port, ctx) = start_server().await;
 
-        queue.push(make_card("reply")).await;
-        queue.push(make_action_card("action")).await;
-        queue.push(make_compose_card()).await;
-        queue.push(make_decision_card()).await;
+        ctx.card_queue.push(make_card("reply")).await;
+        ctx.card_queue.push(make_action_card("action")).await;
+        ctx.card_queue.push(make_compose_card()).await;
+        ctx.card_queue.push(make_decision_card()).await;
 
         let (mut ws, _) = connect_async(format!("ws://127.0.0.1:{port}/ws"))
             .await
@@ -1322,12 +1324,12 @@ async fn no_expiry_action_card_stays_pending() {
 #[tokio::test]
 async fn no_expiry_card_in_ws_sync() {
     timeout(TEST_TIMEOUT, async {
-        let (port, queue, _reg) = start_server().await;
+        let (port, ctx) = start_server().await;
 
         let card = ApprovalCard::new_action("eternal", None, CardSilo::Todos, 0)
             .without_expiry();
         let card_id = card.id;
-        queue.push(card).await;
+        ctx.card_queue.push(card).await;
 
         let (mut ws, _) = connect_async(format!("ws://127.0.0.1:{port}/ws"))
             .await
@@ -1347,12 +1349,12 @@ async fn no_expiry_card_in_ws_sync() {
 #[tokio::test]
 async fn no_expiry_card_approve_via_rest() {
     timeout(TEST_TIMEOUT, async {
-        let (port, queue, _reg) = start_server().await;
+        let (port, ctx) = start_server().await;
 
         let card = ApprovalCard::new_action("approve me", None, CardSilo::Todos, 0)
             .without_expiry();
         let card_id = card.id;
-        queue.push(card).await;
+        ctx.card_queue.push(card).await;
 
         let client = reqwest::Client::new();
         let resp = client
@@ -1363,7 +1365,7 @@ async fn no_expiry_card_approve_via_rest() {
             .await
             .unwrap();
         assert_eq!(resp.status(), 200);
-        assert!(queue.pending().await.is_empty());
+        assert!(ctx.card_queue.pending().await.is_empty());
     })
     .await
     .expect("test timed out");
@@ -1374,11 +1376,11 @@ async fn no_expiry_card_approve_via_rest() {
 #[tokio::test]
 async fn rest_get_card_by_id() {
     timeout(TEST_TIMEOUT, async {
-        let (port, queue, _reg) = start_server().await;
+        let (port, ctx) = start_server().await;
 
         let card = make_card("test reply");
         let card_id = card.id;
-        queue.push(card).await;
+        ctx.card_queue.push(card).await;
 
         let resp = reqwest::get(format!("http://127.0.0.1:{port}/api/cards/{card_id}"))
             .await
@@ -1396,12 +1398,12 @@ async fn rest_get_card_by_id() {
 #[tokio::test]
 async fn rest_get_card_returns_approved() {
     timeout(TEST_TIMEOUT, async {
-        let (port, queue, _reg) = start_server().await;
+        let (port, ctx) = start_server().await;
 
         let card = make_card("approved reply");
         let card_id = card.id;
-        queue.push(card).await;
-        queue.approve(card_id).await;
+        ctx.card_queue.push(card).await;
+        ctx.card_queue.approve(card_id).await;
 
         let resp = reqwest::get(format!("http://127.0.0.1:{port}/api/cards/{card_id}"))
             .await
@@ -1418,7 +1420,7 @@ async fn rest_get_card_returns_approved() {
 #[tokio::test]
 async fn rest_get_card_not_found() {
     timeout(TEST_TIMEOUT, async {
-        let (port, _queue, _reg) = start_server().await;
+        let (port, ctx) = start_server().await;
 
         let fake_id = uuid::Uuid::new_v4();
         let resp = reqwest::get(format!("http://127.0.0.1:{port}/api/cards/{fake_id}"))
@@ -1433,7 +1435,7 @@ async fn rest_get_card_not_found() {
 #[tokio::test]
 async fn rest_get_card_invalid_id() {
     timeout(TEST_TIMEOUT, async {
-        let (port, _queue, _reg) = start_server().await;
+        let (port, ctx) = start_server().await;
 
         let resp = reqwest::get(format!("http://127.0.0.1:{port}/api/cards/not-a-uuid"))
             .await
@@ -1447,13 +1449,13 @@ async fn rest_get_card_invalid_id() {
 #[tokio::test]
 async fn rest_get_action_card_with_todo_id() {
     timeout(TEST_TIMEOUT, async {
-        let (port, queue, _reg) = start_server().await;
+        let (port, ctx) = start_server().await;
 
         let todo_id = uuid::Uuid::new_v4();
         let card = make_action_card("deploy")
             .with_todo_id(todo_id);
         let card_id = card.id;
-        queue.push(card).await;
+        ctx.card_queue.push(card).await;
 
         let resp = reqwest::get(format!("http://127.0.0.1:{port}/api/cards/{card_id}"))
             .await

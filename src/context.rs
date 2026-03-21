@@ -1,9 +1,70 @@
-//! Job context — minimal stub for tool execution.
+//! Job context and centralized application state.
+
+use std::sync::{Arc, OnceLock};
 
 use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
 use serde::Serialize;
+use tokio::sync::broadcast;
 use uuid::Uuid;
+
+use crate::agent::agent_queue::AgentQueue;
+use crate::cards::choice_registry::ChoiceRegistry;
+use crate::cards::queue::CardQueue;
+use crate::cards::reply_drafter::ReplyDrafter;
+use crate::config::GoogleOAuthConfig;
+use crate::llm::LlmProvider;
+use crate::channels::email::EmailConfig;
+use crate::safety::SafetyLayer;
+use crate::store::Database;
+use crate::todos::activity_channel_map::ActivityChannelMap;
+use crate::todos::approval_registry::TodoApprovalRegistry;
+use crate::todos::model::TodoWsMessage;
+use crate::tools::registry::ToolRegistry;
+use crate::workspace::Workspace;
+
+// ── Centralized Application State ──────────────────────────────────────
+
+/// Centralized shared state for the entire server.
+///
+/// Created once in `main.rs` and shared as `Arc<AppContext>` by every
+/// Axum handler, agent, and background task. Replaces the per-subsystem
+/// state structs (`TodoAgentDeps`, `AppState`, `ActivityState`, `TodoState`,
+/// `CalendarState`, `DocumentState`).
+pub struct AppContext {
+    // ── Database ──
+    pub db: Arc<dyn Database>,
+
+    // ── AI / Agent ──
+    pub llm: Arc<dyn LlmProvider>,
+    pub safety: Arc<SafetyLayer>,
+    pub tools: Arc<ToolRegistry>,
+    pub workspace: Arc<Workspace>,
+
+    // ── Broadcast channels ──
+    pub todo_tx: broadcast::Sender<TodoWsMessage>,
+    pub activity_channels: Arc<ActivityChannelMap>,
+
+    // ── Card system ──
+    pub card_queue: Arc<CardQueue>,
+    pub approval_registry: TodoApprovalRegistry,
+    pub choice_registry: ChoiceRegistry,
+
+    // ── Config ──
+    pub email_config: Option<EmailConfig>,
+    pub reply_drafter: Arc<ReplyDrafter>,
+    pub oauth_config: Option<GoogleOAuthConfig>,
+
+    // ── Agent queue (set after construction via OnceLock) ──
+    pub agent_queue: OnceLock<Arc<AgentQueue>>,
+}
+
+impl AppContext {
+    /// Get the agent queue. Panics if called before the queue is set.
+    pub fn queue(&self) -> &Arc<AgentQueue> {
+        self.agent_queue.get().expect("AgentQueue not initialized — set via OnceLock after AppContext construction")
+    }
+}
 
 /// State of a job.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

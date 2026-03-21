@@ -12,37 +12,12 @@ use uuid::Uuid;
 use tracing::Instrument;
 
 use crate::agent::agent_loop::{Agent, AgentDeps};
-use crate::cards::queue::CardQueue;
 use crate::channels::todo_channel::TodoChannel;
 use crate::channels::ChannelManager;
 use crate::config::AgentConfig;
-use crate::llm::LlmProvider;
-use crate::safety::SafetyLayer;
-use crate::store::Database;
+use crate::context::AppContext;
 use crate::todos::activity::TodoActivityMessage;
-use crate::todos::activity_channel_map::ActivityChannelMap;
-use crate::todos::approval_registry::TodoApprovalRegistry;
-use crate::todos::model::{TodoItem, TodoWsMessage};
-use crate::tools::registry::ToolRegistry;
-use crate::workspace::Workspace;
-
-// ── Todo Agent Deps ─────────────────────────────────────────────────
-
-/// Shared dependencies for spawning todo agents.
-///
-/// Cloned into each agent — all fields are `Arc`-wrapped.
-#[derive(Clone)]
-pub struct TodoAgentDeps {
-    pub db: Arc<dyn Database>,
-    pub llm: Arc<dyn LlmProvider>,
-    pub safety: Arc<SafetyLayer>,
-    pub tools: Arc<ToolRegistry>,
-    pub workspace: Arc<Workspace>,
-    pub activity_channels: Arc<ActivityChannelMap>,
-    pub todo_tx: tokio::sync::broadcast::Sender<TodoWsMessage>,
-    pub card_queue: Arc<CardQueue>,
-    pub approval_registry: TodoApprovalRegistry,
-}
+use crate::todos::model::TodoItem;
 
 /// Spawn a new Agent wired to a TodoChannel for the given todo.
 ///
@@ -56,7 +31,7 @@ pub struct TodoAgentDeps {
 /// Returns the JoinHandle for the spawned tokio task.
 pub async fn spawn_todo_agent(
     todo: &TodoItem,
-    deps: &TodoAgentDeps,
+    ctx: &Arc<AppContext>,
     permit: OwnedSemaphorePermit,
     semaphore: Arc<Semaphore>,
     override_content: Option<String>,
@@ -64,7 +39,7 @@ pub async fn spawn_todo_agent(
     let job_id = Uuid::new_v4();
 
     // Build system prompt from workspace
-    let worker_prompt = deps
+    let worker_prompt = ctx
         .workspace
         .worker_prompt()
         .await
@@ -88,11 +63,7 @@ pub async fn spawn_todo_agent(
         todo.title.clone(),
         description,
         override_content,
-        Arc::clone(&deps.activity_channels),
-        Arc::clone(&deps.db),
-        deps.todo_tx.clone(),
-        Arc::clone(&deps.card_queue),
-        deps.approval_registry.clone(),
+        Arc::clone(ctx),
         permit,
         semaphore,
     );
@@ -110,11 +81,11 @@ pub async fn spawn_todo_agent(
 
     // Build AgentDeps (no reply_drafter, routine_engine, extension_manager)
     let agent_deps = AgentDeps {
-        store: Some(Arc::clone(&deps.db)),
-        llm: Arc::clone(&deps.llm),
-        safety: Arc::clone(&deps.safety),
-        tools: Arc::clone(&deps.tools),
-        workspace: Some(Arc::clone(&deps.workspace)),
+        store: Some(Arc::clone(&ctx.db)),
+        llm: Arc::clone(&ctx.llm),
+        safety: Arc::clone(&ctx.safety),
+        tools: Arc::clone(&ctx.tools),
+        workspace: Some(Arc::clone(&ctx.workspace)),
         extension_manager: None,
         reply_drafter: None,
         card_queue: None,
@@ -122,7 +93,7 @@ pub async fn spawn_todo_agent(
     };
 
     // Emit Started activity
-    deps.activity_channels.send(todo.id, TodoActivityMessage::Started {
+    ctx.activity_channels.send(todo.id, TodoActivityMessage::Started {
         job_id,
         todo_id: Some(todo.id),
     });
@@ -156,15 +127,4 @@ pub async fn spawn_todo_agent(
     );
 
     Ok(handle)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn todo_agent_deps_is_clone() {
-        fn assert_clone<T: Clone>() {}
-        assert_clone::<TodoAgentDeps>();
-    }
 }

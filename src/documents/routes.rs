@@ -20,13 +20,7 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use super::model::{Document, DocumentType};
-use crate::store::Database;
-
-/// Shared state for document routes.
-#[derive(Clone)]
-pub struct DocumentState {
-    pub db: Arc<dyn Database>,
-}
+use crate::context::AppContext;
 
 /// Query parameters for listing documents.
 #[derive(Debug, Deserialize)]
@@ -54,19 +48,19 @@ pub struct UpdateDocumentRequest {
 }
 
 /// Build the Axum router for `/api/documents`.
-pub fn document_routes(state: DocumentState) -> Router {
+pub fn document_routes(ctx: Arc<AppContext>) -> Router {
     Router::new()
         .route("/api/documents", get(list_documents).post(create_document))
         .route(
             "/api/documents/{id}",
             get(get_document).put(update_document).delete(delete_document),
         )
-        .with_state(state)
+        .with_state(ctx)
 }
 
 /// GET /api/documents?todo_id=...&limit=...
 async fn list_documents(
-    State(state): State<DocumentState>,
+    State(ctx): State<Arc<AppContext>>,
     Query(params): Query<ListParams>,
 ) -> impl IntoResponse {
     if let Some(todo_id_str) = &params.todo_id {
@@ -80,7 +74,7 @@ async fn list_documents(
                     .into_response()
             }
         };
-        match state.db.list_documents_by_todo(todo_id).await {
+        match ctx.db.list_documents_by_todo(todo_id).await {
             Ok(docs) => Json(serde_json::json!({"documents": docs})).into_response(),
             Err(e) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -90,7 +84,7 @@ async fn list_documents(
         }
     } else {
         let limit = params.limit.unwrap_or(50);
-        match state.db.list_documents(limit).await {
+        match ctx.db.list_documents(limit).await {
             Ok(docs) => Json(serde_json::json!({"documents": docs})).into_response(),
             Err(e) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -103,7 +97,7 @@ async fn list_documents(
 
 /// GET /api/documents/:id
 async fn get_document(
-    State(state): State<DocumentState>,
+    State(ctx): State<Arc<AppContext>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
     let doc_id = match Uuid::parse_str(&id) {
@@ -117,7 +111,7 @@ async fn get_document(
         }
     };
 
-    match state.db.get_document(doc_id).await {
+    match ctx.db.get_document(doc_id).await {
         Ok(Some(doc)) => Json(doc).into_response(),
         Ok(None) => (
             StatusCode::NOT_FOUND,
@@ -134,7 +128,7 @@ async fn get_document(
 
 /// POST /api/documents
 async fn create_document(
-    State(state): State<DocumentState>,
+    State(ctx): State<Arc<AppContext>>,
     Json(req): Json<CreateDocumentRequest>,
 ) -> impl IntoResponse {
     let todo_id = match Uuid::parse_str(&req.todo_id) {
@@ -157,7 +151,7 @@ async fn create_document(
     );
 
     let doc_id = doc.id;
-    match state.db.create_document(&doc).await {
+    match ctx.db.create_document(&doc).await {
         Ok(()) => (
             StatusCode::CREATED,
             Json(serde_json::json!({"id": doc_id.to_string(), "document": doc})),
@@ -173,7 +167,7 @@ async fn create_document(
 
 /// PUT /api/documents/:id
 async fn update_document(
-    State(state): State<DocumentState>,
+    State(ctx): State<Arc<AppContext>>,
     Path(id): Path<String>,
     Json(req): Json<UpdateDocumentRequest>,
 ) -> impl IntoResponse {
@@ -189,7 +183,7 @@ async fn update_document(
     };
 
     // Fetch existing document
-    let existing = match state.db.get_document(doc_id).await {
+    let existing = match ctx.db.get_document(doc_id).await {
         Ok(Some(doc)) => doc,
         Ok(None) => {
             return (
@@ -216,7 +210,7 @@ async fn update_document(
         ..existing
     };
 
-    match state.db.update_document(&updated).await {
+    match ctx.db.update_document(&updated).await {
         Ok(()) => Json(serde_json::json!({"document": updated})).into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -228,7 +222,7 @@ async fn update_document(
 
 /// DELETE /api/documents/:id
 async fn delete_document(
-    State(state): State<DocumentState>,
+    State(ctx): State<Arc<AppContext>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
     let doc_id = match Uuid::parse_str(&id) {
@@ -242,7 +236,7 @@ async fn delete_document(
         }
     };
 
-    match state.db.delete_document(doc_id).await {
+    match ctx.db.delete_document(doc_id).await {
         Ok(true) => (
             StatusCode::OK,
             Json(serde_json::json!({"deleted": true})),
