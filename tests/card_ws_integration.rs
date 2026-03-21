@@ -25,7 +25,7 @@ use ai_assist::llm::provider::{
     CompletionRequest, CompletionResponse, FinishReason, LlmProvider, ToolCompletionRequest,
     ToolCompletionResponse,
 };
-use ai_assist::todos::activity::TodoActivityMessage;
+use ai_assist::todos::activity_channel_map::ActivityChannelMap;
 use ai_assist::todos::approval_registry::TodoApprovalRegistry;
 
 /// Maximum time any test is allowed to run before we consider it hung.
@@ -68,7 +68,7 @@ async fn start_server() -> (u16, Arc<CardQueue>, TodoApprovalRegistry) {
         llm,
         GeneratorConfig::default(),
     ));
-    let (activity_tx, _activity_rx) = tokio::sync::broadcast::channel::<TodoActivityMessage>(16);
+    let activity_channels = Arc::new(ActivityChannelMap::new());
     let choice_registry = ai_assist::cards::choice_registry::ChoiceRegistry::new();
     let db: Arc<dyn ai_assist::store::Database> = Arc::new(
         ai_assist::store::LibSqlBackend::new_memory().await.unwrap()
@@ -79,7 +79,7 @@ async fn start_server() -> (u16, Arc<CardQueue>, TodoApprovalRegistry) {
         None,
         reply_drafter,
         registry.clone(),
-        activity_tx,
+        activity_channels,
         choice_registry,
         db,
         todo_tx,

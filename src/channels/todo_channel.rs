@@ -22,6 +22,7 @@ use crate::error::ChannelError;
 use crate::logging::AgentLogger;
 use crate::store::Database;
 use crate::todos::activity::TodoActivityMessage;
+use crate::todos::activity_channel_map::ActivityChannelMap;
 use crate::todos::approval_registry::{TodoApprovalPending, TodoApprovalRegistry};
 use crate::todos::model::{TodoStatus, TodoWsMessage};
 
@@ -33,7 +34,7 @@ pub struct TodoChannel {
     todo_description: String,
     /// If set, `start()` uses this instead of title+description.
     override_content: Option<String>,
-    activity_tx: broadcast::Sender<TodoActivityMessage>,
+    activity_channels: Arc<ActivityChannelMap>,
     db: Arc<dyn Database>,
     todo_tx: broadcast::Sender<TodoWsMessage>,
     card_queue: Arc<CardQueue>,
@@ -62,7 +63,7 @@ impl TodoChannel {
         job_id: Uuid,
         todo_title: String,
         todo_description: String,
-        activity_tx: broadcast::Sender<TodoActivityMessage>,
+        activity_channels: Arc<ActivityChannelMap>,
         db: Arc<dyn Database>,
         todo_tx: broadcast::Sender<TodoWsMessage>,
         card_queue: Arc<CardQueue>,
@@ -70,7 +71,7 @@ impl TodoChannel {
         permit: OwnedSemaphorePermit,
         semaphore: Arc<Semaphore>,
     ) -> Self {
-        Self::with_override(todo_id, job_id, todo_title, todo_description, None, activity_tx, db, todo_tx, card_queue, approval_registry, permit, semaphore)
+        Self::with_override(todo_id, job_id, todo_title, todo_description, None, activity_channels, db, todo_tx, card_queue, approval_registry, permit, semaphore)
     }
 
     pub fn with_override(
@@ -79,7 +80,7 @@ impl TodoChannel {
         todo_title: String,
         todo_description: String,
         override_content: Option<String>,
-        activity_tx: broadcast::Sender<TodoActivityMessage>,
+        activity_channels: Arc<ActivityChannelMap>,
         db: Arc<dyn Database>,
         todo_tx: broadcast::Sender<TodoWsMessage>,
         card_queue: Arc<CardQueue>,
@@ -97,7 +98,7 @@ impl TodoChannel {
             todo_title,
             todo_description,
             override_content,
-            activity_tx,
+            activity_channels,
             db,
             todo_tx,
             card_queue,
@@ -134,7 +135,7 @@ impl TodoChannel {
 
     /// Emit an activity event: broadcast live + persist to DB.
     fn emit(&self, msg: TodoActivityMessage) {
-        let _ = self.activity_tx.send(msg.clone());
+        self.activity_channels.send(self.todo_id, msg.clone());
 
         let store = self.db.clone();
         let job_id = self.job_id;

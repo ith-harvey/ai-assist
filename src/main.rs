@@ -13,7 +13,8 @@ use ai_assist::config::{AgentConfig, GoogleOAuthConfig, RoutineConfig};
 use ai_assist::llm::{LlmBackend, LlmConfig, create_provider};
 use ai_assist::safety::SafetyLayer;
 use ai_assist::store::{Database, LibSqlBackend};
-use ai_assist::todos::activity::{ActivityState, TodoActivityMessage, activity_routes};
+use ai_assist::todos::activity::{ActivityState, activity_routes};
+use ai_assist::todos::activity_channel_map::ActivityChannelMap;
 use ai_assist::todos::approval_registry::TodoApprovalRegistry;
 use ai_assist::todos::ws::{TodoState, todo_routes};
 use ai_assist::tools::ToolRegistry;
@@ -196,7 +197,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tools.register_document_tools(Arc::clone(&db));
 
     // ── Worker System (Scheduler + ContextManager) ───────────────────
-    let (activity_tx, _activity_rx) = tokio::sync::broadcast::channel::<TodoActivityMessage>(256);
+    let activity_channels = Arc::new(ActivityChannelMap::new());
     let context_manager = Arc::new(ContextManager::new(agent_config.max_parallel_jobs));
     let scheduler = Arc::new(Scheduler::new(
         agent_config.clone(),
@@ -204,7 +205,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Arc::clone(&safety),
         Arc::clone(&tools),
         Some(Arc::clone(&db)),
-        activity_tx.clone(),
     ));
     eprintln!(
         "   Worker: enabled (max {} parallel jobs, {}s timeout)",
@@ -270,7 +270,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         safety: Arc::clone(&safety),
         tools: Arc::clone(&tools),
         workspace: Arc::clone(&workspace),
-        activity_tx: activity_tx.clone(),
+        activity_channels: Arc::clone(&activity_channels),
         todo_tx: todo_state.tx.clone(),
         card_queue: card_queue.clone(),
         approval_registry: approval_registry.clone(),
@@ -293,7 +293,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tools.register_message_tools(card_queue.clone());
     let activity_state = ActivityState::new(
         Arc::clone(&db),
-        activity_tx.clone(),
+        Arc::clone(&activity_channels),
         todo_agent_deps.clone(),
         Arc::clone(&agent_queue),
     );
@@ -317,7 +317,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         email_config_for_cards,
         reply_drafter.clone(),
         approval_registry,
-        activity_tx.clone(),
+        Arc::clone(&activity_channels),
         choice_registry,
         Arc::clone(&db),
         todo_state.tx.clone(),
