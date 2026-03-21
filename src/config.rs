@@ -9,7 +9,7 @@ pub const DEFAULT_SYSTEM_PROMPT: &str = "You are AI Assist, a helpful and conver
      \
      When the user asks you to create a todo, reminder, or task: \
      Use draft_todo to create the todo. This navigates the user to the detail view \
-     and starts an enrichment interview in the activity feed automatically. \
+     and the todo agent will prompt the user to fill in details via the activity feed. \
      Your job is done after calling draft_todo — do NOT follow up with update_todo or ask_user.";
 
 /// Agent configuration.

@@ -188,7 +188,7 @@ impl AgentQueue {
                     info!(todo_id = %todo.id, "Auto-finalizing stale draft todo");
 
                     // Only fill in defaults for fields still at their initial values;
-                    // preserve anything the enrichment agent already set.
+                    // preserve anything the todo agent already set during enrichment.
                     if todo.priority == 0 {
                         todo.priority = 1; // Medium priority default
                     }

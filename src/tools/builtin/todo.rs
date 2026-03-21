@@ -165,7 +165,8 @@ impl Tool for CreateTodoTool {
 /// Unlike `create_todo`, this creates a minimal skeleton (title only, status `Drafting`)
 /// and sends a navigation event so the iOS client immediately opens the detail view.
 /// The agent should follow up with `update_todo` calls to progressively populate fields,
-/// then run an enrichment interview before transitioning the todo to `Created`.
+/// The todo agent is then prompted to run an enrichment interview before transitioning
+/// the todo to `Created`.
 pub struct DraftTodoTool {
     db: Arc<dyn Database>,
     todo_tx: broadcast::Sender<TodoWsMessage>,
@@ -191,10 +192,10 @@ impl Tool for DraftTodoTool {
     }
 
     fn description(&self) -> &str {
-        "Create a draft todo and navigate the user to its detail view. An enrichment interview \
-         starts automatically in the activity feed. Use this when the user asks you to add a task, \
-         reminder, or action item to their todo list. Your job is done after calling this — do NOT \
-         follow up with update_todo or ask_user."
+        "Create a draft todo and navigate the user to its detail view. The todo agent will \
+         automatically prompt the user to fill in details via the activity feed. Use this when \
+         the user asks you to add a task, reminder, or action item. Your job is done after \
+         calling this — do NOT follow up with update_todo or ask_user."
     }
 
     fn parameters_schema(&self) -> serde_json::Value {
@@ -250,7 +251,7 @@ impl Tool for DraftTodoTool {
         // Send navigation event so iOS switches to the todo detail view
         let _ = self.navigate_tx.send(todo_id);
 
-        // Spawn enrichment agent in the activity feed
+        // Spawn a todo agent follow-up to run enrichment in the activity feed
         let enrichment_instructions = format!(
             "[todo_id: {}]\n\n\
              ENRICHMENT MODE: This is a newly drafted todo titled \"{}\".\n\

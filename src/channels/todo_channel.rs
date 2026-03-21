@@ -234,7 +234,7 @@ impl Channel for TodoChannel {
         });
 
         // Update todo status to ready_for_review (only if currently AgentWorking;
-        // Drafting todos are finalized by the enrichment agent via update_todo)
+        // Drafting todos are finalized by the todo agent's enrichment process via update_todo)
         if let Ok(Some(todo)) = self.db.get_todo(self.todo_id).await {
             if todo.status == TodoStatus::AgentWorking {
                 if let Err(e) = self
@@ -434,7 +434,7 @@ impl Channel for TodoChannel {
             });
 
             // Reset todo back to created so it can be retried
-            // (but not Drafting todos — those are managed by the enrichment agent)
+            // (but not Drafting todos — those are managed by the todo agent's enrichment process)
             if let Ok(Some(todo)) = self.db.get_todo(self.todo_id).await {
                 if todo.status != TodoStatus::Drafting {
                     if let Err(e) = self
