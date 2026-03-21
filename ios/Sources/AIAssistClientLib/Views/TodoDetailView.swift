@@ -84,10 +84,6 @@ public struct TodoDetailView: View {
         displayTodo.status == .drafting
     }
 
-    /// Whether to show the activity feed — always true for all todos.
-    private var showActivityFeed: Bool {
-        true
-    }
 
     public var body: some View {
         VStack(spacing: 0) {
@@ -127,25 +123,21 @@ public struct TodoDetailView: View {
                             .padding(.horizontal, 20)
                             .padding(.bottom, 12)
 
-                        if showActivityFeed {
-                            collapsibleActivitySection
-                                .padding(.top, 4)
-                        }
+                        collapsibleActivitySection
+                            .padding(.top, 4)
                     } else {
                         // In-progress layout: documents → divider → live activity
                         DeliverableListSection(todoId: todo.id, cardSocket: cardSocket)
                             .padding(.horizontal, 20)
                             .padding(.bottom, 8)
 
-                        if showActivityFeed {
-                            Rectangle()
-                                .fill(Color.gray.opacity(0.2))
-                                .frame(height: 1)
-                                .padding(.horizontal, 20)
+                        Rectangle()
+                            .fill(Color.gray.opacity(0.2))
+                            .frame(height: 1)
+                            .padding(.horizontal, 20)
 
-                            activitySection
-                                .padding(.top, 12)
-                        }
+                        activitySection
+                            .padding(.top, 12)
                     }
 
                     // Invisible bottom anchor for scroll-to-bottom
@@ -290,9 +282,7 @@ public struct TodoDetailView: View {
             .presentationDetents([.medium, .large])
         }
 
-        if showActivityFeed {
-            inputBar
-        }
+        inputBar
         } // VStack
     }
 
