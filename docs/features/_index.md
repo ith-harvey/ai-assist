@@ -15,3 +15,4 @@
 | Todo List Tab Filtering | [todo-list-tab-filtering.md](todo-list-tab-filtering.md) | planned | Segmented control to filter todo list by Active / Snoozed / Completed instead of scrollable sections |
 | Unified Approval Card UX | [unified-approval-card-ux.md](unified-approval-card-ux.md) | in-progress | Unify Messages and Todo approval card UX via generic parent view hierarchy; ContentView embeds ApprovalQueueView |
 | Unified TodoWebSocket Lifecycle | [unified-todo-websocket-lifecycle.md](unified-todo-websocket-lifecycle.md) | planned | Lift TodoWebSocket to MainTabView as single shared instance; fix todos disappearing after creation |
+| Universal Todo Activity Thread | [universal-todo-activity-thread.md](universal-todo-activity-thread.md) | planned | Show activity feed on all todos; chatting with a human todo spawns an advisor agent in the activity thread |

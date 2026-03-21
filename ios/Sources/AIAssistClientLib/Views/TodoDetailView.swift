@@ -84,10 +84,6 @@ public struct TodoDetailView: View {
         displayTodo.status == .drafting
     }
 
-    /// Whether to show the activity feed (agent-startable or drafting).
-    private var showActivityFeed: Bool {
-        todo.bucket == .agentStartable || isDrafting
-    }
 
     public var body: some View {
         VStack(spacing: 0) {
@@ -127,25 +123,21 @@ public struct TodoDetailView: View {
                             .padding(.horizontal, 20)
                             .padding(.bottom, 12)
 
-                        if showActivityFeed {
-                            collapsibleActivitySection
-                                .padding(.top, 4)
-                        }
+                        collapsibleActivitySection
+                            .padding(.top, 4)
                     } else {
                         // In-progress layout: documents → divider → live activity
                         DeliverableListSection(todoId: todo.id, cardSocket: cardSocket)
                             .padding(.horizontal, 20)
                             .padding(.bottom, 8)
 
-                        if showActivityFeed {
-                            Rectangle()
-                                .fill(Color.gray.opacity(0.2))
-                                .frame(height: 1)
-                                .padding(.horizontal, 20)
+                        Rectangle()
+                            .fill(Color.gray.opacity(0.2))
+                            .frame(height: 1)
+                            .padding(.horizontal, 20)
 
-                            activitySection
-                                .padding(.top, 12)
-                        }
+                        activitySection
+                            .padding(.top, 12)
                     }
 
                     // Invisible bottom anchor for scroll-to-bottom
@@ -241,9 +233,7 @@ public struct TodoDetailView: View {
             }
         }
         .onAppear {
-            if showActivityFeed {
-                activitySocket.connect()
-            }
+            activitySocket.connect()
         }
         .onDisappear {
             activitySocket.disconnect()
@@ -292,9 +282,7 @@ public struct TodoDetailView: View {
             .presentationDetents([.medium, .large])
         }
 
-        if showActivityFeed {
-            inputBar
-        }
+        inputBar
         } // VStack
     }
 
@@ -530,7 +518,7 @@ public struct TodoDetailView: View {
         if status == .completed {
             completedBanner(summary: "")
         } else if status == .readyForReview {
-            completedBanner(summary: "Ready for your review")
+            readyForReviewBanner()
         }
     }
 
@@ -681,6 +669,16 @@ public struct TodoDetailView: View {
             icon: "checkmark.circle.fill",
             title: "Completed",
             summary: summary,
+            color: .green,
+            summaryLineLimit: 3
+        )
+    }
+
+    private func readyForReviewBanner() -> some View {
+        StatusBannerView(
+            icon: "checkmark.circle.fill",
+            title: "Ready for your review",
+            summary: "",
             color: .green,
             summaryLineLimit: 3
         )
@@ -933,7 +931,14 @@ public struct TodoDetailView: View {
 
     private var activityEmptyState: some View {
         VStack(spacing: 12) {
-            if isDrafting {
+            if displayTodo.bucket == .humanOnly && !isDrafting {
+                Image(systemName: "bubble.left.and.bubble.right")
+                    .font(.system(size: 24))
+                    .foregroundStyle(.blue.opacity(0.6))
+                Text("Ask the AI about this task...")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else if isDrafting {
                 ProgressView()
                     .controlSize(.small)
                 Text("Building your to-do...")
