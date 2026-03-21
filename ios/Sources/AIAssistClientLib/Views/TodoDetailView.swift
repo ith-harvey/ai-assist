@@ -84,9 +84,9 @@ public struct TodoDetailView: View {
         displayTodo.status == .drafting
     }
 
-    /// Whether to show the activity feed (agent-startable or drafting).
+    /// Whether to show the activity feed — always true for all todos.
     private var showActivityFeed: Bool {
-        todo.bucket == .agentStartable || isDrafting
+        true
     }
 
     public var body: some View {
@@ -241,9 +241,7 @@ public struct TodoDetailView: View {
             }
         }
         .onAppear {
-            if showActivityFeed {
-                activitySocket.connect()
-            }
+            activitySocket.connect()
         }
         .onDisappear {
             activitySocket.disconnect()
@@ -530,7 +528,7 @@ public struct TodoDetailView: View {
         if status == .completed {
             completedBanner(summary: "")
         } else if status == .readyForReview {
-            completedBanner(summary: "Ready for your review")
+            readyForReviewBanner()
         }
     }
 
@@ -681,6 +679,16 @@ public struct TodoDetailView: View {
             icon: "checkmark.circle.fill",
             title: "Completed",
             summary: summary,
+            color: .green,
+            summaryLineLimit: 3
+        )
+    }
+
+    private func readyForReviewBanner() -> some View {
+        StatusBannerView(
+            icon: "checkmark.circle.fill",
+            title: "Ready for your review",
+            summary: "",
             color: .green,
             summaryLineLimit: 3
         )
@@ -933,7 +941,14 @@ public struct TodoDetailView: View {
 
     private var activityEmptyState: some View {
         VStack(spacing: 12) {
-            if isDrafting {
+            if displayTodo.bucket == .humanOnly && !isDrafting {
+                Image(systemName: "bubble.left.and.bubble.right")
+                    .font(.system(size: 24))
+                    .foregroundStyle(.blue.opacity(0.6))
+                Text("Ask the AI about this task...")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else if isDrafting {
                 ProgressView()
                     .controlSize(.small)
                 Text("Building your to-do...")
