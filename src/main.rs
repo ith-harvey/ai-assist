@@ -328,17 +328,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     .merge(activity_routes(activity_state))
     .merge(document_routes(DocumentState { db: Arc::clone(&db) }));
 
-    // Conditionally add Google Calendar OAuth routes
-    let app = if let Some(oauth_config) = google_oauth_config {
-        eprintln!("   Google Calendar: enabled (redirect: {})", oauth_config.redirect_uri);
-        app.merge(calendar_routes(CalendarState {
-            db: Arc::clone(&db),
-            oauth_config,
-        }))
+    // Google Calendar OAuth routes (always registered; returns availability via /api/calendar/status)
+    if let Some(ref config) = google_oauth_config {
+        eprintln!("   Google Calendar: enabled (redirect: {})", config.redirect_uri);
     } else {
         eprintln!("   Google Calendar: disabled (set GOOGLE_CLIENT_ID to enable)");
-        app
-    };
+    }
+    let app = app.merge(calendar_routes(CalendarState {
+        db: Arc::clone(&db),
+        oauth_config: google_oauth_config,
+    }));
 
     tokio::spawn(async move {
         let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", ws_port))

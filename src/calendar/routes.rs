@@ -28,7 +28,7 @@ use crate::store::Database;
 #[derive(Clone)]
 pub struct CalendarState {
     pub db: Arc<dyn Database>,
-    pub oauth_config: GoogleOAuthConfig,
+    pub oauth_config: Option<GoogleOAuthConfig>,
 }
 
 /// Build the Axum router for calendar OAuth endpoints.
@@ -45,6 +45,19 @@ pub fn calendar_routes(state: CalendarState) -> Router {
 ///
 /// The iOS app calls this, then opens the URL in ASWebAuthenticationSession.
 async fn google_auth_start(State(state): State<CalendarState>) -> impl IntoResponse {
+    let oauth_config = match &state.oauth_config {
+        Some(config) => config,
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({
+                    "error": "Google Calendar is not configured on the server. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET environment variables."
+                })),
+            )
+                .into_response();
+        }
+    };
+
     let csrf_state = uuid::Uuid::new_v4().to_string();
 
     // Store state for CSRF validation in the callback
@@ -64,7 +77,7 @@ async fn google_auth_start(State(state): State<CalendarState>) -> impl IntoRespo
             .into_response();
     }
 
-    let url = build_consent_url(&state.oauth_config, &csrf_state);
+    let url = build_consent_url(oauth_config, &csrf_state);
     Json(serde_json::json!({"url": url})).into_response()
 }
 
@@ -85,6 +98,17 @@ async fn google_auth_callback(
     State(state): State<CalendarState>,
     Query(params): Query<CallbackParams>,
 ) -> impl IntoResponse {
+    let oauth_config = match &state.oauth_config {
+        Some(config) => config,
+        None => {
+            return Html(
+                r#"<html><body><h2>Error</h2><p>Google Calendar is not configured on the server.</p></body></html>"#
+                    .to_string(),
+            )
+            .into_response();
+        }
+    };
+
     // Handle Google returning an error (user denied consent, etc.)
     if let Some(error) = params.error {
         return Html(format!(
@@ -125,7 +149,7 @@ async fn google_auth_callback(
     }
 
     // Exchange code for tokens
-    let tokens = match exchange_code_for_tokens(&state.oauth_config, &code).await {
+    let tokens = match exchange_code_for_tokens(oauth_config, &code).await {
         Ok(t) => t,
         Err(e) => {
             tracing::error!("Google OAuth token exchange failed: {}", e);
@@ -198,6 +222,8 @@ async fn google_auth_callback(
 
 /// GET /api/calendar/status — check if Google Calendar is connected.
 async fn calendar_status(State(state): State<CalendarState>) -> impl IntoResponse {
+    let available = state.oauth_config.is_some();
+
     let has_refresh = state
         .db
         .get_setting("default", GCAL_REFRESH_TOKEN)
@@ -216,6 +242,7 @@ async fn calendar_status(State(state): State<CalendarState>) -> impl IntoRespons
         .and_then(|v| v.as_str().map(String::from));
 
     Json(serde_json::json!({
+        "available": available,
         "connected": has_refresh,
         "email": email,
     }))
