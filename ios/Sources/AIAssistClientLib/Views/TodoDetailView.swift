@@ -257,6 +257,10 @@ public struct TodoDetailView: View {
                     isActivityExpanded = false
                 }
             }
+            // Reconnect activity socket for follow-up agent runs
+            if newStatus == .agentWorking && activitySocket.isFinished {
+                activitySocket.connect()
+            }
         }
         .onChange(of: activitySocket.isFinished) { _, finished in
             if finished {
@@ -944,7 +948,7 @@ public struct TodoDetailView: View {
                 Text("Building your to-do...")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-            } else if todo.status == .agentQueued {
+            } else if displayTodo.status == .agentQueued {
                 Image(systemName: "hourglass")
                     .font(.system(size: 24))
                     .foregroundStyle(.blue)
