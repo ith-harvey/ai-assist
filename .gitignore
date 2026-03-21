@@ -14,3 +14,7 @@ DerivedData/
 .DS_Store
 data/
 .dev-port
+
+# Claude Code
+.claude/worktrees/
+CLAUDE.md
