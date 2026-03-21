@@ -1,3 +1,4 @@
+import ObjectiveC
 import SwiftUI
 import AuthenticationServices
 
@@ -7,6 +8,7 @@ struct CalendarSetupView: View {
     @AppStorage("ai_assist_gcal_connected") private var gcalConnected = false
     @State private var isConnecting = false
     @State private var errorMessage: String?
+    @State private var calendarAvailable = true
 
     private var serverBaseURL: String {
         let host = UserDefaults.standard.string(forKey: "ai_assist_host") ?? "localhost"
@@ -47,7 +49,7 @@ struct CalendarSetupView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
-                .disabled(isConnecting)
+                .disabled(isConnecting || !calendarAvailable)
                 .padding(.horizontal, 40)
 
                 if let errorMessage {
@@ -79,7 +81,13 @@ struct CalendarSetupView: View {
             let (data, response) = try await URLSession.shared.data(from: startURL)
 
             guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
-                errorMessage = "Server not available. Check your connection."
+                // Try to extract a specific error message from the server response
+                if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                   let serverError = json["error"] as? String {
+                    errorMessage = serverError
+                } else {
+                    errorMessage = "Server not available. Check your connection."
+                }
                 isConnecting = false
                 return
             }
@@ -105,8 +113,11 @@ struct CalendarSetupView: View {
             }
         } catch is CancellationError {
             // User cancelled the auth session
+        } catch let error as ASWebAuthenticationSessionError where error.code == .canceledLogin {
+            // User cancelled the auth session via the system dialog
         } catch {
             errorMessage = "Could not connect to Google Calendar. Please try again."
+            print("[CalendarSetup] OAuth error: \(error)")
         }
 
         isConnecting = false
@@ -129,6 +140,9 @@ struct CalendarSetupView: View {
                 }
             }
             session.prefersEphemeralWebBrowserSession = false
+            let contextProvider = AuthContextProvider()
+            session.presentationContextProvider = contextProvider
+            objc_setAssociatedObject(session, "contextProvider", contextProvider, .OBJC_ASSOCIATION_RETAIN)
             session.start()
         }
     }
@@ -145,8 +159,24 @@ struct CalendarSetupView: View {
             guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let connected = json["connected"] as? Bool else { return }
             gcalConnected = connected
+            if let available = json["available"] as? Bool {
+                calendarAvailable = available
+                if !available {
+                    errorMessage = "Google Calendar is not configured on the server."
+                }
+            }
         } catch {
             // Silently fail — don't disrupt the UI on status check failure
         }
+    }
+}
+
+/// Provides a presentation anchor for ASWebAuthenticationSession.
+private class AuthContextProvider: NSObject, ASWebAuthenticationPresentationContextProviding {
+    func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
+        let scene = UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .first
+        return scene?.windows.first(where: \.isKeyWindow) ?? ASPresentationAnchor()
     }
 }
