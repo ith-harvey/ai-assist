@@ -6,6 +6,7 @@
 //! - Refreshing expired access tokens
 //! - Storing/retrieving tokens from the settings table
 
+pub mod events;
 pub mod routes;
 
 use chrono::{DateTime, Utc};
