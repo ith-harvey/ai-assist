@@ -16,94 +16,44 @@ use serde::Deserialize;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
-use super::reply_drafter::ReplyDrafter;
 use super::handlers::{ApprovalHandler, CardActionContext};
 use super::model::{ApprovalCard, CardAction, CardPayload, CardSilo, WsMessage};
-use super::queue::CardQueue;
-use crate::agent::agent_queue::AgentQueue;
-use crate::cards::choice_registry::ChoiceRegistry;
-use crate::channels::email::EmailConfig;
-use crate::store::Database;
-use crate::todos::activity_channel_map::ActivityChannelMap;
-use crate::todos::approval_registry::TodoApprovalRegistry;
-use crate::todos::model::TodoWsMessage;
+use crate::context::AppContext;
 
-/// Application state shared across handlers.
-#[derive(Clone)]
-pub struct AppState {
-    pub queue: Arc<CardQueue>,
-    pub email_config: Option<EmailConfig>,
-    pub reply_drafter: Arc<ReplyDrafter>,
-    pub approval_registry: TodoApprovalRegistry,
-    pub activity_channels: Arc<ActivityChannelMap>,
-    pub choice_registry: ChoiceRegistry,
-    pub db: Arc<dyn Database>,
-    pub todo_tx: tokio::sync::broadcast::Sender<TodoWsMessage>,
-    pub agent_queue: Option<Arc<AgentQueue>>,
+/// Build a `CardActionContext` from the shared context.
+fn action_context(ctx: &Arc<AppContext>) -> CardActionContext {
+    CardActionContext {
+        queue: Arc::clone(&ctx.card_queue),
+    }
 }
 
-impl AppState {
-    /// Build a `CardActionContext` from this state (borrows cheaply via Arc/Clone).
-    fn action_context(&self) -> CardActionContext {
-        CardActionContext {
-            queue: Arc::clone(&self.queue),
+/// Construct the correct handler for a card's payload type, injecting deps.
+fn handler_for(ctx: &Arc<AppContext>, card: &ApprovalCard) -> Box<dyn ApprovalHandler> {
+    match &card.payload {
+        CardPayload::Reply { .. } => {
+            Box::new(super::handlers::MessageHandler {
+                email_config: ctx.email_config.clone(),
+            })
         }
-    }
-
-    /// Construct the correct handler for a card's payload type, injecting deps.
-    fn handler_for(&self, card: &ApprovalCard) -> Box<dyn ApprovalHandler> {
-        match &card.payload {
-            CardPayload::Reply { .. } => {
-                Box::new(super::handlers::MessageHandler {
-                    email_config: self.email_config.clone(),
-                })
-            }
-            CardPayload::Action { .. } => {
-                Box::new(super::handlers::ActionHandler {
-                    approval_registry: self.approval_registry.clone(),
-                    activity_channels: Arc::clone(&self.activity_channels),
-                    db: Arc::clone(&self.db),
-                    todo_tx: self.todo_tx.clone(),
-                    agent_queue: self.agent_queue.clone(),
-                })
-            }
-            CardPayload::Compose { .. } => Box::new(super::handlers::ComposeHandler {
-                email_config: self.email_config.clone(),
-            }),
-            CardPayload::Decision { .. } => Box::new(super::handlers::DecisionHandler),
-            CardPayload::MultipleChoice { .. } => {
-                Box::new(super::handlers::MultipleChoiceHandler {
-                    choice_registry: self.choice_registry.clone(),
-                })
-            }
+        CardPayload::Action { .. } => {
+            Box::new(super::handlers::ActionHandler {
+                ctx: Arc::clone(ctx),
+            })
+        }
+        CardPayload::Compose { .. } => Box::new(super::handlers::ComposeHandler {
+            email_config: ctx.email_config.clone(),
+        }),
+        CardPayload::Decision { .. } => Box::new(super::handlers::DecisionHandler),
+        CardPayload::MultipleChoice { .. } => {
+            Box::new(super::handlers::MultipleChoiceHandler {
+                choice_registry: ctx.choice_registry.clone(),
+            })
         }
     }
 }
 
 /// Build the Axum router with card WebSocket and REST routes.
-pub fn card_routes(
-    queue: Arc<CardQueue>,
-    email_config: Option<EmailConfig>,
-    reply_drafter: Arc<ReplyDrafter>,
-    approval_registry: TodoApprovalRegistry,
-    activity_channels: Arc<ActivityChannelMap>,
-    choice_registry: ChoiceRegistry,
-    db: Arc<dyn Database>,
-    todo_tx: tokio::sync::broadcast::Sender<TodoWsMessage>,
-    agent_queue: Option<Arc<AgentQueue>>,
-) -> Router {
-    let state = AppState {
-        queue,
-        email_config,
-        reply_drafter,
-        approval_registry,
-        activity_channels,
-        choice_registry,
-        db,
-        todo_tx,
-        agent_queue,
-    };
-
+pub fn card_routes(ctx: Arc<AppContext>) -> Router {
     Router::new()
         .route("/ws", get(ws_handler))
         .route("/health", get(health))
@@ -114,7 +64,7 @@ pub fn card_routes(
         .route("/api/cards/{id}/edit", post(edit_card))
         .route("/api/cards/{id}/refine", post(refine_card))
         .route("/api/cards/test", post(create_test_card))
-        .with_state(state)
+        .with_state(ctx)
 }
 
 // ── Health ──────────────────────────────────────────────────────────────
@@ -128,16 +78,16 @@ async fn health() -> impl IntoResponse {
 
 // ── WebSocket ───────────────────────────────────────────────────────────
 
-async fn ws_handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> impl IntoResponse {
+async fn ws_handler(ws: WebSocketUpgrade, State(ctx): State<Arc<AppContext>>) -> impl IntoResponse {
     info!("WebSocket client connecting");
-    ws.on_upgrade(|socket| handle_socket(socket, state))
+    ws.on_upgrade(|socket| handle_socket(socket, ctx))
 }
 
-async fn handle_socket(mut socket: WebSocket, state: AppState) {
+async fn handle_socket(mut socket: WebSocket, ctx: Arc<AppContext>) {
     info!("WebSocket client connected");
 
     // Send all pending cards on connect
-    let pending = state.queue.pending().await;
+    let pending = ctx.card_queue.pending().await;
     let sync_msg = WsMessage::CardsSync { cards: pending };
     if let Ok(json) = serde_json::to_string(&sync_msg) {
         if socket.send(Message::Text(json.into())).await.is_err() {
@@ -147,7 +97,7 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
     }
 
     // Subscribe to broadcast channel for real-time updates
-    let mut rx = state.queue.subscribe();
+    let mut rx = ctx.card_queue.subscribe();
 
     loop {
         tokio::select! {
@@ -164,7 +114,7 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
                         warn!(missed = n, "WS client lagged behind broadcast");
-                        let pending = state.queue.pending().await;
+                        let pending = ctx.card_queue.pending().await;
                         let sync = WsMessage::CardsSync { cards: pending };
                         if let Ok(json) = serde_json::to_string(&sync) {
                             if socket.send(Message::Text(json.into())).await.is_err() {
@@ -183,7 +133,7 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
             result = socket.recv() => {
                 match result {
                     Some(Ok(Message::Text(text))) => {
-                        handle_client_message(&text, &state).await;
+                        handle_client_message(&text, &ctx).await;
                     }
                     Some(Ok(Message::Ping(data))) => {
                         if socket.send(Message::Pong(data)).await.is_err() {
@@ -207,31 +157,31 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
     info!("WebSocket connection closed");
 }
 
-async fn handle_client_message(text: &str, state: &AppState) {
-    let ctx = state.action_context();
+async fn handle_client_message(text: &str, ctx: &Arc<AppContext>) {
+    let act_ctx = action_context(ctx);
 
     match serde_json::from_str::<CardAction>(text) {
         Ok(action) => match action {
             CardAction::Approve { card_id } => {
-                if let Some(card) = state.queue.approve(card_id).await {
+                if let Some(card) = ctx.card_queue.approve(card_id).await {
                     info!(card_id = %card_id, "Card approved via WS");
-                    state.handler_for(&card).on_approve(&card, &ctx).await;
+                    handler_for(ctx, &card).on_approve(&card, &act_ctx).await;
                 } else {
                     warn!(card_id = %card_id, "Approve failed — card not found or not pending");
                 }
             }
             CardAction::Dismiss { card_id } => {
-                if let Some(card) = state.queue.dismiss(card_id).await {
+                if let Some(card) = ctx.card_queue.dismiss(card_id).await {
                     info!(card_id = %card_id, "Card dismissed via WS");
-                    state.handler_for(&card).on_dismiss(&card, &ctx).await;
+                    handler_for(ctx, &card).on_dismiss(&card, &act_ctx).await;
                 } else {
                     warn!(card_id = %card_id, "Dismiss failed — card not found or not pending");
                 }
             }
             CardAction::Edit { card_id, new_text } => {
-                if let Some(card) = state.queue.edit(card_id, new_text.clone()).await {
+                if let Some(card) = ctx.card_queue.edit(card_id, new_text.clone()).await {
                     info!(card_id = %card_id, "Card edited and approved via WS");
-                    state.handler_for(&card).on_edit(&card, &new_text, &ctx).await;
+                    handler_for(ctx, &card).on_edit(&card, &new_text, &act_ctx).await;
                 } else {
                     warn!(card_id = %card_id, "Edit failed — card not found or not pending");
                 }
@@ -239,7 +189,7 @@ async fn handle_client_message(text: &str, state: &AppState) {
             CardAction::Refine {
                 card_id,
                 instruction,
-            } => match state.queue.refine(card_id, instruction, &state.reply_drafter).await {
+            } => match ctx.card_queue.refine(card_id, instruction, &ctx.reply_drafter).await {
                 Ok(_card) => info!(card_id = %card_id, "Card refined via WS"),
                 Err(e) => warn!(card_id = %card_id, error = %e, "Refine failed via WS"),
             },
@@ -247,11 +197,11 @@ async fn handle_client_message(text: &str, state: &AppState) {
                 card_id,
                 selected_index,
             } => {
-                if let Some(card) = state.queue.approve(card_id).await {
+                if let Some(card) = ctx.card_queue.approve(card_id).await {
                     info!(card_id = %card_id, selected_index, "Option selected via WS");
                     if let CardPayload::MultipleChoice { .. } = &card.payload {
                         let handler = super::handlers::MultipleChoiceHandler {
-                            choice_registry: state.choice_registry.clone(),
+                            choice_registry: ctx.choice_registry.clone(),
                         };
                         handler.on_select_option(&card, selected_index).await;
                     }
@@ -260,11 +210,11 @@ async fn handle_client_message(text: &str, state: &AppState) {
                 }
             }
             CardAction::FreeTextOption { card_id, text } => {
-                if let Some(card) = state.queue.approve(card_id).await {
+                if let Some(card) = ctx.card_queue.approve(card_id).await {
                     info!(card_id = %card_id, "Free-text option submitted via WS");
                     if let CardPayload::MultipleChoice { .. } = &card.payload {
                         let handler = super::handlers::MultipleChoiceHandler {
-                            choice_registry: state.choice_registry.clone(),
+                            choice_registry: ctx.choice_registry.clone(),
                         };
                         handler.on_free_text(&card, text).await;
                     }
@@ -281,12 +231,12 @@ async fn handle_client_message(text: &str, state: &AppState) {
 
 // ── REST Endpoints ──────────────────────────────────────────────────────
 
-async fn list_cards(State(state): State<AppState>) -> impl IntoResponse {
-    let cards = state.queue.pending().await;
+async fn list_cards(State(ctx): State<Arc<AppContext>>) -> impl IntoResponse {
+    let cards = ctx.card_queue.pending().await;
     Json(cards)
 }
 
-async fn get_card(State(state): State<AppState>, Path(id): Path<String>) -> impl IntoResponse {
+async fn get_card(State(ctx): State<Arc<AppContext>>, Path(id): Path<String>) -> impl IntoResponse {
     let card_id = match Uuid::parse_str(&id) {
         Ok(id) => id,
         Err(_) => {
@@ -298,7 +248,7 @@ async fn get_card(State(state): State<AppState>, Path(id): Path<String>) -> impl
     };
 
     // Look up in the in-memory queue first (covers all statuses).
-    let cards = state.queue.all_cards().await;
+    let cards = ctx.card_queue.all_cards().await;
     match cards.into_iter().find(|c| c.id == card_id) {
         Some(card) => (StatusCode::OK, Json(serde_json::json!(card))),
         None => (
@@ -308,7 +258,7 @@ async fn get_card(State(state): State<AppState>, Path(id): Path<String>) -> impl
     }
 }
 
-async fn approve_card(State(state): State<AppState>, Path(id): Path<String>) -> impl IntoResponse {
+async fn approve_card(State(ctx): State<Arc<AppContext>>, Path(id): Path<String>) -> impl IntoResponse {
     let card_id = match Uuid::parse_str(&id) {
         Ok(id) => id,
         Err(_) => {
@@ -319,10 +269,10 @@ async fn approve_card(State(state): State<AppState>, Path(id): Path<String>) -> 
         }
     };
 
-    match state.queue.approve(card_id).await {
+    match ctx.card_queue.approve(card_id).await {
         Some(card) => {
-            let ctx = state.action_context();
-            state.handler_for(&card).on_approve(&card, &ctx).await;
+            let act_ctx = action_context(&ctx);
+            handler_for(&ctx, &card).on_approve(&card, &act_ctx).await;
             (StatusCode::OK, Json(serde_json::json!(card)))
         }
         None => (
@@ -332,7 +282,7 @@ async fn approve_card(State(state): State<AppState>, Path(id): Path<String>) -> 
     }
 }
 
-async fn dismiss_card(State(state): State<AppState>, Path(id): Path<String>) -> impl IntoResponse {
+async fn dismiss_card(State(ctx): State<Arc<AppContext>>, Path(id): Path<String>) -> impl IntoResponse {
     let card_id = match Uuid::parse_str(&id) {
         Ok(id) => id,
         Err(_) => {
@@ -343,10 +293,10 @@ async fn dismiss_card(State(state): State<AppState>, Path(id): Path<String>) -> 
         }
     };
 
-    match state.queue.dismiss(card_id).await {
+    match ctx.card_queue.dismiss(card_id).await {
         Some(card) => {
-            let ctx = state.action_context();
-            state.handler_for(&card).on_dismiss(&card, &ctx).await;
+            let act_ctx = action_context(&ctx);
+            handler_for(&ctx, &card).on_dismiss(&card, &act_ctx).await;
             (
                 StatusCode::OK,
                 Json(serde_json::json!({"status": "dismissed"})),
@@ -365,7 +315,7 @@ struct EditRequest {
 }
 
 async fn edit_card(
-    State(state): State<AppState>,
+    State(ctx): State<Arc<AppContext>>,
     Path(id): Path<String>,
     Json(body): Json<EditRequest>,
 ) -> impl IntoResponse {
@@ -379,10 +329,10 @@ async fn edit_card(
         }
     };
 
-    match state.queue.edit(card_id, body.text.clone()).await {
+    match ctx.card_queue.edit(card_id, body.text.clone()).await {
         Some(card) => {
-            let ctx = state.action_context();
-            state.handler_for(&card).on_edit(&card, &body.text, &ctx).await;
+            let act_ctx = action_context(&ctx);
+            handler_for(&ctx, &card).on_edit(&card, &body.text, &act_ctx).await;
             (StatusCode::OK, Json(serde_json::json!(card)))
         }
         None => (
@@ -398,7 +348,7 @@ struct RefineRequest {
 }
 
 async fn refine_card(
-    State(state): State<AppState>,
+    State(ctx): State<Arc<AppContext>>,
     Path(id): Path<String>,
     Json(body): Json<RefineRequest>,
 ) -> impl IntoResponse {
@@ -413,9 +363,9 @@ async fn refine_card(
         }
     };
 
-    match state
-        .queue
-        .refine(card_id, body.instruction, &state.reply_drafter)
+    match ctx
+        .card_queue
+        .refine(card_id, body.instruction, &ctx.reply_drafter)
         .await
     {
         Ok(card) => (
@@ -464,7 +414,7 @@ fn default_confidence() -> f32 {
 }
 
 async fn create_test_card(
-    State(state): State<AppState>,
+    State(ctx): State<Arc<AppContext>>,
     Json(body): Json<TestCardRequest>,
 ) -> impl IntoResponse {
     let card = ApprovalCard::new(
@@ -484,7 +434,7 @@ async fn create_test_card(
         15,
     );
     let card_id = card.id;
-    state.queue.push(card).await;
+    ctx.card_queue.push(card).await;
     info!(card_id = %card_id, "Test card created");
     (
         StatusCode::CREATED,

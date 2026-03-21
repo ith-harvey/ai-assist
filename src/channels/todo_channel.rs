@@ -11,19 +11,17 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore, broadcast, mpsc};
+use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore, mpsc};
 use uuid::Uuid;
 use crate::cards::model::{ApprovalCard, CardPayload, CardSilo};
-use crate::cards::queue::CardQueue;
 use crate::channels::channel::{
     Channel, IncomingMessage, MessageStream, OutgoingResponse, StatusUpdate,
 };
+use crate::context::AppContext;
 use crate::error::ChannelError;
 use crate::logging::AgentLogger;
-use crate::store::Database;
 use crate::todos::activity::TodoActivityMessage;
-use crate::todos::activity_channel_map::ActivityChannelMap;
-use crate::todos::approval_registry::{TodoApprovalPending, TodoApprovalRegistry};
+use crate::todos::approval_registry::TodoApprovalPending;
 use crate::todos::model::{TodoStatus, TodoWsMessage};
 
 /// A Channel implementation that bridges todo execution to the activity stream.
@@ -34,11 +32,7 @@ pub struct TodoChannel {
     todo_description: String,
     /// If set, `start()` uses this instead of title+description.
     override_content: Option<String>,
-    activity_channels: Arc<ActivityChannelMap>,
-    db: Arc<dyn Database>,
-    todo_tx: broadcast::Sender<TodoWsMessage>,
-    card_queue: Arc<CardQueue>,
-    approval_registry: TodoApprovalRegistry,
+    ctx: Arc<AppContext>,
     /// The agent's concurrency permit — dropped (via RAII) to release the slot.
     permit: Arc<Mutex<Option<OwnedSemaphorePermit>>>,
     /// Semaphore reference for broadcasting available permit count.
@@ -63,15 +57,11 @@ impl TodoChannel {
         job_id: Uuid,
         todo_title: String,
         todo_description: String,
-        activity_channels: Arc<ActivityChannelMap>,
-        db: Arc<dyn Database>,
-        todo_tx: broadcast::Sender<TodoWsMessage>,
-        card_queue: Arc<CardQueue>,
-        approval_registry: TodoApprovalRegistry,
+        ctx: Arc<AppContext>,
         permit: OwnedSemaphorePermit,
         semaphore: Arc<Semaphore>,
     ) -> Self {
-        Self::with_override(todo_id, job_id, todo_title, todo_description, None, activity_channels, db, todo_tx, card_queue, approval_registry, permit, semaphore)
+        Self::with_override(todo_id, job_id, todo_title, todo_description, None, ctx, permit, semaphore)
     }
 
     pub fn with_override(
@@ -80,11 +70,7 @@ impl TodoChannel {
         todo_title: String,
         todo_description: String,
         override_content: Option<String>,
-        activity_channels: Arc<ActivityChannelMap>,
-        db: Arc<dyn Database>,
-        todo_tx: broadcast::Sender<TodoWsMessage>,
-        card_queue: Arc<CardQueue>,
-        approval_registry: TodoApprovalRegistry,
+        ctx: Arc<AppContext>,
         permit: OwnedSemaphorePermit,
         semaphore: Arc<Semaphore>,
     ) -> Self {
@@ -98,11 +84,7 @@ impl TodoChannel {
             todo_title,
             todo_description,
             override_content,
-            activity_channels,
-            db,
-            todo_tx,
-            card_queue,
-            approval_registry,
+            ctx,
             permit: permit_slot,
             semaphore,
             responded: AtomicBool::new(false),
@@ -135,9 +117,9 @@ impl TodoChannel {
 
     /// Emit an activity event: broadcast live + persist to DB.
     fn emit(&self, msg: TodoActivityMessage) {
-        self.activity_channels.send(self.todo_id, msg.clone());
+        self.ctx.activity_channels.send(self.todo_id, msg.clone());
 
-        let store = self.db.clone();
+        let store = self.ctx.db.clone();
         let job_id = self.job_id;
         let todo_id = self.todo_id;
         let action_type = msg.action_type();
@@ -161,8 +143,8 @@ impl TodoChannel {
 
     /// Broadcast a todo update to the iOS todo list WebSocket.
     async fn broadcast_todo_update(&self) {
-        if let Ok(Some(updated)) = self.db.get_todo(self.todo_id).await {
-            let _ = self.todo_tx.send(TodoWsMessage::TodoUpdated { todo: updated });
+        if let Ok(Some(updated)) = self.ctx.db.get_todo(self.todo_id).await {
+            let _ = self.ctx.todo_tx.send(TodoWsMessage::TodoUpdated { todo: updated });
         }
     }
 }
@@ -236,10 +218,10 @@ impl Channel for TodoChannel {
 
         // Update todo status to ready_for_review (only if currently AgentWorking;
         // Drafting todos are finalized by the todo agent's enrichment process via update_todo)
-        if let Ok(Some(todo)) = self.db.get_todo(self.todo_id).await {
+        if let Ok(Some(todo)) = self.ctx.db.get_todo(self.todo_id).await {
             if todo.status == TodoStatus::AgentWorking {
                 if let Err(e) = self
-                    .db
+                    .ctx.db
                     .update_todo_status(self.todo_id, TodoStatus::ReadyForReview)
                     .await
                 {
@@ -355,12 +337,12 @@ impl Channel for TodoChannel {
                 .with_todo_id(self.todo_id);
 
                 let card_id = card.id;
-                self.card_queue.push(card).await;
+                self.ctx.card_queue.push(card).await;
 
                 // Register in approval registry so card WS can route back to us
                 let request_uuid = Uuid::parse_str(request_id).unwrap_or_else(|_| Uuid::new_v4());
                 if let Some(tx) = self.get_msg_tx().await {
-                    self.approval_registry
+                    self.ctx.approval_registry
                         .register(
                             card_id,
                             TodoApprovalPending {
@@ -376,7 +358,7 @@ impl Channel for TodoChannel {
 
                 // Update todo status to awaiting_approval
                 if let Err(e) = self
-                    .db
+                    .ctx.db
                     .update_todo_status(self.todo_id, TodoStatus::AwaitingApproval)
                     .await
                 {
@@ -391,7 +373,7 @@ impl Channel for TodoChannel {
                         "Released permit during approval wait"
                     );
                     // Broadcast agent status change
-                    let _ = self.todo_tx.send(TodoWsMessage::AgentStatus {
+                    let _ = self.ctx.todo_tx.send(TodoWsMessage::AgentStatus {
                         active_count: self.semaphore.available_permits(),
                         max_count: self.semaphore.available_permits(), // max is total when all free
                     });
@@ -436,10 +418,10 @@ impl Channel for TodoChannel {
 
             // Reset todo back to created so it can be retried
             // (but not Drafting todos — those are managed by the todo agent's enrichment process)
-            if let Ok(Some(todo)) = self.db.get_todo(self.todo_id).await {
+            if let Ok(Some(todo)) = self.ctx.db.get_todo(self.todo_id).await {
                 if todo.status != TodoStatus::Drafting {
                     if let Err(e) = self
-                        .db
+                        .ctx.db
                         .update_todo_status(self.todo_id, TodoStatus::Created)
                         .await
                     {
@@ -452,7 +434,7 @@ impl Channel for TodoChannel {
         }
 
         // Clean up any pending approvals for this todo
-        self.approval_registry.remove_for_todo(self.todo_id).await;
+        self.ctx.approval_registry.remove_for_todo(self.todo_id).await;
 
         // Close the stream if not already closed
         self.close_stream().await;

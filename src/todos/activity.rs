@@ -17,10 +17,7 @@ use tokio::sync::broadcast;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
-use crate::agent::agent_queue::AgentQueue;
-use crate::agent::todo_agent::TodoAgentDeps;
-use crate::store::Database;
-use crate::todos::activity_channel_map::ActivityChannelMap;
+use crate::context::AppContext;
 use crate::todos::model::{TodoStatus, TodoWsMessage};
 
 /// A single message in an agent transcript dump.
@@ -162,53 +159,30 @@ impl TodoActivityMessage {
     }
 }
 
-/// Shared state for the activity WebSocket.
-#[derive(Clone)]
-pub struct ActivityState {
-    pub db: Arc<dyn Database>,
-    /// Per-todo broadcast channels for activity events.
-    pub activity_channels: Arc<ActivityChannelMap>,
-    /// Dependencies for spawning follow-up agents.
-    pub agent_deps: TodoAgentDeps,
-    /// Agent dispatch queue for enqueuing follow-ups.
-    pub queue: Arc<AgentQueue>,
-}
-
-impl ActivityState {
-    pub fn new(
-        db: Arc<dyn Database>,
-        activity_channels: Arc<ActivityChannelMap>,
-        agent_deps: TodoAgentDeps,
-        queue: Arc<AgentQueue>,
-    ) -> Self {
-        Self { db, activity_channels, agent_deps, queue }
-    }
-}
-
 /// Build the Axum router for `/ws/todos/:todo_id/activity`.
-pub fn activity_routes(state: ActivityState) -> Router {
+pub fn activity_routes(ctx: Arc<AppContext>) -> Router {
     Router::new()
         .route("/ws/todos/{todo_id}/activity", get(ws_handler))
-        .with_state(state)
+        .with_state(ctx)
 }
 
 async fn ws_handler(
     ws: WebSocketUpgrade,
     Path(todo_id): Path<Uuid>,
-    State(state): State<ActivityState>,
+    State(ctx): State<Arc<AppContext>>,
 ) -> impl IntoResponse {
     info!(todo_id = %todo_id, "Activity WebSocket client connecting");
-    ws.on_upgrade(move |socket| handle_socket(socket, todo_id, state))
+    ws.on_upgrade(move |socket| handle_socket(socket, todo_id, ctx))
 }
 
-async fn handle_socket(mut socket: WebSocket, todo_id: Uuid, state: ActivityState) {
+async fn handle_socket(mut socket: WebSocket, todo_id: Uuid, ctx: Arc<AppContext>) {
     info!(todo_id = %todo_id, "📡 Activity WS connected");
 
     // Subscribe BEFORE querying history so no broadcast events are lost
-    let mut rx = state.activity_channels.subscribe(todo_id);
+    let mut rx = ctx.activity_channels.subscribe(todo_id);
 
     // Replay any stored activity history for this todo
-    match state.db.get_activity_for_todo(todo_id).await {
+    match ctx.db.get_activity_for_todo(todo_id).await {
         Ok(actions) => {
             info!(todo_id = %todo_id, count = actions.len(), "📡 Replaying activity history");
             for (i, action) in actions.iter().enumerate() {
@@ -298,8 +272,8 @@ async fn handle_socket(mut socket: WebSocket, todo_id: Uuid, state: ActivityStat
                                         todo_id,
                                         content: content.clone(),
                                     };
-                                    state.activity_channels.send(todo_id, user_msg.clone());
-                                    let store = state.db.clone();
+                                    ctx.activity_channels.send(todo_id, user_msg.clone());
+                                    let store = ctx.db.clone();
                                     let action_data = serde_json::to_string(&user_msg).unwrap_or_default();
                                     tokio::spawn(async move {
                                         if let Err(e) = store.save_job_action(Uuid::nil(), Some(todo_id), "user_message", &action_data).await {
@@ -308,8 +282,8 @@ async fn handle_socket(mut socket: WebSocket, todo_id: Uuid, state: ActivityStat
                                     });
 
                                     // Update todo status to AgentWorking
-                                    let db = state.db.clone();
-                                    let todo_tx = state.agent_deps.todo_tx.clone();
+                                    let db = ctx.db.clone();
+                                    let todo_tx = ctx.todo_tx.clone();
                                     let db2 = db.clone();
                                     tokio::spawn(async move {
                                         if let Err(e) = db.update_todo_status(todo_id, TodoStatus::AgentWorking).await {
@@ -321,10 +295,9 @@ async fn handle_socket(mut socket: WebSocket, todo_id: Uuid, state: ActivityStat
                                     });
 
                                     // Spawn follow-up agent via queue
-                                    let queue = Arc::clone(&state.queue);
-                                    let db = Arc::clone(&state.db);
+                                    let ctx2 = Arc::clone(&ctx);
                                     tokio::spawn(async move {
-                                        if let Err(e) = spawn_followup_agent(todo_id, &content, &queue, &db).await {
+                                        if let Err(e) = spawn_followup_agent(todo_id, &content, &ctx2).await {
                                             warn!(todo_id = %todo_id, error = %e, "Failed to spawn follow-up agent");
                                         }
                                     });
@@ -352,10 +325,9 @@ async fn handle_socket(mut socket: WebSocket, todo_id: Uuid, state: ActivityStat
 async fn spawn_followup_agent(
     todo_id: Uuid,
     user_message: &str,
-    queue: &Arc<AgentQueue>,
-    db: &Arc<dyn Database>,
+    ctx: &Arc<AppContext>,
 ) -> Result<(), String> {
-    let context = if let Ok(Some(todo)) = db.get_todo(todo_id).await {
+    let context = if let Ok(Some(todo)) = ctx.db.get_todo(todo_id).await {
         format!(
             "[todo_id: {}]\nCurrent state: type={:?}, bucket={:?}, priority={}, status={:?}, desc={}\n\nUser: {}",
             todo_id, todo.todo_type, todo.bucket, todo.priority, todo.status,
@@ -364,7 +336,7 @@ async fn spawn_followup_agent(
     } else {
         format!("[todo_id: {}]\n\nUser: {}", todo_id, user_message)
     };
-    queue.enqueue_followup(todo_id, context).await
+    ctx.queue().enqueue_followup(todo_id, context).await
 }
 
 #[cfg(test)]

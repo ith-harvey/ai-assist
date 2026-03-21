@@ -4,19 +4,19 @@ use ai_assist::agent::routine_engine::{self, RoutineEngine};
 use ai_assist::agent::{Agent, AgentDeps};
 use ai_assist::cards::reply_drafter::{GeneratorConfig, ReplyDrafter};
 use ai_assist::cards::queue::{self, CardQueue};
+use ai_assist::calendar::routes::calendar_routes;
 use ai_assist::cards::ws::card_routes;
 use ai_assist::channels::email::EmailConfig;
 use ai_assist::channels::{ChannelManager, CliChannel, IosChannel, TelegramChannel};
-use ai_assist::calendar::routes::{CalendarState, calendar_routes};
-use ai_assist::documents::routes::{DocumentState, document_routes};
 use ai_assist::config::{AgentConfig, GoogleOAuthConfig, RoutineConfig};
+use ai_assist::documents::routes::document_routes;
 use ai_assist::llm::{LlmBackend, LlmConfig, create_provider};
 use ai_assist::safety::SafetyLayer;
 use ai_assist::store::{Database, LibSqlBackend};
-use ai_assist::todos::activity::{ActivityState, activity_routes};
+use ai_assist::todos::activity::activity_routes;
 use ai_assist::todos::activity_channel_map::ActivityChannelMap;
 use ai_assist::todos::approval_registry::TodoApprovalRegistry;
-use ai_assist::todos::ws::{TodoState, todo_routes};
+use ai_assist::todos::ws::todo_routes;
 use ai_assist::tools::ToolRegistry;
 use ai_assist::worker::{ContextManager, Scheduler};
 use ai_assist::workspace::Workspace;
@@ -260,44 +260,40 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     eprintln!("   Tools: {} registered", tools.count());
 
-    // ── Todo Agent System ──────────────────────────────────────────────
-    let approval_registry = TodoApprovalRegistry::new();
+    // ── Centralized Application Context ───────────────────────────────
+    let (todo_tx, _) = tokio::sync::broadcast::channel::<ai_assist::todos::model::TodoWsMessage>(256);
+    let choice_registry = ai_assist::cards::choice_registry::ChoiceRegistry::new();
 
-    let todo_state = TodoState::new(Arc::clone(&db));
-    let todo_agent_deps = ai_assist::agent::todo_agent::TodoAgentDeps {
+    let ctx = Arc::new(ai_assist::context::AppContext {
         db: Arc::clone(&db),
         llm: llm.clone(),
         safety: Arc::clone(&safety),
         tools: Arc::clone(&tools),
         workspace: Arc::clone(&workspace),
+        todo_tx: todo_tx.clone(),
         activity_channels: Arc::clone(&activity_channels),
-        todo_tx: todo_state.tx.clone(),
         card_queue: card_queue.clone(),
-        approval_registry: approval_registry.clone(),
-    };
+        approval_registry: TodoApprovalRegistry::new(),
+        choice_registry: choice_registry.clone(),
+        email_config: email_config_for_cards,
+        reply_drafter: reply_drafter.clone(),
+        oauth_config: google_oauth_config.clone(),
+        agent_queue: std::sync::OnceLock::new(),
+    });
 
+    // Create AgentQueue with AppContext, then set it in the OnceLock
     let agent_queue = ai_assist::agent::agent_queue::AgentQueue::new(
         agent_config.max_parallel_jobs,
-        todo_agent_deps.clone(),
+        Arc::clone(&ctx),
     );
+    ctx.agent_queue.set(Arc::clone(&agent_queue)).unwrap_or_else(|_| panic!("AgentQueue already set"));
 
-    let todo_state = TodoState::with_agents(
-        Arc::clone(&db),
-        Arc::clone(&agent_queue),
-        card_queue.clone(),
-    );
+    // Register tools that need todo_tx, navigate_tx, agent_queue
     let (navigate_tx, navigate_rx) = tokio::sync::broadcast::channel::<uuid::Uuid>(16);
-    tools.register_todo_tools(Arc::clone(&db), todo_state.tx.clone(), navigate_tx, Arc::clone(&agent_queue));
-    let choice_registry = ai_assist::cards::choice_registry::ChoiceRegistry::new();
-    tools.register_ask_user_tool(card_queue.clone(), choice_registry.clone());
+    tools.register_todo_tools(Arc::clone(&db), todo_tx.clone(), navigate_tx, Arc::clone(&agent_queue));
+    tools.register_ask_user_tool(card_queue.clone(), choice_registry);
     tools.register_message_tools(card_queue.clone());
     tools.register_calendar_tools(Arc::clone(&db), google_oauth_config.clone());
-    let activity_state = ActivityState::new(
-        Arc::clone(&db),
-        Arc::clone(&activity_channels),
-        todo_agent_deps.clone(),
-        Arc::clone(&agent_queue),
-    );
 
     // ── Todo Pickup Loop (safety-net recovery for orphaned todos) ──
     let _pickup_handle = ai_assist::todos::pickup::spawn_todo_pickup_loop(
@@ -312,33 +308,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ios_channel = IosChannel::new(Some(Arc::clone(&db)), navigate_rx);
     let ios_router = ios_channel.router();
 
-    // Spawn Axum WS/REST server — cards + iOS chat + todos + activity
-    let app = card_routes(
-        card_queue.clone(),
-        email_config_for_cards,
-        reply_drafter.clone(),
-        approval_registry,
-        Arc::clone(&activity_channels),
-        choice_registry,
-        Arc::clone(&db),
-        todo_state.tx.clone(),
-        Some(Arc::clone(&agent_queue)),
-    )
-    .merge(ios_router)
-    .merge(todo_routes(todo_state))
-    .merge(activity_routes(activity_state))
-    .merge(document_routes(DocumentState { db: Arc::clone(&db) }));
+    // Spawn Axum WS/REST server — all routes share Arc<AppContext>
+    let app = card_routes(Arc::clone(&ctx))
+        .merge(ios_router)
+        .merge(todo_routes(Arc::clone(&ctx)))
+        .merge(activity_routes(Arc::clone(&ctx)))
+        .merge(document_routes(Arc::clone(&ctx)));
 
-    // Google Calendar OAuth routes (always registered; returns availability via /api/calendar/status)
+    // Google Calendar OAuth routes
     if let Some(ref config) = google_oauth_config {
         eprintln!("   Google Calendar: enabled (redirect: {})", config.redirect_uri);
     } else {
         eprintln!("   Google Calendar: disabled (set GOOGLE_CLIENT_ID to enable)");
     }
-    let app = app.merge(calendar_routes(CalendarState {
-        db: Arc::clone(&db),
-        oauth_config: google_oauth_config,
-    }));
+    let app = app.merge(calendar_routes(Arc::clone(&ctx)));
 
     tokio::spawn(async move {
         let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", ws_port))

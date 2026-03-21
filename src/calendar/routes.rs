@@ -28,18 +28,10 @@ use super::{
     get_valid_access_token, store_tokens,
 };
 use super::events::{self, CreateEventRequest, UpdateEventRequest};
-use crate::config::GoogleOAuthConfig;
-use crate::store::Database;
-
-/// Shared state for calendar routes.
-#[derive(Clone)]
-pub struct CalendarState {
-    pub db: Arc<dyn Database>,
-    pub oauth_config: Option<GoogleOAuthConfig>,
-}
+use crate::context::AppContext;
 
 /// Build the Axum router for calendar OAuth and event endpoints.
-pub fn calendar_routes(state: CalendarState) -> Router {
+pub fn calendar_routes(ctx: Arc<AppContext>) -> Router {
     Router::new()
         .route("/auth/google/start", get(google_auth_start))
         .route("/auth/google/callback", get(google_auth_callback))
@@ -53,14 +45,14 @@ pub fn calendar_routes(state: CalendarState) -> Router {
             "/api/calendar/events/{event_id}",
             axum::routing::patch(update_event_handler).delete(delete_event_handler),
         )
-        .with_state(state)
+        .with_state(ctx)
 }
 
 /// GET /auth/google/start — returns the Google consent URL.
 ///
 /// The iOS app calls this, then opens the URL in ASWebAuthenticationSession.
-async fn google_auth_start(State(state): State<CalendarState>) -> impl IntoResponse {
-    let oauth_config = match &state.oauth_config {
+async fn google_auth_start(State(ctx): State<Arc<AppContext>>) -> impl IntoResponse {
+    let oauth_config = match &ctx.oauth_config {
         Some(config) => config,
         None => {
             return (
@@ -76,8 +68,7 @@ async fn google_auth_start(State(state): State<CalendarState>) -> impl IntoRespo
     let csrf_state = uuid::Uuid::new_v4().to_string();
 
     // Store state for CSRF validation in the callback
-    if let Err(e) = state
-        .db
+    if let Err(e) = ctx.db
         .set_setting(
             "default",
             GCAL_OAUTH_STATE,
@@ -110,10 +101,10 @@ struct CallbackParams {
 /// that redirects to the `aiassist://` URL scheme so ASWebAuthenticationSession
 /// detects completion.
 async fn google_auth_callback(
-    State(state): State<CalendarState>,
+    State(ctx): State<Arc<AppContext>>,
     Query(params): Query<CallbackParams>,
 ) -> impl IntoResponse {
-    let oauth_config = match &state.oauth_config {
+    let oauth_config = match &ctx.oauth_config {
         Some(config) => config,
         None => {
             return Html(
@@ -147,8 +138,7 @@ async fn google_auth_callback(
     };
 
     // Validate CSRF state
-    let expected_state = state
-        .db
+    let expected_state = ctx.db
         .get_setting("default", GCAL_OAUTH_STATE)
         .await
         .ok()
@@ -202,7 +192,7 @@ async fn google_auth_callback(
 
     // Store everything
     if let Err(e) = store_tokens(
-        state.db.as_ref(),
+        ctx.db.as_ref(),
         "default",
         &tokens.access_token,
         &refresh_token,
@@ -220,7 +210,7 @@ async fn google_auth_callback(
     }
 
     // Clean up CSRF state
-    let _ = state.db.delete_setting("default", GCAL_OAUTH_STATE).await;
+    let _ = ctx.db.delete_setting("default", GCAL_OAUTH_STATE).await;
 
     tracing::info!(email = %email, "Google Calendar connected");
 
@@ -236,11 +226,10 @@ async fn google_auth_callback(
 }
 
 /// GET /api/calendar/status — check if Google Calendar is connected.
-async fn calendar_status(State(state): State<CalendarState>) -> impl IntoResponse {
-    let available = state.oauth_config.is_some();
+async fn calendar_status(State(ctx): State<Arc<AppContext>>) -> impl IntoResponse {
+    let available = ctx.oauth_config.is_some();
 
-    let has_refresh = state
-        .db
+    let has_refresh = ctx.db
         .get_setting("default", GCAL_REFRESH_TOKEN)
         .await
         .ok()
@@ -248,8 +237,7 @@ async fn calendar_status(State(state): State<CalendarState>) -> impl IntoRespons
         .and_then(|v| v.as_str().map(String::from))
         .is_some();
 
-    let email = state
-        .db
+    let email = ctx.db
         .get_setting("default", GCAL_EMAIL)
         .await
         .ok()
@@ -264,8 +252,8 @@ async fn calendar_status(State(state): State<CalendarState>) -> impl IntoRespons
 }
 
 /// DELETE /api/calendar/connection — disconnect Google Calendar.
-async fn calendar_disconnect(State(state): State<CalendarState>) -> impl IntoResponse {
-    if let Err(e) = delete_tokens(state.db.as_ref(), "default").await {
+async fn calendar_disconnect(State(ctx): State<Arc<AppContext>>) -> impl IntoResponse {
+    if let Err(e) = delete_tokens(ctx.db.as_ref(), "default").await {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({"error": format!("Failed to disconnect: {}", e)})),
@@ -286,8 +274,8 @@ struct ListEventsParams {
 }
 
 /// Helper: get a valid access token or return 401.
-async fn require_access_token(state: &CalendarState) -> Result<String, axum::response::Response> {
-    let config = match &state.oauth_config {
+async fn require_access_token(ctx: &Arc<AppContext>) -> Result<String, axum::response::Response> {
+    let config = match &ctx.oauth_config {
         Some(c) => c,
         None => {
             return Err((
@@ -298,7 +286,7 @@ async fn require_access_token(state: &CalendarState) -> Result<String, axum::res
         }
     };
 
-    match get_valid_access_token(state.db.as_ref(), "default", config).await {
+    match get_valid_access_token(ctx.db.as_ref(), "default", config).await {
         Ok(Some(token)) => Ok(token),
         Ok(None) => Err((
             StatusCode::UNAUTHORIZED,
@@ -315,10 +303,10 @@ async fn require_access_token(state: &CalendarState) -> Result<String, axum::res
 
 /// GET /api/calendar/events?date=YYYY-MM-DD
 async fn list_events_handler(
-    State(state): State<CalendarState>,
+    State(ctx): State<Arc<AppContext>>,
     Query(params): Query<ListEventsParams>,
 ) -> impl IntoResponse {
-    let token = match require_access_token(&state).await {
+    let token = match require_access_token(&ctx).await {
         Ok(t) => t,
         Err(e) => return e.into_response(),
     };
@@ -363,10 +351,10 @@ async fn list_events_handler(
 
 /// POST /api/calendar/events
 async fn create_event_handler(
-    State(state): State<CalendarState>,
+    State(ctx): State<Arc<AppContext>>,
     Json(req): Json<CreateEventRequest>,
 ) -> impl IntoResponse {
-    let token = match require_access_token(&state).await {
+    let token = match require_access_token(&ctx).await {
         Ok(t) => t,
         Err(e) => return e.into_response(),
     };
@@ -383,11 +371,11 @@ async fn create_event_handler(
 
 /// PATCH /api/calendar/events/:event_id
 async fn update_event_handler(
-    State(state): State<CalendarState>,
+    State(ctx): State<Arc<AppContext>>,
     Path(event_id): Path<String>,
     Json(req): Json<UpdateEventRequest>,
 ) -> impl IntoResponse {
-    let token = match require_access_token(&state).await {
+    let token = match require_access_token(&ctx).await {
         Ok(t) => t,
         Err(e) => return e.into_response(),
     };
@@ -404,10 +392,10 @@ async fn update_event_handler(
 
 /// DELETE /api/calendar/events/:event_id
 async fn delete_event_handler(
-    State(state): State<CalendarState>,
+    State(ctx): State<Arc<AppContext>>,
     Path(event_id): Path<String>,
 ) -> impl IntoResponse {
-    let token = match require_access_token(&state).await {
+    let token = match require_access_token(&ctx).await {
         Ok(t) => t,
         Err(e) => return e.into_response(),
     };
