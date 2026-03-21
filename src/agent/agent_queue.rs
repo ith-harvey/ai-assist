@@ -15,7 +15,7 @@ use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use crate::agent::todo_agent::{TodoAgentDeps, spawn_todo_agent};
-use crate::todos::model::{TodoBucket, TodoStatus, TodoType, TodoWsMessage};
+use crate::todos::model::{TodoBucket, TodoStatus, TodoWsMessage};
 
 /// Central orchestrator for todo agent concurrency and dispatch.
 ///
@@ -187,14 +187,12 @@ impl AgentQueue {
                 if now - todo.updated_at > stale_threshold {
                     info!(todo_id = %todo.id, "Auto-finalizing stale draft todo");
 
-                    // Apply sensible defaults for unfilled fields
-                    if todo.todo_type == TodoType::Deliverable && todo.description.is_none() {
-                        // Keep default type but mark as generic
-                        todo.todo_type = TodoType::Deliverable;
-                    }
+                    // Only fill in defaults for fields still at their initial values;
+                    // preserve anything the enrichment agent already set.
                     if todo.priority == 0 {
-                        todo.priority = 1; // Medium priority
+                        todo.priority = 1; // Medium priority default
                     }
+                    // todo_type, bucket, description, etc. are kept as-is
                     todo.status = TodoStatus::Created;
                     todo.updated_at = now;
 
