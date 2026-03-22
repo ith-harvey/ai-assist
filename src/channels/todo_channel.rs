@@ -118,7 +118,14 @@ impl TodoChannel {
     /// Emit an activity event: broadcast live + persist to DB.
     fn emit(&self, msg: TodoActivityMessage) {
         self.ctx.activity_channels.send(self.todo_id, msg.clone());
+        self.persist_only(msg);
+    }
 
+    /// Persist an activity event to the DB without broadcasting to WebSocket.
+    ///
+    /// Used for events that should be stored for context rebuild but not sent
+    /// to connected iOS clients (e.g., Transcript on success).
+    fn persist_only(&self, msg: TodoActivityMessage) {
         let store = self.ctx.db.clone();
         let job_id = self.job_id;
         let todo_id = self.todo_id;
@@ -446,16 +453,20 @@ impl Channel for TodoChannel {
         let succeeded = self.responded.load(Ordering::SeqCst);
         self.logger.flush(succeeded).await;
 
-        // Emit transcript to WebSocket for iOS activity stream (failures only —
-        // on success the activity feed already has all events, and a transcript
-        // after "Completed" looks like the work is still going).
-        if !succeeded {
-            let messages = self.logger.transcript_messages().await;
-            if !messages.is_empty() {
-                self.emit(TodoActivityMessage::Transcript {
-                    job_id: self.job_id,
-                    messages,
-                });
+        // Persist transcript for context rebuild on both success and failure.
+        // Only broadcast to WebSocket on failure (on success the activity feed
+        // already has all events, and a transcript after "Completed" looks like
+        // the work is still going).
+        let messages = self.logger.transcript_messages().await;
+        if !messages.is_empty() {
+            let transcript = TodoActivityMessage::Transcript {
+                job_id: self.job_id,
+                messages,
+            };
+            if succeeded {
+                self.persist_only(transcript);
+            } else {
+                self.emit(transcript);
             }
         }
 

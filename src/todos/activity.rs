@@ -4,6 +4,7 @@
 //! `/ws/todos/:todo_id/activity`. Clients connect to watch an agent work
 //! on a todo in real-time.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use axum::{
@@ -18,6 +19,7 @@ use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use crate::context::AppContext;
+use crate::store::Database;
 use crate::todos::model::{TodoStatus, TodoWsMessage};
 
 /// A single message in an agent transcript dump.
@@ -318,6 +320,168 @@ async fn handle_socket(mut socket: WebSocket, todo_id: Uuid, ctx: Arc<AppContext
     info!(todo_id = %todo_id, "Activity WebSocket connection closed");
 }
 
+// ── Context Rebuild ─────────────────────────────────────────────────
+
+/// Maximum total length of rebuilt context output.
+const CONTEXT_MAX_CHARS: usize = 4000;
+
+/// Maximum length of a single entry in the rebuilt context.
+const ENTRY_MAX_CHARS: usize = 500;
+
+/// Truncate a string to `max` chars, appending "..." if truncated.
+fn truncate_entry(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        return s.to_string();
+    }
+    let truncated = &s[..max];
+    if let Some(pos) = truncated.rfind(' ') {
+        format!("{}...", &s[..pos])
+    } else {
+        format!("{}...", truncated)
+    }
+}
+
+/// Rebuild a condensed context string from raw activity event JSON strings.
+///
+/// This is a pure function — callers fetch the events from the DB and pass them in.
+/// Returns `None` if `actions` is empty.
+pub fn rebuild_context(actions: &[String]) -> Option<String> {
+    if actions.is_empty() {
+        return None;
+    }
+
+    let mut tools: Vec<String> = Vec::new();
+    let mut responses: Vec<String> = Vec::new();
+    let mut user_messages: Vec<String> = Vec::new();
+    let mut approvals: Vec<String> = Vec::new();
+    let mut outcome: Option<String> = None;
+
+    // Map card_id → tool_name from ApprovalNeeded events
+    let mut card_tool_names: HashMap<Uuid, String> = HashMap::new();
+
+    for action_json in actions {
+        let msg: TodoActivityMessage = match serde_json::from_str(action_json) {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+
+        match msg {
+            TodoActivityMessage::ToolCompleted { tool_name, success, summary, .. } => {
+                let status = if success { "success" } else { "failed" };
+                tools.push(format!(
+                    "- {}: {} — {}",
+                    tool_name,
+                    status,
+                    truncate_entry(&summary, ENTRY_MAX_CHARS),
+                ));
+            }
+            TodoActivityMessage::AgentResponse { content, .. } => {
+                responses.push(format!("- {}", truncate_entry(&content, ENTRY_MAX_CHARS)));
+            }
+            TodoActivityMessage::UserMessage { content, .. } => {
+                user_messages.push(format!("- {}", truncate_entry(&content, ENTRY_MAX_CHARS)));
+            }
+            TodoActivityMessage::ApprovalNeeded { card_id, tool_name, .. } => {
+                card_tool_names.insert(card_id, tool_name);
+            }
+            TodoActivityMessage::ApprovalResolved { card_id, approved, .. } => {
+                let tool = card_tool_names
+                    .get(&card_id)
+                    .cloned()
+                    .unwrap_or_else(|| "unknown tool".to_string());
+                let status = if approved { "approved" } else { "dismissed" };
+                approvals.push(format!("- {}: {}", tool, status));
+            }
+            TodoActivityMessage::Completed { summary, .. } => {
+                outcome = Some(format!("Completed: {}", truncate_entry(&summary, ENTRY_MAX_CHARS)));
+            }
+            TodoActivityMessage::Failed { error, .. } => {
+                outcome = Some(format!("Failed: {}", truncate_entry(&error, ENTRY_MAX_CHARS)));
+            }
+            // Skip Thinking, Reasoning, Started, Transcript
+            _ => {}
+        }
+    }
+
+    if outcome.is_none() {
+        outcome = Some("Interrupted — server restarted".to_string());
+    }
+
+    let mut sections: Vec<String> = Vec::new();
+
+    if !tools.is_empty() {
+        sections.push(format!("### Tools executed\n{}", tools.join("\n")));
+    }
+    if !responses.is_empty() {
+        sections.push(format!("### Agent responses\n{}", responses.join("\n")));
+    }
+    if !user_messages.is_empty() {
+        sections.push(format!("### User messages\n{}", user_messages.join("\n")));
+    }
+    if !approvals.is_empty() {
+        sections.push(format!("### Approvals\n{}", approvals.join("\n")));
+    }
+    if let Some(ref out) = outcome {
+        sections.push(format!("### Outcome\n{}", out));
+    }
+
+    if sections.is_empty() {
+        return None;
+    }
+
+    let mut output = format!("## Prior work on this todo\n\n{}", sections.join("\n\n"));
+
+    // Cap total output — keep outcome, drop oldest content
+    if output.len() > CONTEXT_MAX_CHARS {
+        let outcome_section = sections.last().unwrap();
+        let header = "## Prior work on this todo\n\n";
+        let truncation_notice = "[... earlier activity truncated for brevity ...]\n\n";
+        let budget = CONTEXT_MAX_CHARS - header.len() - truncation_notice.len() - outcome_section.len() - 2;
+
+        let content_sections = &sections[..sections.len() - 1];
+        let mut kept: Vec<&str> = Vec::new();
+        let mut used = 0;
+        for section in content_sections.iter().rev() {
+            if used + section.len() + 2 <= budget {
+                kept.push(section);
+                used += section.len() + 2;
+            }
+        }
+        kept.reverse();
+
+        if kept.is_empty() {
+            output = format!("{}{}{}", header, truncation_notice, outcome_section);
+        } else {
+            output = format!(
+                "{}{}{}\n\n{}",
+                header,
+                truncation_notice,
+                kept.join("\n\n"),
+                outcome_section,
+            );
+        }
+    }
+
+    Some(output)
+}
+
+/// Rebuild context from persisted activity in the database.
+///
+/// Thin async wrapper around `rebuild_context()` — fetches events from DB,
+/// then delegates to the pure function.
+pub async fn rebuild_context_from_activity(
+    db: &Arc<dyn Database>,
+    todo_id: Uuid,
+) -> Option<String> {
+    match db.get_activity_for_todo(todo_id).await {
+        Ok(actions) => rebuild_context(&actions),
+        Err(e) => {
+            warn!(todo_id = %todo_id, error = %e, "Failed to load activity for context rebuild");
+            None
+        }
+    }
+}
+
 /// Spawn a follow-up agent for a todo, building context from prior activity history.
 ///
 /// Includes the todo's current DB state so the agent knows which fields are already filled.
@@ -327,15 +491,23 @@ async fn spawn_followup_agent(
     user_message: &str,
     ctx: &Arc<AppContext>,
 ) -> Result<(), String> {
-    let context = if let Ok(Some(todo)) = ctx.db.get_todo(todo_id).await {
+    let prior_context = rebuild_context_from_activity(&ctx.db, todo_id).await;
+
+    let todo_state = if let Ok(Some(todo)) = ctx.db.get_todo(todo_id).await {
         format!(
-            "[todo_id: {}]\nCurrent state: type={:?}, bucket={:?}, priority={}, status={:?}, desc={}\n\nUser: {}",
+            "[todo_id: {}]\nCurrent state: type={:?}, bucket={:?}, priority={}, status={:?}, desc={}",
             todo_id, todo.todo_type, todo.bucket, todo.priority, todo.status,
-            todo.description.as_deref().unwrap_or("(none)"), user_message
+            todo.description.as_deref().unwrap_or("(none)")
         )
     } else {
-        format!("[todo_id: {}]\n\nUser: {}", todo_id, user_message)
+        format!("[todo_id: {}]", todo_id)
     };
+
+    let context = match prior_context {
+        Some(prior) => format!("{}\n\n{}\n\nUser: {}", prior, todo_state, user_message),
+        None => format!("{}\n\nUser: {}", todo_state, user_message),
+    };
+
     ctx.queue().enqueue_followup(todo_id, context).await
 }
 
@@ -526,5 +698,197 @@ mod tests {
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains("\"approved\":false"));
+    }
+
+    // ── Context rebuild tests ──────────────────────────────────────
+
+    #[test]
+    fn truncate_entry_short_string() {
+        assert_eq!(truncate_entry("hello", 500), "hello");
+    }
+
+    #[test]
+    fn truncate_entry_long_string() {
+        let long = "word ".repeat(200);
+        let result = truncate_entry(&long, 50);
+        assert!(result.len() <= 54);
+        assert!(result.ends_with("..."));
+    }
+
+    #[test]
+    fn truncate_entry_breaks_at_word_boundary() {
+        let result = truncate_entry("hello world this is a test", 12);
+        assert_eq!(result, "hello world...");
+    }
+
+    #[test]
+    fn rebuild_context_returns_none_for_empty() {
+        assert!(rebuild_context(&[]).is_none());
+    }
+
+    #[test]
+    fn rebuild_context_skips_thinking_and_reasoning() {
+        let actions: Vec<String> = vec![
+            serde_json::to_string(&TodoActivityMessage::Thinking {
+                job_id: Uuid::new_v4(),
+                iteration: 1,
+            }).unwrap(),
+            serde_json::to_string(&TodoActivityMessage::Reasoning {
+                job_id: Uuid::new_v4(),
+                content: "Deep thought...".into(),
+            }).unwrap(),
+        ];
+        let result = rebuild_context(&actions);
+        let text = result.unwrap();
+        assert!(!text.contains("Deep thought"));
+        assert!(!text.contains("iteration"));
+        assert!(text.contains("Interrupted"));
+    }
+
+    #[test]
+    fn rebuild_context_formats_sections_correctly() {
+        let card_id = Uuid::new_v4();
+        let actions: Vec<String> = vec![
+            serde_json::to_string(&TodoActivityMessage::ToolCompleted {
+                job_id: Uuid::new_v4(),
+                tool_name: "read_file".into(),
+                success: true,
+                summary: "Read 50 lines from main.rs".into(),
+            }).unwrap(),
+            serde_json::to_string(&TodoActivityMessage::AgentResponse {
+                job_id: Uuid::new_v4(),
+                content: "I found the bug in main.rs".into(),
+            }).unwrap(),
+            serde_json::to_string(&TodoActivityMessage::UserMessage {
+                todo_id: Uuid::new_v4(),
+                content: "Can you also fix the tests?".into(),
+            }).unwrap(),
+            serde_json::to_string(&TodoActivityMessage::ApprovalNeeded {
+                job_id: Uuid::new_v4(),
+                card_id,
+                tool_name: "shell".into(),
+                description: "cargo test".into(),
+            }).unwrap(),
+            serde_json::to_string(&TodoActivityMessage::ApprovalResolved {
+                job_id: Uuid::new_v4(),
+                card_id,
+                approved: true,
+            }).unwrap(),
+            serde_json::to_string(&TodoActivityMessage::Completed {
+                job_id: Uuid::new_v4(),
+                summary: "Fixed the bug and tests pass".into(),
+            }).unwrap(),
+        ];
+
+        let result = rebuild_context(&actions).unwrap();
+        assert!(result.contains("## Prior work on this todo"));
+        assert!(result.contains("### Tools executed"));
+        assert!(result.contains("read_file: success"));
+        assert!(result.contains("### Agent responses"));
+        assert!(result.contains("I found the bug"));
+        assert!(result.contains("### User messages"));
+        assert!(result.contains("fix the tests"));
+        assert!(result.contains("### Approvals"));
+        assert!(result.contains("shell: approved"));
+        assert!(result.contains("### Outcome"));
+        assert!(result.contains("Completed: Fixed the bug"));
+    }
+
+    #[test]
+    fn rebuild_context_shows_interrupted_when_no_terminal() {
+        let actions: Vec<String> = vec![
+            serde_json::to_string(&TodoActivityMessage::ToolCompleted {
+                job_id: Uuid::new_v4(),
+                tool_name: "shell".into(),
+                success: true,
+                summary: "ls completed".into(),
+            }).unwrap(),
+        ];
+        let result = rebuild_context(&actions).unwrap();
+        assert!(result.contains("Interrupted — server restarted"));
+    }
+
+    #[test]
+    fn rebuild_context_truncates_long_entries() {
+        let long_summary = "x".repeat(1000);
+        let actions: Vec<String> = vec![
+            serde_json::to_string(&TodoActivityMessage::ToolCompleted {
+                job_id: Uuid::new_v4(),
+                tool_name: "read_file".into(),
+                success: true,
+                summary: long_summary,
+            }).unwrap(),
+            serde_json::to_string(&TodoActivityMessage::Completed {
+                job_id: Uuid::new_v4(),
+                summary: "done".into(),
+            }).unwrap(),
+        ];
+        let result = rebuild_context(&actions).unwrap();
+        assert!(result.len() < 1000);
+        assert!(result.contains("..."));
+    }
+
+    #[test]
+    fn rebuild_context_caps_at_max_chars() {
+        let mut actions: Vec<String> = Vec::new();
+        for i in 0..100 {
+            actions.push(serde_json::to_string(&TodoActivityMessage::ToolCompleted {
+                job_id: Uuid::new_v4(),
+                tool_name: format!("tool_{}", i),
+                success: true,
+                summary: format!("Did something important number {}", i),
+            }).unwrap());
+        }
+        actions.push(serde_json::to_string(&TodoActivityMessage::Completed {
+            job_id: Uuid::new_v4(),
+            summary: "All 100 tools done".into(),
+        }).unwrap());
+
+        let result = rebuild_context(&actions).unwrap();
+        assert!(result.len() <= CONTEXT_MAX_CHARS + 100);
+        assert!(result.contains("### Outcome"));
+        assert!(result.contains("All 100 tools done"));
+    }
+
+    #[test]
+    fn rebuild_context_approval_without_prior_needed() {
+        let actions: Vec<String> = vec![
+            serde_json::to_string(&TodoActivityMessage::ApprovalResolved {
+                job_id: Uuid::new_v4(),
+                card_id: Uuid::new_v4(),
+                approved: false,
+            }).unwrap(),
+            serde_json::to_string(&TodoActivityMessage::Completed {
+                job_id: Uuid::new_v4(),
+                summary: "done".into(),
+            }).unwrap(),
+        ];
+        let result = rebuild_context(&actions).unwrap();
+        assert!(result.contains("unknown tool: dismissed"));
+    }
+
+    #[test]
+    fn rebuild_context_failed_outcome() {
+        let actions: Vec<String> = vec![
+            serde_json::to_string(&TodoActivityMessage::Failed {
+                job_id: Uuid::new_v4(),
+                error: "Out of memory".into(),
+            }).unwrap(),
+        ];
+        let result = rebuild_context(&actions).unwrap();
+        assert!(result.contains("Failed: Out of memory"));
+    }
+
+    #[test]
+    fn rebuild_context_skips_invalid_json() {
+        let actions = vec![
+            "not valid json".to_string(),
+            serde_json::to_string(&TodoActivityMessage::Completed {
+                job_id: Uuid::new_v4(),
+                summary: "done".into(),
+            }).unwrap(),
+        ];
+        let result = rebuild_context(&actions).unwrap();
+        assert!(result.contains("Completed: done"));
     }
 }
