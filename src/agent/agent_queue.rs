@@ -16,6 +16,7 @@ use uuid::Uuid;
 
 use crate::agent::todo_agent::spawn_todo_agent;
 use crate::context::AppContext;
+use crate::todos::activity::rebuild_context_from_activity;
 use crate::todos::model::{TodoBucket, TodoStatus, TodoWsMessage};
 
 /// Central orchestrator for todo agent concurrency and dispatch.
@@ -126,11 +127,22 @@ impl AgentQueue {
             }
         }
 
-        // Re-enqueue all AgentQueued todos
+        // Re-enqueue all AgentQueued todos with prior context
         if let Ok(queued) = db.list_todos_by_status("default", TodoStatus::AgentQueued).await {
             if !queued.is_empty() {
                 info!(count = queued.len(), "Re-enqueuing AgentQueued todos after restart");
-                for todo in queued {
+                for todo in &queued {
+                    // Rebuild prior context from persisted activity
+                    if let Some(prior_context) = rebuild_context_from_activity(&self.ctx.db, todo.id).await {
+                        let todo_desc = todo.description.as_deref().unwrap_or("(none)");
+                        let full_context = format!(
+                            "{}\n\n[todo_id: {}]\nCurrent state: type={:?}, bucket={:?}, priority={}, status={:?}\n\n{}",
+                            prior_context, todo.id, todo.todo_type, todo.bucket, todo.priority, todo.status, todo_desc
+                        );
+                        self.followup_context.lock().await.insert(todo.id, full_context);
+                        info!(todo_id = %todo.id, "Injected prior context for crash-recovered todo");
+                    }
+
                     if let Err(e) = self.tx.send(todo.id) {
                         warn!(todo_id = %todo.id, error = %e, "Failed to re-enqueue todo");
                     }
