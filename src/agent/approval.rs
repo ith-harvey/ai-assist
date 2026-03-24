@@ -149,8 +149,13 @@ impl Agent {
             }
 
             // Execute the approved tool and continue the loop
-            let job_ctx =
+            let mut job_ctx =
                 JobContext::with_user(&message.user_id, "chat", "Interactive chat session");
+
+            // Propagate todo_id for todo agent context
+            if message.channel == "todo" {
+                job_ctx.todo_id = super::tool_executor::parse_todo_id_from_content(&message.content);
+            }
 
             let _ = self
                 .channels

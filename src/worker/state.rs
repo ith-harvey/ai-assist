@@ -251,6 +251,7 @@ impl WorkerJobContext {
             max_tokens: self.max_tokens,
             created_at: self.created_at,
             metadata: self.metadata.clone(),
+            todo_id: None,
         }
     }
 }

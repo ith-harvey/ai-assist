@@ -164,7 +164,7 @@ public struct TodoListView: View {
             onTap: { selectedTodo = todo },
             onDoubleTap: {
                 if todo.status == .awaitingApproval {
-                    if let card = cardSocket.cards.first(where: { $0.todoId == todo.id }) {
+                    if let card = cardSocket.cards(for: .todos).first(where: { $0.todoId == todo.id }) {
                         approvalSheetMode = .single(card)
                     }
                 }

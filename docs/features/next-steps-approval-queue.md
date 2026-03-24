@@ -56,3 +56,4 @@ _None — all resolved._
 
 - **Transition**: Card-flip animation between cards when advancing through the queue
 - **Progress indicator**: Sheet title shows "3 of 7" style progress (current position out of initial total when queue was opened)
+- **Cross-silo by design**: Next Steps intentionally shows cards from all silos (messages, todos, calendar) in a single unified queue. The user processes all pending items in one pass regardless of origin. Per-silo filtering is deliberately not applied here.

@@ -251,20 +251,22 @@ impl Tool for DraftTodoTool {
         // Send navigation event so iOS switches to the todo detail view
         let _ = self.navigate_tx.send(todo_id);
 
-        // Spawn a todo agent follow-up to run enrichment in the activity feed
+        // Spawn a todo agent follow-up to run enrichment via ask_user approval cards
         let enrichment_instructions = format!(
             "[todo_id: {}]\n\n\
              ENRICHMENT MODE: This is a newly drafted todo titled \"{}\".\n\
-             Interview the user to fill in missing fields, then finalize.\n\n\
-             Ask ONE question at a time as a plain text response. The user sees your responses \
-             in the activity feed and replies through the input bar. Do NOT use ask_user.\n\n\
+             Interview the user to fill in missing fields using the ask_user tool.\n\n\
+             Ask ONE question at a time using ask_user with 2-3 relevant options.\n\
+             Wait for the user's response before asking the next question.\n\
+             After each response, call update_todo to apply the field.\n\n\
              Question sequence:\n\
-             1. What kind of task is this? (deliverable/research/errand/learning/etc.)\n\
-             2. How urgent? (high/medium/low priority)\n\
-             3. Can an AI agent help, or is this human-only?\n\
-             4. One relevant context question about the task.\n\n\
-             After each user reply, call update_todo to apply the field.\n\
-             When all done, call update_todo with status 'created' to finalize.",
+             1. ask_user: What kind of task is this? (options: pick 3 most relevant from \
+                deliverable/research/errand/learning/administrative/creative/review)\n\
+             2. ask_user: How urgent is this? (options: High, Medium, Low)\n\
+             3. ask_user: Can an AI agent help with this? (options: Agent can help, Human only)\n\
+             4. ask_user: One context question relevant to the todo title with 2-3 options.\n\n\
+             After all questions answered, call update_todo with status 'created' to finalize.\n\
+             If the user dismisses any question, stop asking and finalize immediately.",
             todo_id, title
         );
         let queue = Arc::clone(&self.agent_queue);

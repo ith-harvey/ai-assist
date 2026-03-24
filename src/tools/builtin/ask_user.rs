@@ -84,7 +84,7 @@ impl Tool for AskUserTool {
     async fn execute(
         &self,
         params: serde_json::Value,
-        _ctx: &JobContext,
+        ctx: &JobContext,
     ) -> Result<ToolOutput, ToolError> {
         let start = std::time::Instant::now();
         let p = Params::new(&params);
@@ -109,8 +109,12 @@ impl Tool for AskUserTool {
         let mut card_options = options.clone();
         card_options.push("Something else...".into());
 
-        // Create the card
-        let card = ApprovalCard::new_multiple_choice(question, card_options, CardSilo::Messages);
+        // Create the card — route to Todos silo when running in a todo agent context
+        let silo = if ctx.todo_id.is_some() { CardSilo::Todos } else { CardSilo::Messages };
+        let mut card = ApprovalCard::new_multiple_choice(question, card_options, silo);
+        if let Some(todo_id) = ctx.todo_id {
+            card = card.with_todo_id(todo_id);
+        }
         let card_id = card.id;
 
         // Set up the oneshot channel

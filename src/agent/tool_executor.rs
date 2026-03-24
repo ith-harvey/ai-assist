@@ -65,7 +65,13 @@ impl Agent {
         let mut context_messages = initial_messages;
 
         // Create a JobContext for tool execution (chat doesn't have a real job)
-        let job_ctx = JobContext::with_user(&message.user_id, "chat", "Interactive chat session");
+        let mut job_ctx = JobContext::with_user(&message.user_id, "chat", "Interactive chat session");
+
+        // If running in a todo agent context, extract the todo_id from the
+        // `[todo_id: <uuid>]` prefix embedded by TodoChannel::start().
+        if message.channel == "todo" {
+            job_ctx.todo_id = parse_todo_id_from_content(&message.content);
+        }
 
         const MAX_TOOL_ITERATIONS: usize = 10;
         let mut iteration = 0;
@@ -501,5 +507,44 @@ impl Agent {
             }
             .into()
         })
+    }
+}
+
+/// Parse a `todo_id` UUID from the `[todo_id: <uuid>]` prefix that
+/// `TodoChannel::start()` prepends to todo agent messages.
+pub(crate) fn parse_todo_id_from_content(content: &str) -> Option<Uuid> {
+    content
+        .strip_prefix("[todo_id: ")
+        .and_then(|rest| rest.split(']').next())
+        .and_then(|s| Uuid::parse_str(s.trim()).ok())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_todo_id_valid() {
+        let id = Uuid::new_v4();
+        let content = format!("[todo_id: {}]\n\nSome todo title", id);
+        assert_eq!(parse_todo_id_from_content(&content), Some(id));
+    }
+
+    #[test]
+    fn parse_todo_id_missing_prefix() {
+        assert_eq!(parse_todo_id_from_content("Hello world"), None);
+    }
+
+    #[test]
+    fn parse_todo_id_invalid_uuid() {
+        assert_eq!(
+            parse_todo_id_from_content("[todo_id: not-a-uuid]\n\nTitle"),
+            None
+        );
+    }
+
+    #[test]
+    fn parse_todo_id_empty() {
+        assert_eq!(parse_todo_id_from_content(""), None);
     }
 }

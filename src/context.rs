@@ -88,6 +88,8 @@ pub struct JobContext {
     pub user_id: String,
     /// Conversation ID if linked to a conversation.
     pub conversation_id: Option<Uuid>,
+    /// Todo ID when running in a todo agent context.
+    pub todo_id: Option<Uuid>,
     /// Job title.
     pub title: String,
     /// Job description.
@@ -111,6 +113,7 @@ impl Default for JobContext {
             state: JobState::Pending,
             user_id: "default".to_string(),
             conversation_id: None,
+            todo_id: None,
             title: String::new(),
             description: String::new(),
             actual_cost: Decimal::ZERO,
@@ -144,5 +147,30 @@ impl JobContext {
             description: description.into(),
             ..Default::default()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn job_context_default_todo_id_is_none() {
+        let ctx = JobContext::default();
+        assert!(ctx.todo_id.is_none());
+    }
+
+    #[test]
+    fn job_context_with_user_todo_id_is_none() {
+        let ctx = JobContext::with_user("user1", "test", "desc");
+        assert!(ctx.todo_id.is_none());
+    }
+
+    #[test]
+    fn job_context_todo_id_can_be_set() {
+        let id = Uuid::new_v4();
+        let mut ctx = JobContext::default();
+        ctx.todo_id = Some(id);
+        assert_eq!(ctx.todo_id, Some(id));
     }
 }
