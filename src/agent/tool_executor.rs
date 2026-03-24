@@ -320,6 +320,7 @@ impl Agent {
                                     tool_call_id: tc.id.clone(),
                                     context_messages: context_messages.clone(),
                                     summary: Some(tool_summary),
+                                    todo_id: job_ctx.todo_id,
                                 };
 
                                 return Ok(AgenticLoopResult::NeedApproval { pending });

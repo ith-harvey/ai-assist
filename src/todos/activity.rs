@@ -505,7 +505,7 @@ async fn spawn_followup_agent(
     };
 
     let context = match prior_context {
-        Some(prior) => format!("{}\n\n{}\n\nUser: {}", prior, todo_state, user_message),
+        Some(prior) => format!("{}\n\n{}\n\nUser: {}", todo_state, prior, user_message),
         None => format!("{}\n\nUser: {}", todo_state, user_message),
     };
 

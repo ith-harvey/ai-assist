@@ -151,6 +151,9 @@ pub struct PendingApproval {
     /// Human-readable summary of the tool invocation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary: Option<crate::tools::summary::ToolSummary>,
+    /// Todo ID when the approval was requested in a todo agent context.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub todo_id: Option<Uuid>,
 }
 
 /// A conversation thread within a session.
@@ -950,6 +953,7 @@ mod tests {
             tool_call_id: "call_123".to_string(),
             context_messages: vec![ChatMessage::user("do it")],
             summary: None,
+            todo_id: None,
         };
 
         thread.await_approval(approval);
@@ -974,6 +978,7 @@ mod tests {
             tool_call_id: "call_456".to_string(),
             context_messages: vec![],
             summary: None,
+            todo_id: None,
         };
 
         thread.await_approval(approval);
