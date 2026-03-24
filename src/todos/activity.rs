@@ -269,12 +269,13 @@ async fn handle_socket(mut socket: WebSocket, todo_id: Uuid, ctx: Arc<AppContext
                                     let content = content.to_string();
                                     info!(todo_id = %todo_id, content_len = content.len(), "📡 Received user follow-up message");
 
-                                    // Emit UserMessage activity event (broadcast + persist)
+                                    // Persist UserMessage to DB (no broadcast — the iOS
+                                    // client already has it via optimistic update, and
+                                    // reconnects get it from history replay).
                                     let user_msg = TodoActivityMessage::UserMessage {
                                         todo_id,
                                         content: content.clone(),
                                     };
-                                    ctx.activity_channels.send(todo_id, user_msg.clone());
                                     let store = ctx.db.clone();
                                     let action_data = serde_json::to_string(&user_msg).unwrap_or_default();
                                     tokio::spawn(async move {
