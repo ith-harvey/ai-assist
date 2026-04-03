@@ -11,10 +11,7 @@ public final class DocumentAPI: @unchecked Sendable {
     public var isLoading = false
     public var error: String?
 
-    public let host: String
-    public let port: Int
-
-    private var baseURLString: String { "http://\(host):\(port)" }
+    private let config: ServerConfig
 
     private var decoder: JSONDecoder {
         let d = JSONDecoder()
@@ -23,12 +20,8 @@ public final class DocumentAPI: @unchecked Sendable {
         return d
     }
 
-    public init(
-        host: String = UserDefaults.standard.string(forKey: "ai_assist_host") ?? "localhost",
-        port: Int = UserDefaults.standard.object(forKey: "ai_assist_port") as? Int ?? 8080
-    ) {
-        self.host = host
-        self.port = port
+    public init(config: ServerConfig = ServerConfig()) {
+        self.config = config
     }
 
     /// Fetch documents for a specific todo.
@@ -38,7 +31,7 @@ public final class DocumentAPI: @unchecked Sendable {
         error = nil
 
         let todoIdStr = todoId.uuidString.lowercased()
-        guard let url = URL(string: "\(baseURLString)/api/documents?todo_id=\(todoIdStr)") else {
+        guard let url = URL(string: "\(config.baseURL)/api/documents?todo_id=\(todoIdStr)") else {
             error = "Invalid URL"
             isLoading = false
             return
@@ -67,7 +60,7 @@ public final class DocumentAPI: @unchecked Sendable {
         isLoading = true
         error = nil
 
-        guard let url = URL(string: "\(baseURLString)/api/documents?limit=\(limit)") else {
+        guard let url = URL(string: "\(config.baseURL)/api/documents?limit=\(limit)") else {
             error = "Invalid URL"
             isLoading = false
             return
@@ -93,7 +86,7 @@ public final class DocumentAPI: @unchecked Sendable {
     /// Fetch a single document by ID.
     public func fetchDocument(id: UUID) async throws -> Document {
         let idStr = id.uuidString.lowercased()
-        guard let url = URL(string: "\(baseURLString)/api/documents/\(idStr)") else {
+        guard let url = URL(string: "\(config.baseURL)/api/documents/\(idStr)") else {
             throw URLError(.badURL)
         }
         let (data, response) = try await URLSession.shared.data(from: url)

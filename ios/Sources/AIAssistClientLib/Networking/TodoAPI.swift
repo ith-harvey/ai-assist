@@ -2,10 +2,7 @@ import Foundation
 
 /// REST API client for fetching todo detail with documents.
 public final class TodoAPI: @unchecked Sendable {
-    public let host: String
-    public let port: Int
-
-    private var baseURLString: String { "http://\(host):\(port)" }
+    private let config: ServerConfig
 
     private var decoder: JSONDecoder {
         let d = JSONDecoder()
@@ -14,12 +11,8 @@ public final class TodoAPI: @unchecked Sendable {
         return d
     }
 
-    public init(
-        host: String = UserDefaults.standard.string(forKey: "ai_assist_host") ?? "localhost",
-        port: Int = UserDefaults.standard.object(forKey: "ai_assist_port") as? Int ?? 8080
-    ) {
-        self.host = host
-        self.port = port
+    public init(config: ServerConfig = ServerConfig()) {
+        self.config = config
     }
 
     /// Response from GET /api/todos/{id}.
@@ -31,7 +24,7 @@ public final class TodoAPI: @unchecked Sendable {
     /// Fetch a single todo with its documents (included when completed).
     public func fetchTodoDetail(id: UUID) async throws -> TodoDetail {
         let idStr = id.uuidString.lowercased()
-        guard let url = URL(string: "\(baseURLString)/api/todos/\(idStr)") else {
+        guard let url = URL(string: "\(config.baseURL)/api/todos/\(idStr)") else {
             throw URLError(.badURL)
         }
         let (data, response) = try await URLSession.shared.data(from: url)

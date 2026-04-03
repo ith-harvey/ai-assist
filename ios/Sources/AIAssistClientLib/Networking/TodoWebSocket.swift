@@ -99,8 +99,10 @@ public final class TodoWebSocket: @unchecked Sendable {
 
     // MARK: - Configuration
 
-    public private(set) var host: String
-    public private(set) var port: Int
+    public private(set) var config: ServerConfig
+
+    public var host: String { config.host }
+    public var port: Int { config.port }
 
     // MARK: - Private
 
@@ -112,12 +114,8 @@ public final class TodoWebSocket: @unchecked Sendable {
     /// True when using hardcoded data (backend not available).
     private var usingSampleData = false
 
-    public init(
-        host: String = UserDefaults.standard.string(forKey: "ai_assist_host") ?? "localhost",
-        port: Int = UserDefaults.standard.object(forKey: "ai_assist_port") as? Int ?? 8080
-    ) {
-        self.host = host
-        self.port = port
+    public init(config: ServerConfig = ServerConfig()) {
+        self.config = config
         self.session = URLSession(configuration: .default)
     }
 
@@ -167,15 +165,14 @@ public final class TodoWebSocket: @unchecked Sendable {
     public func updateServer(host: String, port: Int) {
         let wasConnected = isConnected
         disconnect()
-        self.host = host
-        self.port = port
+        self.config = ServerConfig(host: host, port: port, useSecureTransport: config.useSecureTransport)
         if wasConnected {
             connect()
         }
     }
 
     private func openConnection() {
-        guard let url = URL(string: "ws://\(host):\(port)/ws/todos") else {
+        guard let url = URL(string: "\(config.wsBaseURL)/ws/todos") else {
             loadSampleData()
             return
         }

@@ -1,27 +1,16 @@
 import Foundation
 
 /// REST API client for registering and unregistering device tokens with the server.
-/// Defaults to HTTPS. Pass `useSecureTransport: false` for local development.
 public final class DeviceTokenAPI: Sendable {
-    private let host: String
-    private let port: Int
-    private let scheme: String
+    private let config: ServerConfig
 
-    private var baseURLString: String { "\(scheme)://\(host):\(port)" }
-
-    public init(
-        host: String = UserDefaults.standard.string(forKey: "ai_assist_host") ?? "localhost",
-        port: Int = UserDefaults.standard.object(forKey: "ai_assist_port") as? Int ?? 8080,
-        useSecureTransport: Bool = true
-    ) {
-        self.host = host
-        self.port = port
-        self.scheme = useSecureTransport ? "https" : "http"
+    public init(config: ServerConfig = ServerConfig()) {
+        self.config = config
     }
 
     /// Register a device token for push notifications.
     public func register(token: String) async throws {
-        guard let url = URL(string: "\(baseURLString)/api/device-tokens") else {
+        guard let url = URL(string: "\(config.baseURL)/api/device-tokens") else {
             throw URLError(.badURL)
         }
         var request = URLRequest(url: url)
@@ -42,7 +31,7 @@ public final class DeviceTokenAPI: Sendable {
 
     /// Unregister a device token. Token is sent in the request body, not the URL path.
     public func unregister(token: String) async throws {
-        guard let url = URL(string: "\(baseURLString)/api/device-tokens") else {
+        guard let url = URL(string: "\(config.baseURL)/api/device-tokens") else {
             throw URLError(.badURL)
         }
         var request = URLRequest(url: url)

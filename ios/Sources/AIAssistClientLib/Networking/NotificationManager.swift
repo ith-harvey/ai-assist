@@ -36,9 +36,6 @@ public final class NotificationManager: NSObject {
     private let center = UNUserNotificationCenter.current()
     private var tokenAPI: DeviceTokenAPI?
 
-    /// Whether the server connection uses HTTP (local dev) or HTTPS (production).
-    private var useSecureTransport: Bool = true
-
     // MARK: - Init
 
     public override init() {
@@ -99,10 +96,8 @@ public final class NotificationManager: NSObject {
     }
 
     /// Update the server connection and re-register the token if we have one.
-    /// Pass `useSecureTransport: false` for local development servers using HTTP.
-    public func updateServer(host: String, port: Int, useSecureTransport: Bool = true) {
-        self.useSecureTransport = useSecureTransport
-        tokenAPI = DeviceTokenAPI(host: host, port: port, useSecureTransport: useSecureTransport)
+    public func updateServer(config: ServerConfig) {
+        tokenAPI = DeviceTokenAPI(config: config)
         if let token = deviceToken {
             Task {
                 do {

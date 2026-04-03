@@ -60,8 +60,10 @@ public final class ChatWebSocket: @unchecked Sendable {
 
     // MARK: - Configuration
 
-    public private(set) var host: String
-    public private(set) var port: Int
+    public private(set) var config: ServerConfig
+
+    public var host: String { config.host }
+    public var port: Int { config.port }
 
     // MARK: - Private
 
@@ -77,12 +79,8 @@ public final class ChatWebSocket: @unchecked Sendable {
     /// IDs of messages loaded from history, used to dedup live WS messages.
     private var knownMessageIds: Set<UUID> = []
 
-    public init(
-        host: String = UserDefaults.standard.string(forKey: "ai_assist_host") ?? "localhost",
-        port: Int = UserDefaults.standard.object(forKey: "ai_assist_port") as? Int ?? 8080
-    ) {
-        self.host = host
-        self.port = port
+    public init(config: ServerConfig = ServerConfig()) {
+        self.config = config
         self.session = URLSession(configuration: .default)
     }
 
@@ -104,15 +102,14 @@ public final class ChatWebSocket: @unchecked Sendable {
     public func updateServer(host: String, port: Int) {
         let wasConnected = isConnected
         disconnect()
-        self.host = host
-        self.port = port
+        self.config = ServerConfig(host: host, port: port, useSecureTransport: config.useSecureTransport)
         if wasConnected {
             connect()
         }
     }
 
     private func openConnection() {
-        guard let url = URL(string: "ws://\(host):\(port)/ws/chat") else { return }
+        guard let url = URL(string: "\(config.wsBaseURL)/ws/chat") else { return }
         let task = session.webSocketTask(with: url)
         self.webSocketTask = task
         task.resume()
@@ -298,7 +295,7 @@ public final class ChatWebSocket: @unchecked Sendable {
     /// Load previous messages from the REST API so conversations survive app restarts.
     private func loadHistory() {
         let tid = threadId
-        guard let url = URL(string: "http://\(host):\(port)/api/chat/history?thread_id=\(tid)&limit=50") else { return }
+        guard let url = URL(string: "\(config.baseURL)/api/chat/history?thread_id=\(tid)&limit=50") else { return }
 
         URLSession.shared.dataTask(with: url) { [weak self] data, _, _ in
             guard let self, let data,

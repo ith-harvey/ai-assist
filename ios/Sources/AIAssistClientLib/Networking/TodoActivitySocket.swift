@@ -23,8 +23,10 @@ public final class TodoActivitySocket: @unchecked Sendable {
     // MARK: - Configuration
 
     public let todoId: UUID
-    public private(set) var host: String
-    public private(set) var port: Int
+    public private(set) var config: ServerConfig
+
+    public var host: String { config.host }
+    public var port: Int { config.port }
 
     // MARK: - Private
 
@@ -37,20 +39,17 @@ public final class TodoActivitySocket: @unchecked Sendable {
 
     public init(
         todoId: UUID,
-        host: String = UserDefaults.standard.string(forKey: "ai_assist_host") ?? "localhost",
-        port: Int = UserDefaults.standard.object(forKey: "ai_assist_port") as? Int ?? 8080
+        config: ServerConfig = ServerConfig()
     ) {
         self.todoId = todoId
-        self.host = host
-        self.port = port
+        self.config = config
         self.session = URLSession(configuration: .default)
     }
 
     public func updateServer(host: String, port: Int) {
         let wasConnected = isConnected
         disconnect()
-        self.host = host
-        self.port = port
+        self.config = ServerConfig(host: host, port: port, useSecureTransport: config.useSecureTransport)
         if wasConnected {
             connect()
         }
@@ -90,7 +89,7 @@ public final class TodoActivitySocket: @unchecked Sendable {
 
     private func openConnection() {
         let todoIdStr = todoId.uuidString.lowercased()
-        guard let url = URL(string: "ws://\(host):\(port)/ws/todos/\(todoIdStr)/activity") else {
+        guard let url = URL(string: "\(config.wsBaseURL)/ws/todos/\(todoIdStr)/activity") else {
             print("📡 [ActivitySocket] Invalid URL for todo \(todoIdStr)")
             return
         }

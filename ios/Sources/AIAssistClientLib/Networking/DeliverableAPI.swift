@@ -11,17 +11,10 @@ public final class DeliverableAPI: @unchecked Sendable {
     public var isLoading = false
     public var error: String?
 
-    public let host: String
-    public let port: Int
+    private let config: ServerConfig
 
-    private var baseURLString: String { "http://\(host):\(port)" }
-
-    public init(
-        host: String = UserDefaults.standard.string(forKey: "ai_assist_host") ?? "localhost",
-        port: Int = UserDefaults.standard.object(forKey: "ai_assist_port") as? Int ?? 8080
-    ) {
-        self.host = host
-        self.port = port
+    public init(config: ServerConfig = ServerConfig()) {
+        self.config = config
     }
 
     /// Fetch deliverables (documents + message cards) for a specific todo.
@@ -31,7 +24,7 @@ public final class DeliverableAPI: @unchecked Sendable {
         error = nil
 
         let todoIdStr = todoId.uuidString.lowercased()
-        guard let url = URL(string: "\(baseURLString)/api/todos/\(todoIdStr)/deliverables") else {
+        guard let url = URL(string: "\(config.baseURL)/api/todos/\(todoIdStr)/deliverables") else {
             error = "Invalid URL"
             isLoading = false
             return

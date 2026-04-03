@@ -227,7 +227,7 @@ public struct TodoDetailView: View {
         }
         #endif
         .task {
-            let api = TodoAPI(host: cardSocket.host, port: cardSocket.port)
+            let api = TodoAPI(config: cardSocket.config)
             if let detail = try? await api.fetchTodoDetail(id: todo.id) {
                 fetchedTodo = detail.todo
             }

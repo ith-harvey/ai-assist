@@ -7,9 +7,7 @@ public struct CalendarView: View {
     @State private var viewModel = CalendarViewModel()
 
     private var serverBaseURL: String {
-        let host = UserDefaults.standard.string(forKey: "ai_assist_host") ?? "localhost"
-        let port = UserDefaults.standard.object(forKey: "ai_assist_port") as? Int ?? 8080
-        return "http://\(host):\(port)"
+        ServerConfig().baseURL
     }
 
     public init() {}

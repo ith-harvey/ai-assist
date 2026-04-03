@@ -98,8 +98,7 @@ public struct MainTabView: View {
             cardSocket.connect()
             chatSocket.connect()
             todoSocket.connect()
-            // Use HTTP for local dev; production builds should use the default (HTTPS)
-            notificationManager.updateServer(host: cardSocket.host, port: cardSocket.port, useSecureTransport: false)
+            notificationManager.updateServer(config: cardSocket.config)
             notificationManager.clearBadge()
         }
         .onDisappear {
@@ -215,7 +214,7 @@ public struct MainTabView: View {
                             cardSocket.updateServer(host: hostInput, port: port)
                             chatSocket.updateServer(host: hostInput, port: port)
                             todoSocket.updateServer(host: hostInput, port: port)
-                            notificationManager.updateServer(host: hostInput, port: port, useSecureTransport: false)
+                            notificationManager.updateServer(config: cardSocket.config)
                             cardSocket.connect()
                             chatSocket.connect()
                             todoSocket.connect()
