@@ -1,5 +1,7 @@
 //! Shared utility functions used across the codebase.
 
+pub mod rate_limit;
+
 /// Find the largest valid UTF-8 char boundary at or before `pos`.
 ///
 /// Polyfill for `str::floor_char_boundary` (nightly-only). Use when

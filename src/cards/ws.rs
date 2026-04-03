@@ -19,6 +19,7 @@ use uuid::Uuid;
 use super::handlers::{ApprovalHandler, CardActionContext};
 use super::model::{ApprovalCard, CardAction, CardPayload, CardSilo, WsMessage};
 use crate::context::AppContext;
+use crate::util::rate_limit::RateLimiter;
 
 /// Build a `CardActionContext` from the shared context.
 fn action_context(ctx: &Arc<AppContext>) -> CardActionContext {
@@ -98,6 +99,7 @@ async fn handle_socket(mut socket: WebSocket, ctx: Arc<AppContext>) {
 
     // Subscribe to broadcast channel for real-time updates
     let mut rx = ctx.card_queue.subscribe();
+    let mut rate_limiter = RateLimiter::per_second(10);
 
     loop {
         tokio::select! {
@@ -133,6 +135,10 @@ async fn handle_socket(mut socket: WebSocket, ctx: Arc<AppContext>) {
             result = socket.recv() => {
                 match result {
                     Some(Ok(Message::Text(text))) => {
+                        if !rate_limiter.check() {
+                            warn!("Card WS rate limited — dropping message");
+                            continue;
+                        }
                         handle_client_message(&text, &ctx).await;
                     }
                     Some(Ok(Message::Ping(data))) => {

@@ -18,6 +18,7 @@ use uuid::Uuid;
 use super::model::{TodoAction, TodoBucket, TodoItem, TodoStatus, TodoType, TodoWsMessage};
 use crate::cards::model::{ApprovalCard, CardSilo};
 use crate::context::AppContext;
+use crate::util::rate_limit::RateLimiter;
 
 /// Build the Axum router for `/ws/todos`, `/api/todos/{id}`, `/api/todos/{id}/deliverables`, and `/api/todos/test`.
 pub fn todo_routes(ctx: Arc<AppContext>) -> Router {
@@ -59,6 +60,7 @@ async fn handle_socket(mut socket: WebSocket, ctx: Arc<AppContext>) {
     }
 
     let mut rx = ctx.todo_tx.subscribe();
+    let mut rate_limiter = RateLimiter::per_second(10);
 
     loop {
         tokio::select! {
@@ -109,6 +111,10 @@ async fn handle_socket(mut socket: WebSocket, ctx: Arc<AppContext>) {
             result = socket.recv() => {
                 match result {
                     Some(Ok(Message::Text(text))) => {
+                        if !rate_limiter.check() {
+                            warn!("Todo WS rate limited — dropping message");
+                            continue;
+                        }
                         // handle_client_action returns Some for directed responses (e.g. search)
                         if let Some(response) = handle_client_action(&text, &ctx).await {
                             if let Ok(json) = serde_json::to_string(&response) {
