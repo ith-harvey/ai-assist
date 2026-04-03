@@ -7,7 +7,7 @@ use libsql::Connection;
 
 use crate::error::DatabaseError;
 
-/// Complete schema — all 9 tables with current columns and indexes.
+/// Complete schema — all tables with current columns and indexes.
 const SCHEMA: &str = r#"
     CREATE TABLE IF NOT EXISTS cards (
         id TEXT PRIMARY KEY,
@@ -198,6 +198,16 @@ const SCHEMA: &str = r#"
     );
     CREATE INDEX IF NOT EXISTS idx_documents_todo_id ON documents(todo_id);
     CREATE INDEX IF NOT EXISTS idx_documents_doc_type ON documents(doc_type);
+
+    CREATE TABLE IF NOT EXISTS device_tokens (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        token TEXT NOT NULL UNIQUE,
+        platform TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_device_tokens_user_id ON device_tokens(user_id);
+    CREATE INDEX IF NOT EXISTS idx_device_tokens_token ON device_tokens(token);
 "#;
 
 /// Create all tables and indexes idempotently.
@@ -257,6 +267,7 @@ mod tests {
             "todos",
             "job_actions",
             "documents",
+            "device_tokens",
         ];
 
         for table in &expected_tables {
@@ -301,7 +312,7 @@ mod tests {
             .unwrap();
         let row = rows.next().await.unwrap().unwrap();
         let count: i64 = row.get(0).unwrap();
-        assert!(count >= 11, "Expected at least 11 tables, got {count}");
+        assert!(count >= 12, "Expected at least 12 tables, got {count}");
     }
 
     #[tokio::test]

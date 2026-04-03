@@ -2246,6 +2246,129 @@ impl Database for LibSqlBackend {
         }
         Ok(docs)
     }
+
+    // ── Device Tokens ──────────────────────────────────────────────────
+
+    async fn insert_device_token(
+        &self,
+        token: &crate::notifications::model::DeviceToken,
+    ) -> Result<(), DatabaseError> {
+        let conn = self.conn();
+        conn.execute(
+            "INSERT INTO device_tokens (id, user_id, token, platform, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                token.id.to_string(),
+                token.user_id.clone(),
+                token.token.clone(),
+                token.platform.to_string(),
+                token.created_at.to_rfc3339(),
+            ],
+        )
+        .await
+        .map_err(|e| DatabaseError::Query(format!("insert_device_token: {e}")))?;
+        Ok(())
+    }
+
+    async fn get_device_token(
+        &self,
+        id: Uuid,
+    ) -> Result<Option<crate::notifications::model::DeviceToken>, DatabaseError> {
+        let conn = self.conn();
+        let mut rows = conn
+            .query(
+                "SELECT id, user_id, token, platform, created_at FROM device_tokens WHERE id = ?1",
+                params![id.to_string()],
+            )
+            .await
+            .map_err(|e| DatabaseError::Query(format!("get_device_token: {e}")))?;
+
+        match rows
+            .next()
+            .await
+            .map_err(|e| DatabaseError::Query(format!("get_device_token next: {e}")))?
+        {
+            Some(row) => Ok(Some(row_to_device_token(&row)?)),
+            None => Ok(None),
+        }
+    }
+
+    async fn get_device_token_by_value(
+        &self,
+        token: &str,
+    ) -> Result<Option<crate::notifications::model::DeviceToken>, DatabaseError> {
+        let conn = self.conn();
+        let mut rows = conn
+            .query(
+                "SELECT id, user_id, token, platform, created_at FROM device_tokens WHERE token = ?1",
+                params![token],
+            )
+            .await
+            .map_err(|e| DatabaseError::Query(format!("get_device_token_by_value: {e}")))?;
+
+        match rows
+            .next()
+            .await
+            .map_err(|e| DatabaseError::Query(format!("get_device_token_by_value next: {e}")))?
+        {
+            Some(row) => Ok(Some(row_to_device_token(&row)?)),
+            None => Ok(None),
+        }
+    }
+
+    async fn list_device_tokens(
+        &self,
+        user_id: &str,
+    ) -> Result<Vec<crate::notifications::model::DeviceToken>, DatabaseError> {
+        let conn = self.conn();
+        let mut rows = conn
+            .query(
+                "SELECT id, user_id, token, platform, created_at FROM device_tokens WHERE user_id = ?1 ORDER BY created_at DESC",
+                params![user_id],
+            )
+            .await
+            .map_err(|e| DatabaseError::Query(format!("list_device_tokens: {e}")))?;
+
+        let mut tokens = Vec::new();
+        while let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| DatabaseError::Query(format!("list_device_tokens next: {e}")))?
+        {
+            tokens.push(row_to_device_token(&row)?);
+        }
+        Ok(tokens)
+    }
+
+    async fn delete_device_token(&self, id: Uuid) -> Result<bool, DatabaseError> {
+        let conn = self.conn();
+        let affected = conn
+            .execute(
+                "DELETE FROM device_tokens WHERE id = ?1",
+                params![id.to_string()],
+            )
+            .await
+            .map_err(|e| DatabaseError::Query(format!("delete_device_token: {e}")))?;
+        Ok(affected > 0)
+    }
+}
+
+// ── Row mapping helpers for device tokens ─────────────────────────────
+
+fn row_to_device_token(
+    row: &libsql::Row,
+) -> Result<crate::notifications::model::DeviceToken, DatabaseError> {
+    let r = RowReader::new(row, "device_token");
+    let platform_str = r.string(3, "platform")?;
+    let platform: crate::notifications::model::Platform = platform_str
+        .parse()
+        .map_err(|e: String| DatabaseError::Serialization(e))?;
+    Ok(crate::notifications::model::DeviceToken {
+        id: r.uuid(0, "id")?,
+        user_id: r.string(1, "user_id")?,
+        token: r.string(2, "token")?,
+        platform,
+        created_at: r.datetime(4, "created_at")?,
+    })
 }
 
 // ── Row mapping helpers for documents ───────────────────────────────
@@ -4442,5 +4565,93 @@ mod tests {
 
         let results = db.search_documents("keyword", None, 2).await.unwrap();
         assert_eq!(results.len(), 2);
+    }
+
+    // ── Device Token Tests ──────────────────────────────────────────
+
+    fn make_device_token(user_id: &str, token: &str) -> crate::notifications::model::DeviceToken {
+        crate::notifications::model::DeviceToken {
+            id: Uuid::new_v4(),
+            user_id: user_id.to_string(),
+            token: token.to_string(),
+            platform: crate::notifications::model::Platform::Ios,
+            created_at: chrono::Utc::now(),
+        }
+    }
+
+    #[tokio::test]
+    async fn insert_and_get_device_token() {
+        let db = test_db().await;
+        let token = make_device_token("user-1", "apns-token-abc123");
+        db.insert_device_token(&token).await.unwrap();
+
+        let fetched = db.get_device_token(token.id).await.unwrap();
+        assert!(fetched.is_some());
+        let fetched = fetched.unwrap();
+        assert_eq!(fetched.id, token.id);
+        assert_eq!(fetched.user_id, "user-1");
+        assert_eq!(fetched.token, "apns-token-abc123");
+        assert_eq!(fetched.platform, crate::notifications::model::Platform::Ios);
+    }
+
+    #[tokio::test]
+    async fn get_device_token_by_value() {
+        let db = test_db().await;
+        let token = make_device_token("user-1", "unique-apns-token");
+        db.insert_device_token(&token).await.unwrap();
+
+        let fetched = db.get_device_token_by_value("unique-apns-token").await.unwrap();
+        assert!(fetched.is_some());
+        assert_eq!(fetched.unwrap().id, token.id);
+
+        let missing = db.get_device_token_by_value("nonexistent").await.unwrap();
+        assert!(missing.is_none());
+    }
+
+    #[tokio::test]
+    async fn list_device_tokens_by_user() {
+        let db = test_db().await;
+        let t1 = make_device_token("user-1", "token-a");
+        let t2 = make_device_token("user-1", "token-b");
+        let t3 = make_device_token("user-2", "token-c");
+        db.insert_device_token(&t1).await.unwrap();
+        db.insert_device_token(&t2).await.unwrap();
+        db.insert_device_token(&t3).await.unwrap();
+
+        let user1_tokens = db.list_device_tokens("user-1").await.unwrap();
+        assert_eq!(user1_tokens.len(), 2);
+
+        let user2_tokens = db.list_device_tokens("user-2").await.unwrap();
+        assert_eq!(user2_tokens.len(), 1);
+        assert_eq!(user2_tokens[0].token, "token-c");
+    }
+
+    #[tokio::test]
+    async fn delete_device_token() {
+        let db = test_db().await;
+        let token = make_device_token("user-1", "delete-me-token");
+        db.insert_device_token(&token).await.unwrap();
+
+        let deleted = db.delete_device_token(token.id).await.unwrap();
+        assert!(deleted);
+
+        let fetched = db.get_device_token(token.id).await.unwrap();
+        assert!(fetched.is_none());
+
+        // Deleting again returns false
+        let deleted_again = db.delete_device_token(token.id).await.unwrap();
+        assert!(!deleted_again);
+    }
+
+    #[tokio::test]
+    async fn device_token_unique_constraint() {
+        let db = test_db().await;
+        let t1 = make_device_token("user-1", "same-token");
+        let t2 = make_device_token("user-2", "same-token");
+        db.insert_device_token(&t1).await.unwrap();
+
+        // Second insert with same token value should fail (UNIQUE constraint)
+        let result = db.insert_device_token(&t2).await;
+        assert!(result.is_err());
     }
 }

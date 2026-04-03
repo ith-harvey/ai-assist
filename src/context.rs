@@ -21,6 +21,7 @@ use crate::todos::activity_channel_map::ActivityChannelMap;
 use crate::todos::approval_registry::TodoApprovalRegistry;
 use crate::todos::model::TodoWsMessage;
 use crate::tools::registry::ToolRegistry;
+use crate::notifications::service::NotificationService;
 use crate::workspace::Workspace;
 
 // ── Centralized Application State ──────────────────────────────────────
@@ -54,6 +55,9 @@ pub struct AppContext {
     pub email_config: Option<EmailConfig>,
     pub reply_drafter: Arc<ReplyDrafter>,
     pub oauth_config: Option<GoogleOAuthConfig>,
+
+    // ── Notifications ──
+    pub notification_service: Option<Arc<NotificationService>>,
 
     // ── Agent queue (set after construction via OnceLock) ──
     pub agent_queue: OnceLock<Arc<AgentQueue>>,

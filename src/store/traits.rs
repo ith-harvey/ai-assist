@@ -11,6 +11,7 @@ use uuid::Uuid;
 use crate::cards::model::{ApprovalCard, CardSilo, CardStatus, SiloCounts};
 use crate::documents::model::{Document, DocumentType};
 use crate::error::DatabaseError;
+use crate::notifications::model::DeviceToken;
 use crate::todos::model::{TodoItem, TodoStatus};
 
 /// A conversation message from the database.
@@ -483,4 +484,24 @@ pub trait Database: Send + Sync {
         doc_type: Option<&DocumentType>,
         limit: u32,
     ) -> Result<Vec<Document>, DatabaseError>;
+
+    // ── Device Tokens ──────────────────────────────────────────────────
+
+    /// Register a new device token for push notifications.
+    async fn insert_device_token(&self, token: &DeviceToken) -> Result<(), DatabaseError>;
+
+    /// Get a device token by ID.
+    async fn get_device_token(&self, id: Uuid) -> Result<Option<DeviceToken>, DatabaseError>;
+
+    /// Look up a device token by its raw token string value.
+    async fn get_device_token_by_value(
+        &self,
+        token: &str,
+    ) -> Result<Option<DeviceToken>, DatabaseError>;
+
+    /// List all device tokens for a user.
+    async fn list_device_tokens(&self, user_id: &str) -> Result<Vec<DeviceToken>, DatabaseError>;
+
+    /// Delete a device token. Returns true if a row was deleted.
+    async fn delete_device_token(&self, id: Uuid) -> Result<bool, DatabaseError>;
 }
