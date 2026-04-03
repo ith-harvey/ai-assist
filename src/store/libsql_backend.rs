@@ -1745,6 +1745,25 @@ impl Database for LibSqlBackend {
         Ok(count > 0)
     }
 
+    async fn list_user_ids_with_setting(&self, key: &str) -> Result<Vec<String>, DatabaseError> {
+        let conn = self.conn();
+        let mut rows = conn
+            .query(
+                "SELECT DISTINCT user_id FROM settings WHERE key = ?1",
+                params![key],
+            )
+            .await
+            .map_err(|e| DatabaseError::Query(format!("list_user_ids_with_setting: {e}")))?;
+
+        let mut user_ids = Vec::new();
+        while let Ok(Some(row)) = rows.next().await {
+            if let Ok(uid) = row.get::<String>(0) {
+                user_ids.push(uid);
+            }
+        }
+        Ok(user_ids)
+    }
+
     // ── Todos ───────────────────────────────────────────────────────
 
     async fn create_todo(&self, todo: &TodoItem) -> Result<(), DatabaseError> {
@@ -3449,6 +3468,36 @@ mod tests {
         let db = test_db().await;
         let result = db.get_setting("nobody", "nothing").await.unwrap();
         assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn list_user_ids_with_setting_returns_matching_users() {
+        let db = test_db().await;
+
+        // Set up: two users with gcal_refresh_token, one with a different key
+        db.set_setting("alice", "gcal_refresh_token", &serde_json::json!("token_a"))
+            .await
+            .unwrap();
+        db.set_setting("bob", "gcal_refresh_token", &serde_json::json!("token_b"))
+            .await
+            .unwrap();
+        db.set_setting("charlie", "other_key", &serde_json::json!("value"))
+            .await
+            .unwrap();
+
+        let mut ids = db
+            .list_user_ids_with_setting("gcal_refresh_token")
+            .await
+            .unwrap();
+        ids.sort();
+        assert_eq!(ids, vec!["alice", "bob"]);
+
+        // Empty result for non-existent key
+        let empty = db
+            .list_user_ids_with_setting("nonexistent")
+            .await
+            .unwrap();
+        assert!(empty.is_empty());
     }
 
     // ── LLM Call Tracking tests ─────────────────────────────────────

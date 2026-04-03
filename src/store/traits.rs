@@ -365,6 +365,9 @@ pub trait Database: Send + Sync {
     /// Delete a setting.
     async fn delete_setting(&self, user_id: &str, key: &str) -> Result<bool, DatabaseError>;
 
+    /// List all user_ids that have a given setting key stored.
+    async fn list_user_ids_with_setting(&self, key: &str) -> Result<Vec<String>, DatabaseError>;
+
     // ── Todos ───────────────────────────────────────────────────────
 
     /// Create a new todo item.
