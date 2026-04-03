@@ -588,9 +588,10 @@ async fn delete_task(
 
     match ctx.db.delete_household_task(task_uuid).await {
         Ok(true) => {
+            let hid = Uuid::parse_str(&_id).unwrap_or_default();
             let _ = ctx
                 .household_tx
-                .send(HouseholdWsMessage::TaskDeleted { id: task_uuid });
+                .send(HouseholdWsMessage::TaskDeleted { id: task_uuid, household_id: hid });
             Json(serde_json::json!({"deleted": true})).into_response()
         }
         Ok(false) => (
@@ -667,7 +668,7 @@ async fn handle_socket(mut socket: WebSocket, ctx: Arc<AppContext>, household_id
                             HouseholdWsMessage::TasksSync { household_id: hid, .. } => *hid == household_id,
                             HouseholdWsMessage::TaskCreated { task } => task.household_id == household_id,
                             HouseholdWsMessage::TaskUpdated { task } => task.household_id == household_id,
-                            HouseholdWsMessage::TaskDeleted { .. } => true,
+                            HouseholdWsMessage::TaskDeleted { household_id: hid, .. } => *hid == household_id,
                         };
                         if relevant {
                             if let Ok(json) = serde_json::to_string(&msg) {

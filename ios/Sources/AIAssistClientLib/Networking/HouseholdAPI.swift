@@ -1,6 +1,9 @@
 import Foundation
 
 /// REST API client for household management — CRUD for households, members, and tasks.
+///
+/// All list endpoints return wrapped envelopes (`{"households": [...]}` etc.)
+/// so we decode through typed response structs, not bare arrays.
 public final class HouseholdAPI: @unchecked Sendable {
     public let host: String
     public let port: Int
@@ -29,20 +32,59 @@ public final class HouseholdAPI: @unchecked Sendable {
         self.port = port
     }
 
+    // MARK: - Response Envelopes
+
+    private struct HouseholdCreateResponse: Decodable {
+        let id: String
+        let household: Household
+    }
+
+    private struct HouseholdsListResponse: Decodable {
+        let households: [Household]
+    }
+
+    private struct HouseholdUpdateResponse: Decodable {
+        let household: Household
+    }
+
+    private struct MemberCreateResponse: Decodable {
+        let id: String
+        let member: HouseholdMember
+    }
+
+    private struct MembersListResponse: Decodable {
+        let members: [HouseholdMember]
+    }
+
+    private struct TaskCreateResponse: Decodable {
+        let id: String
+        let task: HouseholdTask
+    }
+
+    private struct TasksListResponse: Decodable {
+        let tasks: [HouseholdTask]
+    }
+
+    private struct TaskUpdateResponse: Decodable {
+        let task: HouseholdTask
+    }
+
     // MARK: - Households
 
     /// Create a new household. The creator is automatically added as Owner.
     public func createHousehold(name: String) async throws -> Household {
         let body: [String: String] = ["name": name]
-        return try await post("/api/households", body: body)
+        let envelope: HouseholdCreateResponse = try await post("/api/households", body: body)
+        return envelope.household
     }
 
     /// List all households the current user belongs to.
     public func listHouseholds() async throws -> [Household] {
-        try await get("/api/households")
+        let envelope: HouseholdsListResponse = try await get("/api/households")
+        return envelope.households
     }
 
-    /// Get a single household by ID.
+    /// Get a single household by ID. Returns bare object (no envelope).
     public func getHousehold(id: UUID) async throws -> Household {
         try await get("/api/households/\(id.uuidString.lowercased())")
     }
@@ -50,7 +92,8 @@ public final class HouseholdAPI: @unchecked Sendable {
     /// Update a household's name.
     public func updateHousehold(id: UUID, name: String) async throws -> Household {
         let body: [String: String] = ["name": name]
-        return try await put("/api/households/\(id.uuidString.lowercased())", body: body)
+        let envelope: HouseholdUpdateResponse = try await put("/api/households/\(id.uuidString.lowercased())", body: body)
+        return envelope.household
     }
 
     /// Delete a household (cascades to members and tasks).
@@ -67,12 +110,14 @@ public final class HouseholdAPI: @unchecked Sendable {
             "display_name": displayName,
         ]
         if let role { body["role"] = role.rawValue }
-        return try await post("/api/households/\(householdId.uuidString.lowercased())/members", body: body)
+        let envelope: MemberCreateResponse = try await post("/api/households/\(householdId.uuidString.lowercased())/members", body: body)
+        return envelope.member
     }
 
     /// List all members of a household.
     public func listMembers(householdId: UUID) async throws -> [HouseholdMember] {
-        try await get("/api/households/\(householdId.uuidString.lowercased())/members")
+        let envelope: MembersListResponse = try await get("/api/households/\(householdId.uuidString.lowercased())/members")
+        return envelope.members
     }
 
     /// Remove a member from a household.
@@ -93,19 +138,22 @@ public final class HouseholdAPI: @unchecked Sendable {
             body["due_date"] = formatter.string(from: dueDate)
         }
         if let recurrence { body["recurrence"] = recurrence.id }
-        return try await postJSON("/api/households/\(householdId.uuidString.lowercased())/tasks", body: body)
+        let envelope: TaskCreateResponse = try await postJSON("/api/households/\(householdId.uuidString.lowercased())/tasks", body: body)
+        return envelope.task
     }
 
     /// List tasks in a household, optionally filtered by status.
     public func listTasks(householdId: UUID, status: HouseholdTaskStatus? = nil) async throws -> [HouseholdTask] {
         var path = "/api/households/\(householdId.uuidString.lowercased())/tasks"
         if let status { path += "?status=\(status.rawValue)" }
-        return try await get(path)
+        let envelope: TasksListResponse = try await get(path)
+        return envelope.tasks
     }
 
     /// Get tasks assigned to the current user across all households.
     public func myTasks() async throws -> [HouseholdTask] {
-        try await get("/api/households/tasks/mine")
+        let envelope: TasksListResponse = try await get("/api/households/tasks/mine")
+        return envelope.tasks
     }
 
     // MARK: - HTTP Helpers

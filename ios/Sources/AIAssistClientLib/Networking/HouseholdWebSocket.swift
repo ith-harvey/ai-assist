@@ -235,14 +235,13 @@ public final class HouseholdWebSocket: @unchecked Sendable {
         self.webSocketTask = task
         task.resume()
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4.0) { [weak self] in
             guard let self else { return }
             if !self.isConnected && self.tasks.isEmpty {
                 self.loadSampleData()
             }
         }
 
-        isConnected = true
         reconnectAttempt = 0
         usingSampleData = false
         receiveMessage()
@@ -271,6 +270,10 @@ public final class HouseholdWebSocket: @unchecked Sendable {
             guard let self else { return }
             switch result {
             case .success(let message):
+                // Mark connected on first successful receive (handshake complete)
+                if !self.isConnected {
+                    DispatchQueue.main.async { self.isConnected = true }
+                }
                 self.handleMessage(message)
                 self.receiveMessage()
             case .failure:

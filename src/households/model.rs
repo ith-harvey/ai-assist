@@ -185,7 +185,7 @@ pub enum HouseholdWsMessage {
     /// A task was updated.
     TaskUpdated { task: HouseholdTask },
     /// A task was deleted.
-    TaskDeleted { id: Uuid },
+    TaskDeleted { id: Uuid, household_id: Uuid },
 }
 
 #[cfg(test)]
