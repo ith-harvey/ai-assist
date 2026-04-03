@@ -13,14 +13,26 @@ struct AIAssistAppApp: App {
     // TODO: Re-enable onboarding once dev-mode server config is implemented
     // @AppStorage("ai_assist_onboarding_complete") private var onboarded = false
 
+    #if os(iOS)
+    @UIApplicationDelegateAdaptor(AIAssistClientLib.AppDelegate.self) private var appDelegate
+    #endif
+
+    @State private var notificationManager = NotificationManager()
+
     var body: some Scene {
         WindowGroup {
             // TODO: Re-enable onboarding gate
             // if onboarded {
-            AIAssistClientLib.MainTabView()
+            AIAssistClientLib.MainTabView(notificationManager: notificationManager)
             // } else {
             //     AIAssistClientLib.OnboardingView()
             // }
+                .task {
+                    #if os(iOS)
+                    appDelegate.notificationManager = notificationManager
+                    #endif
+                    await notificationManager.requestAuthorization()
+                }
         }
     }
 }

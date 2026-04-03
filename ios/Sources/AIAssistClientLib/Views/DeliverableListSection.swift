@@ -16,7 +16,7 @@ public struct DeliverableListSection: View {
     public init(todoId: UUID, cardSocket: CardWebSocket) {
         self.todoId = todoId
         self.cardSocket = cardSocket
-        self._api = State(initialValue: DeliverableAPI(host: cardSocket.host, port: cardSocket.port))
+        self._api = State(initialValue: DeliverableAPI(config: cardSocket.config))
     }
 
     public var body: some View {

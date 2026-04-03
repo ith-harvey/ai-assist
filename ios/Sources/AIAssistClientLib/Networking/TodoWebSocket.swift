@@ -88,7 +88,8 @@ enum TodoWsAction: Encodable {
 /// Mirrors `CardWebSocket` pattern — connects to `/ws/todos`, syncs state, sends actions.
 /// Uses hardcoded sample data until backend is ready.
 @Observable
-public final class TodoWebSocket: @unchecked Sendable {
+@MainActor
+public final class TodoWebSocket {
 
     // MARK: - Published State
 
@@ -99,25 +100,23 @@ public final class TodoWebSocket: @unchecked Sendable {
 
     // MARK: - Configuration
 
-    public private(set) var host: String
-    public private(set) var port: Int
+    public private(set) var config: ServerConfig
+
+    public var host: String { config.host }
+    public var port: Int { config.port }
 
     // MARK: - Private
 
     private var webSocketTask: URLSessionWebSocketTask?
-    private let session: URLSession
+    nonisolated(unsafe) private let session: URLSession
     private var reconnectAttempt: Int = 0
     private let maxReconnectDelay: TimeInterval = 30.0
     private var isIntentionalDisconnect = false
     /// True when using hardcoded data (backend not available).
     private var usingSampleData = false
 
-    public init(
-        host: String = UserDefaults.standard.string(forKey: "ai_assist_host") ?? "localhost",
-        port: Int = UserDefaults.standard.object(forKey: "ai_assist_port") as? Int ?? 8080
-    ) {
-        self.host = host
-        self.port = port
+    public init(config: ServerConfig = ServerConfig()) {
+        self.config = config
         self.session = URLSession(configuration: .default)
     }
 
@@ -167,15 +166,14 @@ public final class TodoWebSocket: @unchecked Sendable {
     public func updateServer(host: String, port: Int) {
         let wasConnected = isConnected
         disconnect()
-        self.host = host
-        self.port = port
+        self.config = ServerConfig(host: host, port: port, useSecureTransport: config.useSecureTransport)
         if wasConnected {
             connect()
         }
     }
 
     private func openConnection() {
-        guard let url = URL(string: "ws://\(host):\(port)/ws/todos") else {
+        guard let url = URL(string: "\(config.wsBaseURL)/ws/todos") else {
             loadSampleData()
             return
         }
@@ -185,7 +183,8 @@ public final class TodoWebSocket: @unchecked Sendable {
 
         // Give the connection a moment, then check if it actually connected.
         // If backend isn't ready, fall back to sample data.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(2.0 * 1_000_000_000))
             guard let self else { return }
             if !self.isConnected && self.todos.isEmpty {
                 self.loadSampleData()
@@ -222,7 +221,7 @@ public final class TodoWebSocket: @unchecked Sendable {
         }
     }
 
-    private func handleMessage(_ message: URLSessionWebSocketTask.Message) {
+    private nonisolated func handleMessage(_ message: URLSessionWebSocketTask.Message) {
         let data: Data
         switch message {
         case .string(let text):
@@ -236,7 +235,7 @@ public final class TodoWebSocket: @unchecked Sendable {
 
         guard let wsMessage = TodoWsMessage.decode(from: data) else { return }
 
-        DispatchQueue.main.async { [weak self] in
+        Task { @MainActor [weak self] in
             self?.applyMessage(wsMessage)
         }
     }
@@ -336,8 +335,8 @@ public final class TodoWebSocket: @unchecked Sendable {
 
     // MARK: - Reconnection
 
-    private func handleDisconnect() {
-        DispatchQueue.main.async { [weak self] in
+    private nonisolated func handleDisconnect() {
+        Task { @MainActor [weak self] in
             self?.isConnected = false
         }
 
@@ -345,7 +344,7 @@ public final class TodoWebSocket: @unchecked Sendable {
 
         // If we were using real data, fall back to sample
         if !usingSampleData && todos.isEmpty {
-            DispatchQueue.main.async { [weak self] in
+            Task { @MainActor [weak self] in
                 self?.loadSampleData()
             }
             return
@@ -354,7 +353,8 @@ public final class TodoWebSocket: @unchecked Sendable {
         let delay = reconnectDelay()
         reconnectAttempt += 1
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
             guard let self, !self.isIntentionalDisconnect else { return }
             self.openConnection()
         }

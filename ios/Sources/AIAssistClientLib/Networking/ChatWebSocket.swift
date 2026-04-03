@@ -25,7 +25,8 @@ public struct StatusEvent: Identifiable, Sendable {
 /// Connects to the Rust server at `/ws/chat`, sends user messages,
 /// and receives responses, status updates, and streaming chunks.
 @Observable
-public final class ChatWebSocket: @unchecked Sendable {
+@MainActor
+public final class ChatWebSocket {
     // MARK: - Published state
 
     public var messages: [ChatMessage] = []
@@ -60,13 +61,15 @@ public final class ChatWebSocket: @unchecked Sendable {
 
     // MARK: - Configuration
 
-    public private(set) var host: String
-    public private(set) var port: Int
+    public private(set) var config: ServerConfig
+
+    public var host: String { config.host }
+    public var port: Int { config.port }
 
     // MARK: - Private
 
     private var webSocketTask: URLSessionWebSocketTask?
-    private let session: URLSession
+    nonisolated(unsafe) private let session: URLSession
     private var reconnectAttempt: Int = 0
     private let maxReconnectDelay: TimeInterval = 30.0
     private var isIntentionalDisconnect = false
@@ -77,12 +80,8 @@ public final class ChatWebSocket: @unchecked Sendable {
     /// IDs of messages loaded from history, used to dedup live WS messages.
     private var knownMessageIds: Set<UUID> = []
 
-    public init(
-        host: String = UserDefaults.standard.string(forKey: "ai_assist_host") ?? "localhost",
-        port: Int = UserDefaults.standard.object(forKey: "ai_assist_port") as? Int ?? 8080
-    ) {
-        self.host = host
-        self.port = port
+    public init(config: ServerConfig = ServerConfig()) {
+        self.config = config
         self.session = URLSession(configuration: .default)
     }
 
@@ -104,15 +103,14 @@ public final class ChatWebSocket: @unchecked Sendable {
     public func updateServer(host: String, port: Int) {
         let wasConnected = isConnected
         disconnect()
-        self.host = host
-        self.port = port
+        self.config = ServerConfig(host: host, port: port, useSecureTransport: config.useSecureTransport)
         if wasConnected {
             connect()
         }
     }
 
     private func openConnection() {
-        guard let url = URL(string: "ws://\(host):\(port)/ws/chat") else { return }
+        guard let url = URL(string: "\(config.wsBaseURL)/ws/chat") else { return }
         let task = session.webSocketTask(with: url)
         self.webSocketTask = task
         task.resume()
@@ -131,9 +129,7 @@ public final class ChatWebSocket: @unchecked Sendable {
 
         // Add the user message to local state immediately
         let userMessage = ChatMessage(content: trimmed, isFromUser: true)
-        DispatchQueue.main.async { [weak self] in
-            self?.messages.append(userMessage)
-        }
+        messages.append(userMessage)
 
         // Send over WebSocket (include thread_id for conversation continuity)
         let payload: [String: String] = [
@@ -161,7 +157,7 @@ public final class ChatWebSocket: @unchecked Sendable {
         }
     }
 
-    private func handleMessage(_ message: URLSessionWebSocketTask.Message) {
+    private nonisolated func handleMessage(_ message: URLSessionWebSocketTask.Message) {
         let data: Data
         switch message {
         case .string(let text):
@@ -176,7 +172,7 @@ public final class ChatWebSocket: @unchecked Sendable {
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let type = json["type"] as? String else { return }
 
-        DispatchQueue.main.async { [weak self] in
+        Task { @MainActor [weak self] in
             self?.applyMessage(type: type, json: json)
         }
     }
@@ -298,7 +294,7 @@ public final class ChatWebSocket: @unchecked Sendable {
     /// Load previous messages from the REST API so conversations survive app restarts.
     private func loadHistory() {
         let tid = threadId
-        guard let url = URL(string: "http://\(host):\(port)/api/chat/history?thread_id=\(tid)&limit=50") else { return }
+        guard let url = URL(string: "\(config.baseURL)/api/chat/history?thread_id=\(tid)&limit=50") else { return }
 
         URLSession.shared.dataTask(with: url) { [weak self] data, _, _ in
             guard let self, let data,
@@ -328,7 +324,8 @@ public final class ChatWebSocket: @unchecked Sendable {
                 )
             }
 
-            DispatchQueue.main.async {
+            Task { @MainActor [weak self] in
+                guard let self else { return }
                 // Track known IDs for dedup against live WS messages
                 self.knownMessageIds = Set(historyMessages.map(\.id))
                 // Only replace if we haven't received live messages yet
@@ -346,8 +343,8 @@ public final class ChatWebSocket: @unchecked Sendable {
 
     // MARK: - Reconnection
 
-    private func handleDisconnect() {
-        DispatchQueue.main.async { [weak self] in
+    private nonisolated func handleDisconnect() {
+        Task { @MainActor [weak self] in
             self?.isConnected = false
             self?.currentStatus = nil
         }
@@ -357,7 +354,8 @@ public final class ChatWebSocket: @unchecked Sendable {
         let delay = reconnectDelay()
         reconnectAttempt += 1
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
             guard let self, !self.isIntentionalDisconnect else { return }
             self.openConnection()
         }

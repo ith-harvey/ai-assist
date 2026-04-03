@@ -80,7 +80,8 @@ public struct OnboardingView: View {
         isConnecting = true
         errorMessage = nil
 
-        guard let url = URL(string: "http://\(host):\(port)/health") else {
+        let config = ServerConfig(host: host, port: port)
+        guard let url = URL(string: "\(config.baseURL)/health") else {
             errorMessage = "Invalid server address"
             isConnecting = false
             return

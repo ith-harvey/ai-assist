@@ -1,11 +1,9 @@
 import Foundation
 
 /// REST API client for fetching calendar events from the server.
-public final class CalendarAPI: @unchecked Sendable {
-    public let host: String
-    public let port: Int
-
-    private var baseURLString: String { "http://\(host):\(port)" }
+@MainActor
+public final class CalendarAPI {
+    private let config: ServerConfig
 
     private var decoder: JSONDecoder {
         let d = JSONDecoder()
@@ -14,17 +12,13 @@ public final class CalendarAPI: @unchecked Sendable {
         return d
     }
 
-    public init(
-        host: String = UserDefaults.standard.string(forKey: "ai_assist_host") ?? "localhost",
-        port: Int = UserDefaults.standard.object(forKey: "ai_assist_port") as? Int ?? 8080
-    ) {
-        self.host = host
-        self.port = port
+    public init(config: ServerConfig = ServerConfig()) {
+        self.config = config
     }
 
     /// Fetch events for a single date.
     public func fetchEvents(date: String) async throws -> [CalendarEvent] {
-        guard let url = URL(string: "\(baseURLString)/api/calendar/events?date=\(date)") else {
+        guard let url = URL(string: "\(config.baseURL)/api/calendar/events?date=\(date)") else {
             throw URLError(.badURL)
         }
         let (data, response) = try await URLSession.shared.data(from: url)
@@ -43,7 +37,7 @@ public final class CalendarAPI: @unchecked Sendable {
 
     /// Fetch the calendar connection status.
     public func fetchStatus() async throws -> CalendarStatus {
-        guard let url = URL(string: "\(baseURLString)/api/calendar/status") else {
+        guard let url = URL(string: "\(config.baseURL)/api/calendar/status") else {
             throw URLError(.badURL)
         }
         let (data, response) = try await URLSession.shared.data(from: url)
@@ -55,7 +49,7 @@ public final class CalendarAPI: @unchecked Sendable {
 
     /// Disconnect the calendar.
     public func disconnect() async throws {
-        guard let url = URL(string: "\(baseURLString)/api/calendar/connection") else {
+        guard let url = URL(string: "\(config.baseURL)/api/calendar/connection") else {
             throw URLError(.badURL)
         }
         var request = URLRequest(url: url)
