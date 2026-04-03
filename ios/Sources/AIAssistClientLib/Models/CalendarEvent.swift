@@ -15,7 +15,9 @@ public struct HouseholdMember: Identifiable, Codable, Sendable, Hashable {
         self.emoji = emoji
     }
 
-    /// Color for this member based on stable hash of their ID.
+    /// Color for this member based on a stable DJB2 hash of their ID.
+    /// Uses a deterministic hash (not Swift's randomized `hashValue`) so
+    /// colors stay consistent across app launches.
     public var color: Color {
         let colors: [Color] = [
             Color(red: 0.26, green: 0.52, blue: 0.96), // Blue
@@ -25,8 +27,11 @@ public struct HouseholdMember: Identifiable, Codable, Sendable, Hashable {
             Color(red: 0.54, green: 0.33, blue: 0.71), // Purple
             Color(red: 0.02, green: 0.65, blue: 0.72), // Teal
         ]
-        let hash = abs(id.hashValue)
-        return colors[hash % colors.count]
+        var hash: UInt64 = 5381
+        for byte in id.utf8 {
+            hash = hash &* 33 &+ UInt64(byte)
+        }
+        return colors[Int(hash % UInt64(colors.count))]
     }
 
     /// Sample members for previews.
