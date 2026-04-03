@@ -122,8 +122,6 @@ pub enum TriageAction {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         style_notes: Option<String>,
     },
-    /// Low priority — batch into a periodic digest.
-    Digest { summary: String },
 }
 
 impl TriageAction {
@@ -133,7 +131,6 @@ impl TriageAction {
             Self::Ignore { .. } => "ignore",
             Self::Notify { .. } => "notify",
             Self::DraftReply { .. } => "draft_reply",
-            Self::Digest { .. } => "digest",
         }
     }
 }
@@ -263,10 +260,6 @@ mod tests {
             }
             .label(),
             "draft_reply"
-        );
-        assert_eq!(
-            TriageAction::Digest { summary: "x".into() }.label(),
-            "digest"
         );
     }
 

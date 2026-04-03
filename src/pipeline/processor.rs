@@ -157,7 +157,6 @@ impl MessageProcessor {
     /// - `Ignore` → log only, no card created
     /// - `Notify` → notification card (summary, no draft reply)
     /// - `DraftReply` → reply card (summary + draft for approval)
-    /// - `Digest` → stored for later aggregation (TODO: digest table)
     async fn route_to_card(
         &self,
         message: &InboundMessage,
@@ -241,34 +240,6 @@ impl MessageProcessor {
                 );
                 Ok(())
             }
-            TriageAction::Digest { summary } => {
-                // For now, create a low-priority notification card.
-                // Phase 4 will batch these into periodic digest cards.
-                debug!(
-                    id = %message.id,
-                    summary = %summary,
-                    "Digest item — creating low-priority notification for now"
-                );
-                let card = ApprovalCard::new(
-                    CardPayload::Reply {
-                        channel: message.channel.clone(),
-                        source_sender: message.sender.clone(),
-                        source_message: message.content.clone(),
-                        suggested_reply: format!("[Digest] {}", summary),
-                        confidence: 0.0,
-                        conversation_id: message.id.clone(),
-                        thread: Vec::new(),
-                        email_thread: Vec::new(),
-                        reply_metadata: Some(message.reply_metadata.clone()),
-                        message_id: None,
-                    },
-                    CardSilo::Messages,
-                    CARD_EXPIRE_MINUTES * 4, // longer expiry for digest items
-                );
-
-                self.card_queue.push(card).await;
-                Ok(())
-            }
         }
     }
 }
@@ -277,12 +248,11 @@ impl MessageProcessor {
 
 /// Build the triage system prompt.
 fn build_triage_system_prompt() -> String {
-    "You are a message triage engine. Classify incoming messages into one of four actions.\n\n\
+    "You are a message triage engine. Classify incoming messages into one of three actions.\n\n\
      Actions:\n\
      - \"ignore\": spam, newsletters, marketing, automated noise. Provide reason.\n\
      - \"notify\": FYI only — user should see it but no reply needed. Provide summary.\n\
-     - \"draft_reply\": needs a response — draft one. Provide summary, draft, confidence (0.0-1.0).\n\
-     - \"digest\": low priority — can be batched into a periodic summary. Provide summary.\n\n\
+     - \"draft_reply\": needs a response — draft one. Provide summary, draft, confidence (0.0-1.0).\n\n\
      Respond with ONLY a JSON object:\n\
      {\"action\": \"...\", \"reason\": \"...\", \"summary\": \"...\", \"draft\": \"...\", \"confidence\": 0.0, \"tone\": \"...\", \"style_notes\": \"...\"}\n\n\
      Rules:\n\
@@ -414,7 +384,8 @@ fn parse_triage_response(raw: &str) -> Result<TriageAction, String> {
                 style_notes,
             })
         }
-        "digest" => Ok(TriageAction::Digest {
+        // Legacy: map "digest" to Notify for backwards compatibility
+        "digest" => Ok(TriageAction::Notify {
             summary: if response.summary.is_empty() {
                 "Low priority message".into()
             } else {
@@ -474,7 +445,7 @@ mod tests {
         assert!(prompt.contains("ignore"));
         assert!(prompt.contains("notify"));
         assert!(prompt.contains("draft_reply"));
-        assert!(prompt.contains("digest"));
+        assert!(!prompt.contains("digest"));
     }
 
     #[test]
@@ -652,14 +623,14 @@ mod tests {
     }
 
     #[test]
-    fn parse_digest_response() {
+    fn parse_digest_response_maps_to_notify() {
         let raw = r#"{"action": "digest", "summary": "Weekly team metrics report"}"#;
         let action = parse_triage_response(raw).unwrap();
         match action {
-            TriageAction::Digest { summary } => {
+            TriageAction::Notify { summary } => {
                 assert_eq!(summary, "Weekly team metrics report");
             }
-            other => panic!("Expected Digest, got {:?}", other),
+            other => panic!("Expected Notify (from legacy digest), got {:?}", other),
         }
     }
 
@@ -731,7 +702,7 @@ mod tests {
 
     #[test]
     fn extract_json_embedded_in_text() {
-        let input = "My analysis: {\"action\": \"digest\", \"summary\": \"low pri\"} done.";
+        let input = "My analysis: {\"action\": \"notify\", \"summary\": \"low pri\"} done.";
         let result = extract_json_object(input);
         assert!(result.starts_with('{'));
         assert!(result.ends_with('}'));
@@ -973,7 +944,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn processor_digest_creates_card_with_longer_expiry() {
+    async fn processor_legacy_digest_maps_to_notify() {
         let llm: Arc<dyn LlmProvider> = Arc::new(MockTriageLlm {
             response: r#"{"action": "digest", "summary": "Weekly metrics report"}"#.into(),
         });
@@ -994,10 +965,10 @@ mod tests {
         };
 
         let result = processor.process(msg).await.unwrap();
-        assert!(matches!(result.action, TriageAction::Digest { .. }));
+        assert!(matches!(result.action, TriageAction::Notify { .. }));
 
         let pending = queue.pending().await;
         assert_eq!(pending.len(), 1);
-        assert!(pending[0].payload.suggested_reply().unwrap().contains("Digest"));
+        assert!(pending[0].payload.suggested_reply().unwrap().contains("Notification"));
     }
 }
