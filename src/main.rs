@@ -11,6 +11,7 @@ use ai_assist::channels::{ChannelManager, CliChannel, IosChannel, TelegramChanne
 use ai_assist::config::{AgentConfig, GoogleOAuthConfig, RoutineConfig};
 use ai_assist::documents::routes::document_routes;
 use ai_assist::notifications::routes::notification_routes;
+use ai_assist::notifications::service::{NotificationConfig, NotificationService};
 use ai_assist::llm::{LlmBackend, LlmConfig, create_provider};
 use ai_assist::safety::SafetyLayer;
 use ai_assist::store::{Database, LibSqlBackend};
@@ -261,6 +262,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     eprintln!("   Tools: {} registered", tools.count());
 
+    // ── Notification Service ────────────────────────────────────────────
+    let notification_config = NotificationConfig::from_env();
+    let notification_service = if notification_config.is_apns_configured() {
+        eprintln!(
+            "   Notifications: enabled (topic: {})",
+            notification_config.apns_topic.as_deref().unwrap_or("?"),
+        );
+        Some(Arc::new(NotificationService::new(
+            Arc::clone(&db),
+            Arc::new(ai_assist::notifications::service::NoOpApnsSender),
+            notification_config,
+        )))
+    } else {
+        eprintln!("   Notifications: disabled (set APNS_KEY_ID, APNS_TEAM_ID, APNS_KEY_PATH, APNS_TOPIC to enable)");
+        Some(Arc::new(NotificationService::new_noop(Arc::clone(&db))))
+    };
+
     // ── Centralized Application Context ───────────────────────────────
     let (todo_tx, _) = tokio::sync::broadcast::channel::<ai_assist::todos::model::TodoWsMessage>(256);
     let choice_registry = ai_assist::cards::choice_registry::ChoiceRegistry::new();
@@ -279,6 +297,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         email_config: email_config_for_cards,
         reply_drafter: reply_drafter.clone(),
         oauth_config: google_oauth_config.clone(),
+        notification_service,
         agent_queue: std::sync::OnceLock::new(),
     });
 

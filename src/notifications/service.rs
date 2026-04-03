@@ -41,7 +41,16 @@ pub enum ApnsSendResult {
 #[async_trait]
 pub trait ApnsSender: Send + Sync {
     /// Send a push notification to a single device token.
-    async fn send(&self, device_token: &str, payload: &PushPayload) -> ApnsSendResult;
+    ///
+    /// `apns_topic` is the APNs topic header (iOS bundle ID) — required for
+    /// token-based authentication. Callers must provide it; implementations
+    /// must set it as the `apns-topic` HTTP/2 header.
+    async fn send(
+        &self,
+        device_token: &str,
+        payload: &PushPayload,
+        apns_topic: &str,
+    ) -> ApnsSendResult;
 }
 
 // ── No-Op Sender (default when APNs is not configured) ─────────────
@@ -52,10 +61,16 @@ pub struct NoOpApnsSender;
 
 #[async_trait]
 impl ApnsSender for NoOpApnsSender {
-    async fn send(&self, device_token: &str, payload: &PushPayload) -> ApnsSendResult {
+    async fn send(
+        &self,
+        device_token: &str,
+        payload: &PushPayload,
+        apns_topic: &str,
+    ) -> ApnsSendResult {
         info!(
             device_token = &device_token[..8.min(device_token.len())],
             title = %payload.title,
+            topic = %apns_topic,
             "APNs not configured — notification not sent"
         );
         ApnsSendResult::Success
@@ -197,12 +212,19 @@ impl NotificationService {
             }),
         };
 
+        // Resolve APNs topic (required for token-based auth)
+        let apns_topic = self
+            .config
+            .apns_topic
+            .as_deref()
+            .unwrap_or("com.aiassist.app");
+
         // Send to all devices
         let mut any_success = false;
         let mut last_error = None;
 
         for device_token in &tokens {
-            let result = self.sender.send(&device_token.token, &payload).await;
+            let result = self.sender.send(&device_token.token, &payload, apns_topic).await;
             match result {
                 ApnsSendResult::Success => {
                     any_success = true;
@@ -304,7 +326,7 @@ mod tests {
 
     #[async_trait]
     impl ApnsSender for MockApnsSender {
-        async fn send(&self, _device_token: &str, _payload: &PushPayload) -> ApnsSendResult {
+        async fn send(&self, _device_token: &str, _payload: &PushPayload, _apns_topic: &str) -> ApnsSendResult {
             self.send_count.fetch_add(1, Ordering::SeqCst);
             let guard = self.result.lock().await;
             match &*guard {

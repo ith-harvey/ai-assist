@@ -15,6 +15,7 @@ use crate::cards::reply_drafter::ReplyDrafter;
 use crate::config::GoogleOAuthConfig;
 use crate::llm::LlmProvider;
 use crate::channels::email::EmailConfig;
+use crate::notifications::service::NotificationService;
 use crate::safety::SafetyLayer;
 use crate::store::Database;
 use crate::todos::activity_channel_map::ActivityChannelMap;
@@ -54,6 +55,9 @@ pub struct AppContext {
     pub email_config: Option<EmailConfig>,
     pub reply_drafter: Arc<ReplyDrafter>,
     pub oauth_config: Option<GoogleOAuthConfig>,
+
+    // ── Notifications ──
+    pub notification_service: Option<Arc<NotificationService>>,
 
     // ── Agent queue (set after construction via OnceLock) ──
     pub agent_queue: OnceLock<Arc<AgentQueue>>,
