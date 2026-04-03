@@ -23,7 +23,12 @@ public struct MainTabView: View {
     @State private var hostInput = ""
     @State private var portInput = ""
 
-    public init() {}
+    /// Push notification manager (injected from app entry point).
+    var notificationManager: NotificationManager
+
+    public init(notificationManager: NotificationManager) {
+        self.notificationManager = notificationManager
+    }
 
     public var body: some View {
         TabView(selection: $selectedTab) {
@@ -84,10 +89,17 @@ public struct MainTabView: View {
                 navigateToTodoId = todoId
             }
         }
+        .onChange(of: notificationManager.pendingDestination) { _, destination in
+            guard let destination else { return }
+            notificationManager.pendingDestination = nil
+            handleNotificationNavigation(destination)
+        }
         .onAppear {
             cardSocket.connect()
             chatSocket.connect()
             todoSocket.connect()
+            notificationManager.updateServer(host: cardSocket.host, port: cardSocket.port)
+            notificationManager.clearBadge()
         }
         .onDisappear {
             cardSocket.disconnect()
@@ -149,6 +161,34 @@ public struct MainTabView: View {
                             .foregroundStyle(cardSocket.isConnected ? .green : .red)
                     }
                 }
+                Section("Notifications") {
+                    HStack {
+                        Text("Push Notifications")
+                        Spacer()
+                        switch notificationManager.authorizationStatus {
+                        case .authorized:
+                            Text("Enabled")
+                                .foregroundStyle(.green)
+                        case .denied:
+                            Button("Open Settings") {
+                                #if os(iOS)
+                                if let url = URL(string: UIApplication.openSettingsURLString) {
+                                    UIApplication.shared.open(url)
+                                }
+                                #endif
+                            }
+                            .foregroundStyle(.blue)
+                        case .notDetermined:
+                            Button("Enable") {
+                                Task { await notificationManager.requestAuthorization() }
+                            }
+                            .foregroundStyle(.blue)
+                        default:
+                            Text("Unavailable")
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
                 Section {
                     Button("Change Server", role: .destructive) {
                         showSettings = false
@@ -174,6 +214,7 @@ public struct MainTabView: View {
                             cardSocket.updateServer(host: hostInput, port: port)
                             chatSocket.updateServer(host: hostInput, port: port)
                             todoSocket.updateServer(host: hostInput, port: port)
+                            notificationManager.updateServer(host: hostInput, port: port)
                             cardSocket.connect()
                             chatSocket.connect()
                             todoSocket.connect()
@@ -199,5 +240,25 @@ public struct MainTabView: View {
     private var shouldForceShowBar: Bool {
         !inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             || isKeyboardVisible
+    }
+
+    // MARK: - Notification Deep Linking
+
+    private func handleNotificationNavigation(_ destination: NotificationDestination) {
+        switch destination {
+        case .todo(let id):
+            selectedTab = 0
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                navigateToTodoId = id
+            }
+        case .calendar:
+            selectedTab = 2
+        case .card:
+            selectedTab = 1
+        case .chat:
+            selectedTab = 3
+        case .unknown:
+            break
+        }
     }
 }
