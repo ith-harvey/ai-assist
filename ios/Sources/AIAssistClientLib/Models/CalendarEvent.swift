@@ -1,6 +1,66 @@
 import Foundation
 import SwiftUI
 
+// MARK: - Household Member
+
+/// A household member who can be assigned to calendar events.
+public struct HouseholdMember: Identifiable, Codable, Sendable, Hashable {
+    public let id: String
+    public var name: String
+    public var emoji: String
+
+    public init(id: String, name: String, emoji: String) {
+        self.id = id
+        self.name = name
+        self.emoji = emoji
+    }
+
+    /// Color for this member based on stable hash of their ID.
+    public var color: Color {
+        let colors: [Color] = [
+            Color(red: 0.26, green: 0.52, blue: 0.96), // Blue
+            Color(red: 0.91, green: 0.42, blue: 0.48), // Pink
+            Color(red: 0.13, green: 0.67, blue: 0.53), // Green
+            Color(red: 0.94, green: 0.60, blue: 0.22), // Orange
+            Color(red: 0.54, green: 0.33, blue: 0.71), // Purple
+            Color(red: 0.02, green: 0.65, blue: 0.72), // Teal
+        ]
+        let hash = abs(id.hashValue)
+        return colors[hash % colors.count]
+    }
+
+    /// Sample members for previews.
+    public static let samples: [HouseholdMember] = [
+        HouseholdMember(id: "mom-1", name: "Mom", emoji: "👩"),
+        HouseholdMember(id: "dad-1", name: "Dad", emoji: "👨"),
+        HouseholdMember(id: "emma-1", name: "Emma", emoji: "👧"),
+        HouseholdMember(id: "jack-1", name: "Jack", emoji: "👦"),
+    ]
+}
+
+// MARK: - Recurrence
+
+/// Recurrence pattern for calendar events.
+public enum RecurrenceRule: String, Codable, Sendable, CaseIterable {
+    case none
+    case daily
+    case weekly
+    case biweekly
+    case monthly
+    case yearly
+
+    public var displayName: String {
+        switch self {
+        case .none: return "Does not repeat"
+        case .daily: return "Daily"
+        case .weekly: return "Weekly"
+        case .biweekly: return "Every 2 weeks"
+        case .monthly: return "Monthly"
+        case .yearly: return "Yearly"
+        }
+    }
+}
+
 // MARK: - Model
 
 /// A Google Calendar event. Mirrors the server's `CalendarEvent` struct.
@@ -14,6 +74,8 @@ public struct CalendarEvent: Identifiable, Codable, Sendable {
     public var description: String?
     public var attendees: [String]
     public var colorId: String?
+    public var householdMemberId: String?
+    public var recurrence: RecurrenceRule?
 
     public init(
         id: String,
@@ -24,7 +86,9 @@ public struct CalendarEvent: Identifiable, Codable, Sendable {
         location: String? = nil,
         description: String? = nil,
         attendees: [String] = [],
-        colorId: String? = nil
+        colorId: String? = nil,
+        householdMemberId: String? = nil,
+        recurrence: RecurrenceRule? = nil
     ) {
         self.id = id
         self.title = title
@@ -35,6 +99,8 @@ public struct CalendarEvent: Identifiable, Codable, Sendable {
         self.description = description
         self.attendees = attendees
         self.colorId = colorId
+        self.householdMemberId = householdMemberId
+        self.recurrence = recurrence
     }
 
     /// Google Calendar color ID → SwiftUI Color.
@@ -54,6 +120,15 @@ public struct CalendarEvent: Identifiable, Codable, Sendable {
         case "11": return Color(red: 0.86, green: 0.27, blue: 0.22) // Tomato
         default: return .blue // Default calendar color
         }
+    }
+
+    /// Resolve color from household member if available, otherwise fall back to Google colorId.
+    public func memberColor(members: [HouseholdMember]) -> Color {
+        if let memberId = householdMemberId,
+           let member = members.first(where: { $0.id == memberId }) {
+            return member.color
+        }
+        return color
     }
 
     /// Duration in minutes.
@@ -120,14 +195,17 @@ extension CalendarEvent {
                 end: cal.date(bySettingHour: 9, minute: 30, second: 0, of: today)!,
                 location: "Zoom",
                 attendees: ["alice@example.com", "bob@example.com"],
-                colorId: "9"
+                colorId: "9",
+                householdMemberId: "mom-1",
+                recurrence: .weekly
             ),
             CalendarEvent(
                 id: "sample-2",
                 title: "Design review",
                 start: cal.date(bySettingHour: 11, minute: 0, second: 0, of: today)!,
                 end: cal.date(bySettingHour: 12, minute: 0, second: 0, of: today)!,
-                colorId: "3"
+                colorId: "3",
+                householdMemberId: "dad-1"
             ),
             CalendarEvent(
                 id: "sample-3",
@@ -135,18 +213,21 @@ extension CalendarEvent {
                 start: cal.date(bySettingHour: 12, minute: 30, second: 0, of: today)!,
                 end: cal.date(bySettingHour: 13, minute: 30, second: 0, of: today)!,
                 location: "The Usual Spot",
-                colorId: "5"
+                colorId: "5",
+                householdMemberId: "mom-1"
             ),
             CalendarEvent(
                 id: "sample-4",
-                title: "Sprint planning",
+                title: "Soccer practice",
                 start: cal.date(bySettingHour: 14, minute: 0, second: 0, of: today)!,
                 end: cal.date(bySettingHour: 15, minute: 0, second: 0, of: today)!,
-                colorId: "7"
+                colorId: "7",
+                householdMemberId: "emma-1",
+                recurrence: .biweekly
             ),
             CalendarEvent(
                 id: "sample-5",
-                title: "Company all-hands",
+                title: "Family game night",
                 start: today,
                 end: cal.date(byAdding: .day, value: 1, to: today)!,
                 allDay: true,

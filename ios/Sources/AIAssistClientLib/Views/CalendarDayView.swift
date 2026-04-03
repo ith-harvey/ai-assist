@@ -4,6 +4,8 @@ import SwiftUI
 struct CalendarDayView: View {
     let events: [CalendarEvent]
     let date: Date
+    var members: [HouseholdMember] = []
+    var onEventTapped: ((CalendarEvent) -> Void)?
 
     private var allDayEvents: [CalendarEvent] {
         events.filter { $0.allDay }
@@ -21,7 +23,12 @@ struct CalendarDayView: View {
             }
 
             // Timeline
-            CalendarTimelineView(events: timedEvents, date: date)
+            CalendarTimelineView(
+                events: timedEvents,
+                date: date,
+                members: members,
+                onEventTapped: onEventTapped
+            )
         }
     }
 
@@ -30,14 +37,28 @@ struct CalendarDayView: View {
     private var allDaySection: some View {
         VStack(alignment: .leading, spacing: 4) {
             ForEach(allDayEvents) { event in
-                HStack(spacing: 6) {
-                    Circle()
-                        .fill(event.color)
-                        .frame(width: 8, height: 8)
-                    Text(event.title)
-                        .font(.caption)
-                        .lineLimit(1)
+                Button {
+                    onEventTapped?(event)
+                } label: {
+                    HStack(spacing: 6) {
+                        Circle()
+                            .fill(event.memberColor(members: members))
+                            .frame(width: 8, height: 8)
+                        Text(event.title)
+                            .font(.caption)
+                            .foregroundStyle(.primary)
+                            .lineLimit(1)
+
+                        Spacer()
+
+                        if let memberId = event.householdMemberId,
+                           let member = members.first(where: { $0.id == memberId }) {
+                            Text(member.emoji)
+                                .font(.caption2)
+                        }
+                    }
                 }
+                .buttonStyle(.plain)
             }
         }
         .padding(.horizontal, 16)
@@ -50,6 +71,7 @@ struct CalendarDayView: View {
 #Preview {
     CalendarDayView(
         events: CalendarEvent.samples,
-        date: Date()
+        date: Date(),
+        members: HouseholdMember.samples
     )
 }

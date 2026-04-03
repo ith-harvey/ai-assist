@@ -4,22 +4,35 @@ import SwiftUI
 /// Rounded rectangle with a color accent bar, title, and time range.
 struct CalendarEventBlock: View {
     let event: CalendarEvent
+    var members: [HouseholdMember] = []
 
     /// Height per hour in the timeline (must match CalendarTimelineView).
     static let hourHeight: CGFloat = 60
+
+    private var displayColor: Color {
+        event.memberColor(members: members)
+    }
 
     var body: some View {
         HStack(spacing: 0) {
             // Color accent bar
             RoundedRectangle(cornerRadius: 2)
-                .fill(event.color)
+                .fill(displayColor)
                 .frame(width: 4)
 
             VStack(alignment: .leading, spacing: 2) {
-                Text(event.title)
-                    .font(.caption.bold())
-                    .lineLimit(1)
-                    .foregroundStyle(.primary)
+                HStack(spacing: 4) {
+                    Text(event.title)
+                        .font(.caption.bold())
+                        .lineLimit(1)
+                        .foregroundStyle(.primary)
+
+                    if let memberId = event.householdMemberId,
+                       let member = members.first(where: { $0.id == memberId }) {
+                        Text(member.emoji)
+                            .font(.caption2)
+                    }
+                }
 
                 if event.durationMinutes >= 30 {
                     Text(event.timeRangeText)
@@ -40,8 +53,10 @@ struct CalendarEventBlock: View {
             Spacer(minLength: 0)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(event.color.opacity(0.15))
+        .background(displayColor.opacity(0.15))
         .clipShape(RoundedRectangle(cornerRadius: 6))
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(event.title), \(event.timeRangeText)")
     }
 
     /// Calculate the height for this event block based on duration.
@@ -62,11 +77,11 @@ struct CalendarEventBlock: View {
 
 #Preview {
     VStack(spacing: 8) {
-        CalendarEventBlock(event: CalendarEvent.samples[0])
+        CalendarEventBlock(event: CalendarEvent.samples[0], members: HouseholdMember.samples)
             .frame(height: 30)
-        CalendarEventBlock(event: CalendarEvent.samples[1])
+        CalendarEventBlock(event: CalendarEvent.samples[1], members: HouseholdMember.samples)
             .frame(height: 60)
-        CalendarEventBlock(event: CalendarEvent.samples[2])
+        CalendarEventBlock(event: CalendarEvent.samples[2], members: HouseholdMember.samples)
             .frame(height: 60)
     }
     .padding()

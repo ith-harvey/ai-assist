@@ -1,10 +1,12 @@
 import SwiftUI
 
 /// Container view for the Calendar tab.
-/// Routes between setup flow and connected daily view based on `@AppStorage`.
+/// Routes between setup flow and connected calendar (month/day views).
 public struct CalendarView: View {
     @AppStorage("ai_assist_gcal_connected") private var gcalConnected = false
     @State private var viewModel = CalendarViewModel()
+    @State private var showQuickAdd = false
+    @State private var showEventDetail = false
 
     private var serverBaseURL: String {
         let host = UserDefaults.standard.string(forKey: "ai_assist_host") ?? "localhost"
@@ -35,27 +37,20 @@ public struct CalendarView: View {
 
     private var connectedView: some View {
         VStack(spacing: 0) {
-            // Date header with navigation
-            dateHeader
+            // Top bar with view toggle and add button
+            topBar
 
             // Account strip
             if let email = viewModel.connectedEmail {
                 accountStrip(email: email)
             }
 
-            // Day view with swipe navigation
-            TabView(selection: $viewModel.selectedDate) {
-                ForEach(viewModel.cachedDates, id: \.self) { date in
-                    CalendarDayView(
-                        events: viewModel.events(for: date),
-                        date: date
-                    )
-                    .tag(date)
-                }
-            }
-            .tabViewStyle(.page(indexDisplayMode: .never))
-            .onChange(of: viewModel.selectedDate) { _, newDate in
-                viewModel.navigateToDay(newDate)
+            // Content based on display mode
+            switch viewModel.displayMode {
+            case .month:
+                monthContent
+            case .day:
+                dayContent
             }
         }
         .overlay {
@@ -63,48 +58,194 @@ public struct CalendarView: View {
                 ProgressView()
             }
         }
+        .sheet(isPresented: $showQuickAdd) {
+            CalendarQuickAddView(
+                initialDate: viewModel.selectedDate,
+                members: viewModel.householdMembers
+            ) { event in
+                Task { await viewModel.createEvent(event) }
+            }
+        }
+        .sheet(isPresented: $showEventDetail) {
+            if let event = viewModel.selectedEvent {
+                NavigationStack {
+                    CalendarEventDetailView(
+                        event: event,
+                        members: viewModel.householdMembers
+                    )
+                }
+            }
+        }
     }
 
-    // MARK: - Date Header
+    // MARK: - Top Bar
 
-    private var dateHeader: some View {
+    private var topBar: some View {
         HStack {
-            Button {
-                withAnimation {
-                    viewModel.selectedDate = viewModel.previousDay(from: viewModel.selectedDate)
-                    viewModel.navigateToDay(viewModel.selectedDate)
+            // View mode toggle
+            Picker("View", selection: $viewModel.displayMode) {
+                ForEach(CalendarDisplayMode.allCases, id: \.self) { mode in
+                    Image(systemName: mode.icon)
+                        .tag(mode)
                 }
-            } label: {
-                Image(systemName: "chevron.left")
-                    .font(.body.bold())
             }
+            .pickerStyle(.segmented)
+            .frame(width: 100)
 
             Spacer()
 
-            Button {
-                withAnimation {
-                    viewModel.goToToday()
+            if viewModel.displayMode == .day {
+                // Day navigation header (inline)
+                Button {
+                    withAnimation {
+                        viewModel.selectedDate = viewModel.previousDay(from: viewModel.selectedDate)
+                        viewModel.navigateToDay(viewModel.selectedDate)
+                    }
+                } label: {
+                    Image(systemName: "chevron.left")
+                        .font(.body.bold())
                 }
-            } label: {
-                Text(viewModel.headerText(for: viewModel.selectedDate))
-                    .font(.headline)
+
+                Button {
+                    withAnimation { viewModel.goToToday() }
+                } label: {
+                    Text(viewModel.headerText(for: viewModel.selectedDate))
+                        .font(.headline)
+                }
+                .tint(.primary)
+
+                Button {
+                    withAnimation {
+                        viewModel.selectedDate = viewModel.nextDay(from: viewModel.selectedDate)
+                        viewModel.navigateToDay(viewModel.selectedDate)
+                    }
+                } label: {
+                    Image(systemName: "chevron.right")
+                        .font(.body.bold())
+                }
+
+                Spacer()
             }
-            .tint(.primary)
 
-            Spacer()
-
+            // Quick add button
             Button {
-                withAnimation {
-                    viewModel.selectedDate = viewModel.nextDay(from: viewModel.selectedDate)
-                    viewModel.navigateToDay(viewModel.selectedDate)
-                }
+                showQuickAdd = true
             } label: {
-                Image(systemName: "chevron.right")
+                Image(systemName: "plus")
                     .font(.body.bold())
             }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
+    }
+
+    // MARK: - Month Content
+
+    private var monthContent: some View {
+        VStack(spacing: 0) {
+            CalendarMonthView(viewModel: viewModel) { date in
+                viewModel.selectedDate = date
+                viewModel.displayedMonth = date
+                withAnimation(.easeInOut(duration: 0.25)) {
+                    viewModel.displayMode = .day
+                }
+                viewModel.navigateToDay(date)
+            }
+
+            Divider()
+
+            // Day summary below month grid
+            daySummary
+        }
+    }
+
+    // MARK: - Day Summary (below month grid)
+
+    private var daySummary: some View {
+        let events = viewModel.events(for: viewModel.selectedDate)
+        return Group {
+            if events.isEmpty {
+                VStack(spacing: 8) {
+                    Spacer()
+                    Image(systemName: "calendar.badge.checkmark")
+                        .font(.system(size: 32))
+                        .foregroundStyle(.tertiary)
+                    Text("No events")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                }
+                .frame(maxWidth: .infinity)
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: 8) {
+                        ForEach(events) { event in
+                            eventRow(event)
+                        }
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
+                }
+            }
+        }
+    }
+
+    private func eventRow(_ event: CalendarEvent) -> some View {
+        Button {
+            viewModel.selectedEvent = event
+            showEventDetail = true
+        } label: {
+            HStack(spacing: 10) {
+                RoundedRectangle(cornerRadius: 2)
+                    .fill(event.memberColor(members: viewModel.householdMembers))
+                    .frame(width: 4, height: 36)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(event.title)
+                        .font(.subheadline.bold())
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                    Text(event.allDay ? "All day" : event.timeRangeText)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+
+                if let memberId = event.householdMemberId,
+                   let member = viewModel.householdMembers.first(where: { $0.id == memberId }) {
+                    Text(member.emoji)
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(.background)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+        }
+        .buttonStyle(.plain)
+    }
+
+    // MARK: - Day Content
+
+    private var dayContent: some View {
+        TabView(selection: $viewModel.selectedDate) {
+            ForEach(viewModel.cachedDates, id: \.self) { date in
+                CalendarDayView(
+                    events: viewModel.events(for: date),
+                    date: date,
+                    members: viewModel.householdMembers,
+                    onEventTapped: { event in
+                        viewModel.selectedEvent = event
+                        showEventDetail = true
+                    }
+                )
+                .tag(date)
+            }
+        }
+        .tabViewStyle(.page(indexDisplayMode: .never))
+        .onChange(of: viewModel.selectedDate) { _, newDate in
+            viewModel.navigateToDay(newDate)
+        }
     }
 
     // MARK: - Account Strip
@@ -138,7 +279,6 @@ public struct CalendarView: View {
 
     // MARK: - Status Sync
 
-    /// Sync local connected state with server on every appearance.
     private func syncCalendarStatus() async {
         guard let url = URL(string: "\(serverBaseURL)/api/calendar/status") else { return }
         do {

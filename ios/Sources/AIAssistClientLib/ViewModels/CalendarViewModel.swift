@@ -1,11 +1,30 @@
 import Foundation
 import Observation
 
+/// Whether the calendar is showing month or day view.
+public enum CalendarDisplayMode: String, CaseIterable {
+    case month
+    case day
+
+    public var icon: String {
+        switch self {
+        case .month: return "calendar"
+        case .day: return "list.bullet.below.rectangle"
+        }
+    }
+}
+
 /// Manages calendar state: selected date, cached events, batch fetching.
 @Observable
 public final class CalendarViewModel {
     /// The day currently being viewed.
     public var selectedDate: Date = Calendar.current.startOfDay(for: Date())
+
+    /// The month currently displayed in month view.
+    public var displayedMonth: Date = Calendar.current.startOfDay(for: Date())
+
+    /// Current display mode (month or day).
+    public var displayMode: CalendarDisplayMode = .month
 
     /// Cached events keyed by "YYYY-MM-DD".
     public var eventsByDate: [String: [CalendarEvent]] = [:]
@@ -18,6 +37,12 @@ public final class CalendarViewModel {
 
     /// Connected email from status endpoint.
     public var connectedEmail: String?
+
+    /// Household members for color coding.
+    public var householdMembers: [HouseholdMember] = HouseholdMember.samples
+
+    /// Event selected for detail view.
+    public var selectedEvent: CalendarEvent?
 
     private let api = CalendarAPI()
     private let calendar = Calendar.current
@@ -107,6 +132,75 @@ public final class CalendarViewModel {
         cachedRangeStart = start
         cachedRangeEnd = end
         isLoading = false
+    }
+
+    /// Load an entire month of events (for month view dots).
+    public func loadMonth(around date: Date) async {
+        guard let monthRange = calendar.range(of: .day, in: .month, for: date),
+              let firstOfMonth = calendar.date(from: calendar.dateComponents([.year, .month], from: date)) else {
+            return
+        }
+
+        let start = firstOfMonth
+        let end = calendar.date(byAdding: .day, value: monthRange.count - 1, to: firstOfMonth)!
+
+        // Skip if fully cached
+        if let cStart = cachedRangeStart, let cEnd = cachedRangeEnd,
+           start >= cStart, end <= cEnd {
+            return
+        }
+
+        isLoading = true
+        error = nil
+
+        await withTaskGroup(of: (String, [CalendarEvent]?).self) { group in
+            for dayOffset in 0..<monthRange.count {
+                let day = calendar.date(byAdding: .day, value: dayOffset, to: firstOfMonth)!
+                let key = dateFormatter.string(from: day)
+                // Skip already-cached dates
+                if eventsByDate[key] != nil { continue }
+                group.addTask {
+                    do {
+                        let events = try await self.api.fetchEvents(date: key)
+                        return (key, events)
+                    } catch {
+                        return (key, nil)
+                    }
+                }
+            }
+
+            for await (key, events) in group {
+                if let events {
+                    eventsByDate[key] = events
+                }
+            }
+        }
+
+        // Expand cached range
+        if let cStart = cachedRangeStart {
+            cachedRangeStart = min(cStart, start)
+        } else {
+            cachedRangeStart = start
+        }
+        if let cEnd = cachedRangeEnd {
+            cachedRangeEnd = max(cEnd, end)
+        } else {
+            cachedRangeEnd = end
+        }
+
+        isLoading = false
+    }
+
+    /// Create a new event (sends to server, adds to local cache optimistically).
+    public func createEvent(_ event: CalendarEvent) async {
+        let key = dateFormatter.string(from: event.start)
+        var existing = eventsByDate[key] ?? []
+        existing.append(event)
+        existing.sort { $0.start < $1.start }
+        eventsByDate[key] = existing
+
+        // TODO: POST to server when backend endpoint is available
+        // try await api.createEvent(event)
     }
 
     /// Navigate to a new day. Triggers prefetch if near cache boundary.
