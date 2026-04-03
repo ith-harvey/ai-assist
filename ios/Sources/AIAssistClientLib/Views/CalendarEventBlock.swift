@@ -4,15 +4,21 @@ import SwiftUI
 /// Rounded rectangle with a color accent bar, title, and time range.
 struct CalendarEventBlock: View {
     let event: CalendarEvent
+    var members: [HouseholdMember] = []
 
     /// Height per hour in the timeline (must match CalendarTimelineView).
     static let hourHeight: CGFloat = 60
+
+    /// The resolved display color for this event.
+    private var displayColor: Color {
+        event.memberColor(members: members)
+    }
 
     var body: some View {
         HStack(spacing: 0) {
             // Color accent bar
             RoundedRectangle(cornerRadius: 2)
-                .fill(event.color)
+                .fill(displayColor)
                 .frame(width: 4)
 
             VStack(alignment: .leading, spacing: 2) {
@@ -33,6 +39,13 @@ struct CalendarEventBlock: View {
                         .foregroundStyle(.tertiary)
                         .lineLimit(1)
                 }
+
+                if let name = event.memberName, event.durationMinutes >= 30 {
+                    Text(name)
+                        .font(.caption2)
+                        .foregroundStyle(displayColor)
+                        .lineLimit(1)
+                }
             }
             .padding(.horizontal, 6)
             .padding(.vertical, 4)
@@ -40,7 +53,7 @@ struct CalendarEventBlock: View {
             Spacer(minLength: 0)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(event.color.opacity(0.15))
+        .background(displayColor.opacity(0.15))
         .clipShape(RoundedRectangle(cornerRadius: 6))
     }
 
@@ -62,11 +75,11 @@ struct CalendarEventBlock: View {
 
 #Preview {
     VStack(spacing: 8) {
-        CalendarEventBlock(event: CalendarEvent.samples[0])
+        CalendarEventBlock(event: CalendarEvent.samples[0], members: HouseholdMember.samples)
             .frame(height: 30)
-        CalendarEventBlock(event: CalendarEvent.samples[1])
+        CalendarEventBlock(event: CalendarEvent.samples[1], members: HouseholdMember.samples)
             .frame(height: 60)
-        CalendarEventBlock(event: CalendarEvent.samples[2])
+        CalendarEventBlock(event: CalendarEvent.samples[2], members: HouseholdMember.samples)
             .frame(height: 60)
     }
     .padding()

@@ -1,11 +1,35 @@
 import Foundation
 import Observation
 
+/// Day vs. week display mode for the calendar.
+public enum CalendarViewMode: String, CaseIterable, Identifiable, Sendable {
+    case day
+    case week
+
+    public var id: String { rawValue }
+
+    public var label: String {
+        switch self {
+        case .day: return "Day"
+        case .week: return "Week"
+        }
+    }
+}
+
 /// Manages calendar state: selected date, cached events, batch fetching.
 @Observable
 public final class CalendarViewModel {
     /// The day currently being viewed.
     public var selectedDate: Date = Calendar.current.startOfDay(for: Date())
+
+    /// Day or week view mode.
+    public var viewMode: CalendarViewMode = .day
+
+    /// Whether household mode is active (shows all members' events).
+    public var householdMode: Bool = false
+
+    /// Household members loaded from the server.
+    public var householdMembers: [HouseholdMember] = []
 
     /// Cached events keyed by "YYYY-MM-DD".
     public var eventsByDate: [String: [CalendarEvent]] = [:]
@@ -68,6 +92,44 @@ public final class CalendarViewModel {
         return dates
     }
 
+    // MARK: - Week View Helpers
+
+    /// The Monday-starting week containing the selected date.
+    public var currentWeekDates: [Date] {
+        let startOfWeek = calendar.date(from: calendar.dateComponents([.yearForWeekOfYear, .weekOfYear], from: selectedDate))
+            ?? selectedDate
+        return (0..<7).compactMap { offset in
+            calendar.date(byAdding: .day, value: offset, to: startOfWeek)
+        }
+    }
+
+    /// Navigate to the previous week.
+    public func previousWeek() {
+        guard let newDate = calendar.date(byAdding: .weekOfYear, value: -1, to: selectedDate) else { return }
+        selectedDate = calendar.startOfDay(for: newDate)
+        Task { await loadWeek(around: selectedDate) }
+    }
+
+    /// Navigate to the next week.
+    public func nextWeek() {
+        guard let newDate = calendar.date(byAdding: .weekOfYear, value: 1, to: selectedDate) else { return }
+        selectedDate = calendar.startOfDay(for: newDate)
+        Task { await loadWeek(around: selectedDate) }
+    }
+
+    /// Week header text (e.g., "Mar 31 – Apr 6, 2026").
+    public var weekHeaderText: String {
+        let dates = currentWeekDates
+        guard let first = dates.first, let last = dates.last else { return "" }
+        let monthDay = DateFormatter()
+        monthDay.dateFormat = "MMM d"
+        let yearFmt = DateFormatter()
+        yearFmt.dateFormat = ", yyyy"
+        return "\(monthDay.string(from: first)) – \(monthDay.string(from: last))\(yearFmt.string(from: last))"
+    }
+
+    // MARK: - Data Fetching
+
     /// Load a week of events centered on the given date.
     public func loadWeek(around date: Date) async {
         let start = calendar.date(byAdding: .day, value: -3, to: calendar.startOfDay(for: date))!
@@ -89,7 +151,12 @@ public final class CalendarViewModel {
                 let key = dateFormatter.string(from: day)
                 group.addTask {
                     do {
-                        let events = try await self.api.fetchEvents(date: key)
+                        let events: [CalendarEvent]
+                        if self.householdMode {
+                            events = try await self.api.fetchHouseholdEvents(date: key)
+                        } else {
+                            events = try await self.api.fetchEvents(date: key)
+                        }
                         return (key, events)
                     } catch {
                         return (key, nil)
@@ -130,7 +197,7 @@ public final class CalendarViewModel {
         navigateToDay(Date())
     }
 
-    /// Load status and initial events.
+    /// Load status, household members, and initial events.
     public func loadInitial() async {
         do {
             let status = try await api.fetchStatus()
@@ -138,6 +205,14 @@ public final class CalendarViewModel {
         } catch {
             // Non-critical — email display just won't show
         }
+
+        // Load household members
+        do {
+            householdMembers = try await api.fetchHouseholdMembers()
+        } catch {
+            // Non-critical — household features degrade gracefully
+        }
+
         await loadWeek(around: selectedDate)
     }
 
@@ -148,6 +223,12 @@ public final class CalendarViewModel {
         } catch {
             self.error = "Failed to disconnect: \(error.localizedDescription)"
         }
+    }
+
+    /// Toggle household mode and refresh.
+    public func toggleHouseholdMode() async {
+        householdMode.toggle()
+        await refresh()
     }
 
     /// Force refresh current view.
@@ -183,6 +264,20 @@ extension CalendarViewModel {
             return "Tomorrow — \(dateString)"
         }
         return dateString
+    }
+
+    /// Short day label for week view headers (e.g., "M", "T").
+    public func shortDayLabel(for date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "EEEEE"
+        return formatter.string(from: date)
+    }
+
+    /// Day number for week view headers (e.g., "3").
+    public func dayNumber(for date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "d"
+        return formatter.string(from: date)
     }
 
     /// Previous day.

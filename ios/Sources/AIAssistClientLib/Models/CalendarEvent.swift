@@ -1,6 +1,58 @@
 import Foundation
 import SwiftUI
 
+// MARK: - Household Member
+
+/// A household member whose calendar events can be displayed.
+public struct HouseholdMember: Identifiable, Codable, Sendable, Hashable {
+    public let id: String
+    public var name: String
+    public var colorHex: String?
+
+    public init(id: String, name: String, colorHex: String? = nil) {
+        self.id = id
+        self.name = name
+        self.colorHex = colorHex
+    }
+
+    /// Assigned color for this member. Falls back to a palette based on hash.
+    public var color: Color {
+        if let hex = colorHex {
+            return Color(hex: hex)
+        }
+        let palette: [Color] = [
+            .blue, .purple, .orange, .green, .pink, .teal, .indigo, .mint
+        ]
+        let index = abs(id.hashValue) % palette.count
+        return palette[index]
+    }
+}
+
+// MARK: - Reminder Option
+
+/// Reminder intervals for event creation.
+public enum ReminderOption: Int, CaseIterable, Identifiable, Sendable {
+    case none = 0
+    case fiveMinutes = 5
+    case fifteenMinutes = 15
+    case thirtyMinutes = 30
+    case oneHour = 60
+    case oneDay = 1440
+
+    public var id: Int { rawValue }
+
+    public var label: String {
+        switch self {
+        case .none: return "None"
+        case .fiveMinutes: return "5 minutes before"
+        case .fifteenMinutes: return "15 minutes before"
+        case .thirtyMinutes: return "30 minutes before"
+        case .oneHour: return "1 hour before"
+        case .oneDay: return "1 day before"
+        }
+    }
+}
+
 // MARK: - Model
 
 /// A Google Calendar event. Mirrors the server's `CalendarEvent` struct.
@@ -14,6 +66,9 @@ public struct CalendarEvent: Identifiable, Codable, Sendable {
     public var description: String?
     public var attendees: [String]
     public var colorId: String?
+    public var memberId: String?
+    public var memberName: String?
+    public var reminderMinutes: Int?
 
     public init(
         id: String,
@@ -24,7 +79,10 @@ public struct CalendarEvent: Identifiable, Codable, Sendable {
         location: String? = nil,
         description: String? = nil,
         attendees: [String] = [],
-        colorId: String? = nil
+        colorId: String? = nil,
+        memberId: String? = nil,
+        memberName: String? = nil,
+        reminderMinutes: Int? = nil
     ) {
         self.id = id
         self.title = title
@@ -35,6 +93,9 @@ public struct CalendarEvent: Identifiable, Codable, Sendable {
         self.description = description
         self.attendees = attendees
         self.colorId = colorId
+        self.memberId = memberId
+        self.memberName = memberName
+        self.reminderMinutes = reminderMinutes
     }
 
     /// Google Calendar color ID → SwiftUI Color.
@@ -66,6 +127,12 @@ public struct CalendarEvent: Identifiable, Codable, Sendable {
         let formatter = DateFormatter()
         formatter.dateFormat = "h:mm a"
         return "\(formatter.string(from: start)) – \(formatter.string(from: end))"
+    }
+
+    /// Color based on member assignment, falling back to Google Calendar color.
+    public func memberColor(members: [HouseholdMember]) -> Color {
+        guard let memberId else { return color }
+        return members.first(where: { $0.id == memberId })?.color ?? color
     }
 }
 
@@ -104,7 +171,31 @@ public struct CalendarEventsResponse: Codable, Sendable {
     }
 }
 
+// MARK: - Color Hex Extension
+
+extension Color {
+    /// Create a Color from a hex string (e.g., "#FF5733" or "FF5733").
+    init(hex: String) {
+        let hex = hex.trimmingCharacters(in: CharacterSet(charactersIn: "#"))
+        var rgbValue: UInt64 = 0
+        Scanner(string: hex).scanHexInt64(&rgbValue)
+        let r = Double((rgbValue & 0xFF0000) >> 16) / 255.0
+        let g = Double((rgbValue & 0x00FF00) >> 8) / 255.0
+        let b = Double(rgbValue & 0x0000FF) / 255.0
+        self.init(red: r, green: g, blue: b)
+    }
+}
+
 // MARK: - Sample Data
+
+extension HouseholdMember {
+    /// Sample household members for previews.
+    public static let samples: [HouseholdMember] = [
+        HouseholdMember(id: "mom", name: "Mom", colorHex: "#5B7FE8"),
+        HouseholdMember(id: "dad", name: "Dad", colorHex: "#2EAD6B"),
+        HouseholdMember(id: "emma", name: "Emma", colorHex: "#E87B5B"),
+    ]
+}
 
 extension CalendarEvent {
     /// Sample events for previews.
@@ -120,14 +211,18 @@ extension CalendarEvent {
                 end: cal.date(bySettingHour: 9, minute: 30, second: 0, of: today)!,
                 location: "Zoom",
                 attendees: ["alice@example.com", "bob@example.com"],
-                colorId: "9"
+                colorId: "9",
+                memberId: "mom",
+                memberName: "Mom"
             ),
             CalendarEvent(
                 id: "sample-2",
                 title: "Design review",
                 start: cal.date(bySettingHour: 11, minute: 0, second: 0, of: today)!,
                 end: cal.date(bySettingHour: 12, minute: 0, second: 0, of: today)!,
-                colorId: "3"
+                colorId: "3",
+                memberId: "dad",
+                memberName: "Dad"
             ),
             CalendarEvent(
                 id: "sample-3",
@@ -135,14 +230,18 @@ extension CalendarEvent {
                 start: cal.date(bySettingHour: 12, minute: 30, second: 0, of: today)!,
                 end: cal.date(bySettingHour: 13, minute: 30, second: 0, of: today)!,
                 location: "The Usual Spot",
-                colorId: "5"
+                colorId: "5",
+                memberId: "mom",
+                memberName: "Mom"
             ),
             CalendarEvent(
                 id: "sample-4",
                 title: "Sprint planning",
                 start: cal.date(bySettingHour: 14, minute: 0, second: 0, of: today)!,
                 end: cal.date(bySettingHour: 15, minute: 0, second: 0, of: today)!,
-                colorId: "7"
+                colorId: "7",
+                memberId: "emma",
+                memberName: "Emma"
             ),
             CalendarEvent(
                 id: "sample-5",

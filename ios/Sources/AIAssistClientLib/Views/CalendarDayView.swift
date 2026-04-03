@@ -4,6 +4,7 @@ import SwiftUI
 struct CalendarDayView: View {
     let events: [CalendarEvent]
     let date: Date
+    var members: [HouseholdMember] = []
 
     private var allDayEvents: [CalendarEvent] {
         events.filter { $0.allDay }
@@ -21,7 +22,7 @@ struct CalendarDayView: View {
             }
 
             // Timeline
-            CalendarTimelineView(events: timedEvents, date: date)
+            CalendarTimelineView(events: timedEvents, date: date, members: members)
         }
     }
 
@@ -32,11 +33,17 @@ struct CalendarDayView: View {
             ForEach(allDayEvents) { event in
                 HStack(spacing: 6) {
                     Circle()
-                        .fill(event.color)
+                        .fill(event.memberColor(members: members))
                         .frame(width: 8, height: 8)
                     Text(event.title)
                         .font(.caption)
                         .lineLimit(1)
+                    if let name = event.memberName {
+                        Spacer()
+                        Text(name)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
         }
@@ -50,6 +57,7 @@ struct CalendarDayView: View {
 #Preview {
     CalendarDayView(
         events: CalendarEvent.samples,
-        date: Date()
+        date: Date(),
+        members: HouseholdMember.samples
     )
 }

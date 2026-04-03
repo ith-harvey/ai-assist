@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// Container view for the Calendar tab.
-/// Routes between setup flow and connected daily view based on `@AppStorage`.
+/// Routes between setup flow and connected daily/weekly view based on `@AppStorage`.
 public struct CalendarView: View {
     @AppStorage("ai_assist_gcal_connected") private var gcalConnected = false
     @State private var viewModel = CalendarViewModel()
@@ -35,6 +35,9 @@ public struct CalendarView: View {
 
     private var connectedView: some View {
         VStack(spacing: 0) {
+            // View mode toggle (Day / Week)
+            viewModeToggle
+
             // Date header with navigation
             dateHeader
 
@@ -43,19 +46,17 @@ public struct CalendarView: View {
                 accountStrip(email: email)
             }
 
-            // Day view with swipe navigation
-            TabView(selection: $viewModel.selectedDate) {
-                ForEach(viewModel.cachedDates, id: \.self) { date in
-                    CalendarDayView(
-                        events: viewModel.events(for: date),
-                        date: date
-                    )
-                    .tag(date)
-                }
+            // Household toggle + member legend
+            if !viewModel.householdMembers.isEmpty {
+                householdControls
             }
-            .tabViewStyle(.page(indexDisplayMode: .never))
-            .onChange(of: viewModel.selectedDate) { _, newDate in
-                viewModel.navigateToDay(newDate)
+
+            // Day or Week view
+            switch viewModel.viewMode {
+            case .day:
+                dayContent
+            case .week:
+                weekContent
             }
         }
         .overlay {
@@ -65,14 +66,32 @@ public struct CalendarView: View {
         }
     }
 
+    // MARK: - View Mode Toggle
+
+    private var viewModeToggle: some View {
+        Picker("View", selection: $viewModel.viewMode) {
+            ForEach(CalendarViewMode.allCases) { mode in
+                Text(mode.label).tag(mode)
+            }
+        }
+        .pickerStyle(.segmented)
+        .padding(.horizontal, 16)
+        .padding(.top, 8)
+        .padding(.bottom, 4)
+    }
+
     // MARK: - Date Header
 
     private var dateHeader: some View {
         HStack {
             Button {
                 withAnimation {
-                    viewModel.selectedDate = viewModel.previousDay(from: viewModel.selectedDate)
-                    viewModel.navigateToDay(viewModel.selectedDate)
+                    if viewModel.viewMode == .week {
+                        viewModel.previousWeek()
+                    } else {
+                        viewModel.selectedDate = viewModel.previousDay(from: viewModel.selectedDate)
+                        viewModel.navigateToDay(viewModel.selectedDate)
+                    }
                 }
             } label: {
                 Image(systemName: "chevron.left")
@@ -86,8 +105,14 @@ public struct CalendarView: View {
                     viewModel.goToToday()
                 }
             } label: {
-                Text(viewModel.headerText(for: viewModel.selectedDate))
-                    .font(.headline)
+                Group {
+                    if viewModel.viewMode == .week {
+                        Text(viewModel.weekHeaderText)
+                    } else {
+                        Text(viewModel.headerText(for: viewModel.selectedDate))
+                    }
+                }
+                .font(.headline)
             }
             .tint(.primary)
 
@@ -95,8 +120,12 @@ public struct CalendarView: View {
 
             Button {
                 withAnimation {
-                    viewModel.selectedDate = viewModel.nextDay(from: viewModel.selectedDate)
-                    viewModel.navigateToDay(viewModel.selectedDate)
+                    if viewModel.viewMode == .week {
+                        viewModel.nextWeek()
+                    } else {
+                        viewModel.selectedDate = viewModel.nextDay(from: viewModel.selectedDate)
+                        viewModel.navigateToDay(viewModel.selectedDate)
+                    }
                 }
             } label: {
                 Image(systemName: "chevron.right")
@@ -134,6 +163,66 @@ public struct CalendarView: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 6)
         .background(.ultraThinMaterial)
+    }
+
+    // MARK: - Household Controls
+
+    private var householdControls: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Button {
+                    Task { await viewModel.toggleHouseholdMode() }
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: viewModel.householdMode ? "person.3.fill" : "person.3")
+                            .font(.caption)
+                        Text(viewModel.householdMode ? "Household" : "My Calendar")
+                            .font(.caption.bold())
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .background(viewModel.householdMode ? Color.blue.opacity(0.15) : Color.secondary.opacity(0.1))
+                    .clipShape(Capsule())
+                }
+                .tint(viewModel.householdMode ? .blue : .secondary)
+
+                Spacer()
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 6)
+
+            if viewModel.householdMode {
+                MemberColorLegend(members: viewModel.householdMembers)
+            }
+        }
+    }
+
+    // MARK: - Day Content
+
+    private var dayContent: some View {
+        TabView(selection: $viewModel.selectedDate) {
+            ForEach(viewModel.cachedDates, id: \.self) { date in
+                CalendarDayView(
+                    events: viewModel.events(for: date),
+                    date: date,
+                    members: viewModel.householdMembers
+                )
+                .tag(date)
+            }
+        }
+        .tabViewStyle(.page(indexDisplayMode: .never))
+        .onChange(of: viewModel.selectedDate) { _, newDate in
+            viewModel.navigateToDay(newDate)
+        }
+    }
+
+    // MARK: - Week Content
+
+    private var weekContent: some View {
+        CalendarWeekView(
+            weekDates: viewModel.currentWeekDates,
+            viewModel: viewModel
+        )
     }
 
     // MARK: - Status Sync
