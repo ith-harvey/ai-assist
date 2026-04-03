@@ -236,7 +236,7 @@ const SCHEMA: &str = r#"
     );
     CREATE INDEX IF NOT EXISTS idx_calendar_events_user ON calendar_events(user_id);
     CREATE INDEX IF NOT EXISTS idx_calendar_events_calendar ON calendar_events(calendar_id);
-    CREATE INDEX IF NOT EXISTS idx_calendar_events_start ON calendar_events(start_time);
+    CREATE INDEX IF NOT EXISTS idx_calendar_events_user_start ON calendar_events(user_id, start_time);
     CREATE INDEX IF NOT EXISTS idx_calendar_events_sync_status ON calendar_events(sync_status);
     CREATE INDEX IF NOT EXISTS idx_calendar_events_google_id ON calendar_events(google_event_id);
 "#;

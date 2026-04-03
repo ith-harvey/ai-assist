@@ -441,9 +441,9 @@ pub async fn push_local_changes(
 /// Run a full sync cycle: push local changes, then pull remote changes.
 ///
 /// Fetches a valid access token internally via the OAuth config.
+/// Returns an error if the user has no refresh token (not connected).
 pub async fn run_sync_cycle(
     db: &dyn Database,
-    _access_token: &str,
     user_id: &str,
     calendar_id: &str,
     config: &GoogleOAuthConfig,

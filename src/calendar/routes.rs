@@ -359,21 +359,29 @@ async fn list_events_handler(
         &date.succ_opt().unwrap_or(date).and_hms_opt(0, 0, 0).expect("valid midnight"),
     );
 
-    // If live=true or no sync state exists, fall back to direct Google API
+    // If live=true, skip cache. Otherwise serve from cache when sync is enabled.
     let use_live = params.live.unwrap_or(false);
 
     if !use_live {
-        // Try serving from local cache
-        match ctx.db.list_calendar_events("default", params.calendar_id.as_deref(), &time_min, &time_max).await {
-            Ok(cached) if !cached.is_empty() => {
-                return Json(serde_json::json!({
-                    "date": params.date,
-                    "source": "cache",
-                    "events": cached,
-                }))
-                .into_response();
+        // Check if sync is enabled (any sync state exists)
+        let has_sync = ctx.db.list_calendar_sync_states("default").await
+            .map(|s| !s.is_empty())
+            .unwrap_or(false);
+
+        if has_sync {
+            match ctx.db.list_calendar_events("default", params.calendar_id.as_deref(), &time_min, &time_max).await {
+                Ok(cached) => {
+                    return Json(serde_json::json!({
+                        "date": params.date,
+                        "source": "cache",
+                        "events": cached,
+                    }))
+                    .into_response();
+                }
+                Err(e) => {
+                    tracing::warn!("Cache read failed, falling back to live: {e}");
+                }
             }
-            _ => {} // Fall through to live fetch
         }
     }
 
@@ -495,7 +503,7 @@ async fn trigger_sync_handler(
         }
     };
 
-    match sync::run_sync_cycle(ctx.db.as_ref(), "", "default", &req.calendar_id, &config).await {
+    match sync::run_sync_cycle(ctx.db.as_ref(), "default", &req.calendar_id, &config).await {
         Ok(result) => Json(serde_json::json!({
             "calendar_id": req.calendar_id,
             "events_upserted": result.events_upserted,
@@ -558,7 +566,7 @@ async fn enable_sync_handler(
     }
 
     // Trigger initial sync
-    match sync::run_sync_cycle(ctx.db.as_ref(), "", "default", &req.calendar_id, &config).await {
+    match sync::run_sync_cycle(ctx.db.as_ref(), "default", &req.calendar_id, &config).await {
         Ok(result) => (
             StatusCode::CREATED,
             Json(serde_json::json!({

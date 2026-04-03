@@ -65,7 +65,6 @@ async fn run_sync_pass(db: &Arc<dyn Database>, oauth_config: &GoogleOAuthConfig)
 
         if let Err(e) = super::sync::run_sync_cycle(
             db.as_ref(),
-            "", // access_token is fetched inside run_sync_cycle
             user_id,
             &state.calendar_id,
             oauth_config,
