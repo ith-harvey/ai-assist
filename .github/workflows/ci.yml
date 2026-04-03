@@ -94,8 +94,8 @@ jobs:
 
       - name: Build iOS package
         working-directory: ios
-        run: xcodebuild build -scheme AIAssistClientLib -destination 'platform=iOS Simulator,name=iPhone 16'
+        run: xcodebuild build -scheme AIAssistClient -destination 'platform=iOS Simulator,name=iPhone 16'
 
       - name: Run Swift tests
         working-directory: ios
-        run: xcodebuild test -scheme AIAssistClientLib -destination 'platform=iOS Simulator,name=iPhone 16'
+        run: xcodebuild test -scheme AIAssistClient -destination 'platform=iOS Simulator,name=iPhone 16'
