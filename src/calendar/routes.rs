@@ -1,14 +1,16 @@
 //! Axum routes for Google Calendar OAuth and event operations.
 //!
 //! Endpoints:
-//! - `GET  /auth/google/start`          — returns Google consent URL
-//! - `GET  /auth/google/callback`       — handles OAuth callback, stores tokens
-//! - `GET  /api/calendar/status`        — check if Google Calendar is connected
-//! - `DELETE /api/calendar/connection`  — disconnect Google Calendar
-//! - `GET  /api/calendar/events`        — list events for a date
-//! - `POST /api/calendar/events`        — create an event
-//! - `PATCH /api/calendar/events/:id`   — update an event
-//! - `DELETE /api/calendar/events/:id`  — delete an event
+//! - `GET  /auth/google/start`              — returns Google consent URL
+//! - `GET  /auth/google/callback`           — handles OAuth callback, stores tokens
+//! - `GET  /api/calendar/status`            — check if Google Calendar is connected
+//! - `DELETE /api/calendar/connection`       — disconnect Google Calendar
+//! - `GET  /api/calendar/events`            — list events for a date
+//! - `GET  /api/calendar/events/week`       — list events for 7 days
+//! - `GET  /api/calendar/household-events`  — aggregate events from all household members
+//! - `POST /api/calendar/events`            — create an event
+//! - `PATCH /api/calendar/events/:id`       — update an event
+//! - `DELETE /api/calendar/events/:id`      — delete an event
 
 use std::sync::Arc;
 
@@ -19,7 +21,7 @@ use axum::{
     response::{Html, IntoResponse},
     routing::{delete, get},
 };
-use chrono::{NaiveDate, TimeZone, Utc};
+use chrono::{Duration, NaiveDate, TimeZone, Utc};
 use serde::Deserialize;
 
 use super::{
@@ -40,6 +42,11 @@ pub fn calendar_routes(ctx: Arc<AppContext>) -> Router {
         .route(
             "/api/calendar/events",
             get(list_events_handler).post(create_event_handler),
+        )
+        .route("/api/calendar/events/week", get(list_week_events_handler))
+        .route(
+            "/api/calendar/household-events",
+            get(household_events_handler),
         )
         .route(
             "/api/calendar/events/{event_id}",
@@ -347,6 +354,163 @@ async fn list_events_handler(
         )
             .into_response(),
     }
+}
+
+/// GET /api/calendar/events/week?date=YYYY-MM-DD — return 7 days of events.
+async fn list_week_events_handler(
+    State(ctx): State<Arc<AppContext>>,
+    Query(params): Query<ListEventsParams>,
+) -> impl IntoResponse {
+    let token = match require_access_token(&ctx).await {
+        Ok(t) => t,
+        Err(e) => return e.into_response(),
+    };
+
+    let date = match NaiveDate::parse_from_str(&params.date, "%Y-%m-%d") {
+        Ok(d) => d,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "Invalid date format. Use YYYY-MM-DD"})),
+            )
+                .into_response();
+        }
+    };
+
+    let time_min = Utc.from_utc_datetime(
+        &date.and_hms_opt(0, 0, 0).expect("valid midnight"),
+    );
+    let end_date = date + Duration::days(7);
+    let time_max = Utc.from_utc_datetime(
+        &end_date.and_hms_opt(0, 0, 0).expect("valid midnight"),
+    );
+
+    match events::list_events(&token, &time_min, &time_max).await {
+        Ok(evts) => Json(serde_json::json!({
+            "start_date": params.date,
+            "end_date": end_date.to_string(),
+            "events": evts,
+        }))
+        .into_response(),
+        Err(e) => (
+            StatusCode::BAD_GATEWAY,
+            Json(serde_json::json!({"error": format!("Google Calendar API error: {}", e)})),
+        )
+            .into_response(),
+    }
+}
+
+/// GET /api/calendar/household-events?date=YYYY-MM-DD — aggregate events
+/// from all household members who have connected Google Calendar.
+async fn household_events_handler(
+    State(ctx): State<Arc<AppContext>>,
+    Query(params): Query<ListEventsParams>,
+) -> impl IntoResponse {
+    let oauth_config = match &ctx.oauth_config {
+        Some(c) => c,
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({"error": "Google Calendar is not configured"})),
+            )
+                .into_response();
+        }
+    };
+
+    let date = match NaiveDate::parse_from_str(&params.date, "%Y-%m-%d") {
+        Ok(d) => d,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "Invalid date format. Use YYYY-MM-DD"})),
+            )
+                .into_response();
+        }
+    };
+
+    let time_min = Utc.from_utc_datetime(
+        &date.and_hms_opt(0, 0, 0).expect("valid midnight"),
+    );
+    let time_max = Utc.from_utc_datetime(
+        &date
+            .succ_opt()
+            .unwrap_or(date)
+            .and_hms_opt(0, 0, 0)
+            .expect("valid midnight"),
+    );
+
+    // Find all user_ids that have connected Google Calendar
+    let user_ids = match ctx
+        .db
+        .list_user_ids_with_setting(super::GCAL_REFRESH_TOKEN)
+        .await
+    {
+        Ok(ids) => ids,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": format!("Database error: {}", e)})),
+            )
+                .into_response();
+        }
+    };
+
+    if user_ids.is_empty() {
+        return Json(serde_json::json!({
+            "date": params.date,
+            "members": [],
+        }))
+        .into_response();
+    }
+
+    let mut members = Vec::new();
+
+    for user_id in &user_ids {
+        // Get a valid access token for this user
+        let token = match get_valid_access_token(ctx.db.as_ref(), user_id, oauth_config).await {
+            Ok(Some(t)) => t,
+            Ok(None) => continue,
+            Err(e) => {
+                tracing::warn!(user_id = %user_id, error = %e, "Failed to get token for household member");
+                continue;
+            }
+        };
+
+        // Get email for display
+        let email = ctx
+            .db
+            .get_setting(user_id, super::GCAL_EMAIL)
+            .await
+            .ok()
+            .flatten()
+            .and_then(|v| v.as_str().map(String::from))
+            .unwrap_or_else(|| user_id.clone());
+
+        match events::list_events(&token, &time_min, &time_max).await {
+            Ok(evts) => {
+                members.push(serde_json::json!({
+                    "user_id": user_id,
+                    "email": email,
+                    "events": evts,
+                }));
+            }
+            Err(e) => {
+                tracing::warn!(user_id = %user_id, error = %e, "Failed to list events for household member");
+                members.push(serde_json::json!({
+                    "user_id": user_id,
+                    "email": email,
+                    "error": format!("{}", e),
+                    "events": [],
+                }));
+            }
+        }
+    }
+
+    Json(serde_json::json!({
+        "date": params.date,
+        "members": members,
+    }))
+    .into_response()
 }
 
 /// POST /api/calendar/events

@@ -28,6 +28,8 @@ pub struct CalendarEvent {
     pub attendees: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub color_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reminder_minutes: Option<u32>,
 }
 
 /// Request body for creating a new event.
@@ -42,6 +44,8 @@ pub struct CreateEventRequest {
     pub attendees: Vec<String>,
     #[serde(default)]
     pub location: Option<String>,
+    #[serde(default)]
+    pub reminder_minutes: Option<u32>,
 }
 
 /// Request body for updating an event (all fields optional).
@@ -59,6 +63,8 @@ pub struct UpdateEventRequest {
     pub attendees: Option<Vec<String>>,
     #[serde(default)]
     pub location: Option<String>,
+    #[serde(default)]
+    pub reminder_minutes: Option<u32>,
 }
 
 // ── Google API response types ───────────────────────────────────────
@@ -69,6 +75,17 @@ struct GoogleDateTime {
     #[serde(rename = "dateTime")]
     date_time: Option<String>,
     date: Option<String>,
+}
+
+/// Google's reminders wrapper.
+#[derive(Debug, Deserialize)]
+struct GoogleReminders {
+    overrides: Option<Vec<GoogleReminderOverride>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GoogleReminderOverride {
+    minutes: u32,
 }
 
 /// A single event from Google's response.
@@ -83,6 +100,7 @@ struct GoogleEvent {
     attendees: Option<Vec<GoogleAttendee>>,
     #[serde(rename = "colorId")]
     color_id: Option<String>,
+    reminders: Option<GoogleReminders>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -109,6 +127,22 @@ struct GoogleEventBody {
     location: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     attendees: Option<Vec<GoogleAttendeeBody>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reminders: Option<GoogleRemindersBody>,
+}
+
+#[derive(Debug, Serialize)]
+struct GoogleRemindersBody {
+    #[serde(rename = "useDefault")]
+    use_default: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    overrides: Option<Vec<GoogleReminderOverrideBody>>,
+}
+
+#[derive(Debug, Serialize)]
+struct GoogleReminderOverrideBody {
+    method: String,
+    minutes: u32,
 }
 
 #[derive(Debug, Serialize)]
@@ -139,6 +173,8 @@ struct GoogleEventPatch {
     location: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     attendees: Option<Vec<GoogleAttendeeBody>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reminders: Option<GoogleRemindersBody>,
 }
 
 // ── API functions ───────────────────────────────────────────────────
@@ -214,6 +250,13 @@ pub async fn create_event(
                     .collect(),
             )
         },
+        reminders: req.reminder_minutes.map(|mins| GoogleRemindersBody {
+            use_default: false,
+            overrides: Some(vec![GoogleReminderOverrideBody {
+                method: "popup".to_string(),
+                minutes: mins,
+            }]),
+        }),
     };
 
     let client = reqwest::Client::new();
@@ -264,6 +307,13 @@ pub async fn update_event(
                     email: e.clone(),
                 })
                 .collect()
+        }),
+        reminders: req.reminder_minutes.map(|mins| GoogleRemindersBody {
+            use_default: false,
+            overrides: Some(vec![GoogleReminderOverrideBody {
+                method: "popup".to_string(),
+                minutes: mins,
+            }]),
         }),
     };
 
@@ -325,6 +375,12 @@ fn convert_google_event(event: GoogleEvent) -> Result<CalendarEvent, OAuthError>
     let (start, all_day) = parse_google_datetime(event.start.as_ref(), "start")?;
     let (end, _) = parse_google_datetime(event.end.as_ref(), "end")?;
 
+    let reminder_minutes = event
+        .reminders
+        .and_then(|r| r.overrides)
+        .and_then(|o| o.into_iter().next())
+        .map(|o| o.minutes);
+
     Ok(CalendarEvent {
         id: event.id,
         title: event.summary.unwrap_or_else(|| "(No title)".to_string()),
@@ -340,6 +396,7 @@ fn convert_google_event(event: GoogleEvent) -> Result<CalendarEvent, OAuthError>
             .map(|a| a.email)
             .collect(),
         color_id: event.color_id,
+        reminder_minutes,
     })
 }
 
@@ -417,6 +474,9 @@ mod tests {
                 email: "alice@example.com".to_string(),
             }]),
             color_id: Some("5".to_string()),
+            reminders: Some(GoogleReminders {
+                overrides: Some(vec![GoogleReminderOverride { minutes: 10 }]),
+            }),
         };
 
         let event = convert_google_event(ge).unwrap();
@@ -425,6 +485,7 @@ mod tests {
         assert!(!event.all_day);
         assert_eq!(event.attendees.len(), 1);
         assert_eq!(event.color_id, Some("5".to_string()));
+        assert_eq!(event.reminder_minutes, Some(10));
     }
 
     #[test]
@@ -444,9 +505,71 @@ mod tests {
             description: None,
             attendees: None,
             color_id: None,
+            reminders: None,
         };
 
         let event = convert_google_event(ge).unwrap();
         assert_eq!(event.title, "(No title)");
+        assert_eq!(event.reminder_minutes, None);
+    }
+
+    #[test]
+    fn convert_google_event_with_empty_reminders() {
+        let ge = GoogleEvent {
+            id: "r1".to_string(),
+            summary: Some("No reminder".to_string()),
+            start: Some(GoogleDateTime {
+                date_time: Some("2026-03-21T10:00:00Z".to_string()),
+                date: None,
+            }),
+            end: Some(GoogleDateTime {
+                date_time: Some("2026-03-21T11:00:00Z".to_string()),
+                date: None,
+            }),
+            location: None,
+            description: None,
+            attendees: None,
+            color_id: None,
+            reminders: Some(GoogleReminders { overrides: None }),
+        };
+
+        let event = convert_google_event(ge).unwrap();
+        assert_eq!(event.reminder_minutes, None);
+    }
+
+    #[test]
+    fn reminder_minutes_serializes_when_present() {
+        let event = CalendarEvent {
+            id: "e1".to_string(),
+            title: "Test".to_string(),
+            start: Utc::now(),
+            end: Utc::now(),
+            all_day: false,
+            location: None,
+            description: None,
+            attendees: vec![],
+            color_id: None,
+            reminder_minutes: Some(15),
+        };
+        let json = serde_json::to_value(&event).unwrap();
+        assert_eq!(json["reminder_minutes"], 15);
+    }
+
+    #[test]
+    fn reminder_minutes_omitted_when_none() {
+        let event = CalendarEvent {
+            id: "e2".to_string(),
+            title: "Test".to_string(),
+            start: Utc::now(),
+            end: Utc::now(),
+            all_day: false,
+            location: None,
+            description: None,
+            attendees: vec![],
+            color_id: None,
+            reminder_minutes: None,
+        };
+        let json = serde_json::to_value(&event).unwrap();
+        assert!(!json.as_object().unwrap().contains_key("reminder_minutes"));
     }
 }
