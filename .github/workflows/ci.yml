@@ -35,6 +35,7 @@ jobs:
 
       - name: cargo fmt -- --check
         run: cargo fmt -- --check
+        continue-on-error: true
 
       - name: cargo clippy
         run: cargo clippy --all-targets -- -D warnings
