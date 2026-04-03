@@ -16,8 +16,9 @@ public enum NotificationDestination: Equatable, Sendable {
 
 /// Manages push notification permissions, token registration, and incoming notification handling.
 /// Uses @Observable so SwiftUI views reactively update when authorization status changes.
-@Observable
-public final class NotificationManager: NSObject, @unchecked Sendable {
+/// All mutable state is isolated to @MainActor to prevent data races.
+@MainActor @Observable
+public final class NotificationManager: NSObject {
 
     // MARK: - Observable state
 
@@ -35,6 +36,9 @@ public final class NotificationManager: NSObject, @unchecked Sendable {
     private let center = UNUserNotificationCenter.current()
     private var tokenAPI: DeviceTokenAPI?
 
+    /// Whether the server connection uses HTTP (local dev) or HTTPS (production).
+    private var useSecureTransport: Bool = true
+
     // MARK: - Init
 
     public override init() {
@@ -51,7 +55,7 @@ public final class NotificationManager: NSObject, @unchecked Sendable {
             let granted = try await center.requestAuthorization(options: [.alert, .badge, .sound])
             await refreshAuthorizationStatus()
             if granted {
-                await registerForRemoteNotifications()
+                registerForRemoteNotifications()
             }
         } catch {
             print("[NotificationManager] Authorization request failed: \(error)")
@@ -59,14 +63,12 @@ public final class NotificationManager: NSObject, @unchecked Sendable {
     }
 
     /// Refresh the cached authorization status from the system.
-    @MainActor
     public func refreshAuthorizationStatus() async {
         let settings = await center.notificationSettings()
         authorizationStatus = settings.authorizationStatus
     }
 
-    /// Register with APNS. Must be called on main thread.
-    @MainActor
+    /// Register with APNS.
     private func registerForRemoteNotifications() {
         #if canImport(UIKit) && !targetEnvironment(simulator)
         UIApplication.shared.registerForRemoteNotifications()
@@ -82,7 +84,11 @@ public final class NotificationManager: NSObject, @unchecked Sendable {
         UserDefaults.standard.set(token, forKey: "ai_assist_device_token")
 
         Task {
-            try? await tokenAPI?.register(token: token)
+            do {
+                try await tokenAPI?.register(token: token)
+            } catch {
+                print("[NotificationManager] Device token registration failed: \(error)")
+            }
         }
     }
 
@@ -93,11 +99,17 @@ public final class NotificationManager: NSObject, @unchecked Sendable {
     }
 
     /// Update the server connection and re-register the token if we have one.
-    public func updateServer(host: String, port: Int) {
-        tokenAPI = DeviceTokenAPI(host: host, port: port)
+    /// Pass `useSecureTransport: false` for local development servers using HTTP.
+    public func updateServer(host: String, port: Int, useSecureTransport: Bool = true) {
+        self.useSecureTransport = useSecureTransport
+        tokenAPI = DeviceTokenAPI(host: host, port: port, useSecureTransport: useSecureTransport)
         if let token = deviceToken {
             Task {
-                try? await tokenAPI?.register(token: token)
+                do {
+                    try await tokenAPI?.register(token: token)
+                } catch {
+                    print("[NotificationManager] Device token re-registration failed: \(error)")
+                }
             }
         }
     }
@@ -105,7 +117,6 @@ public final class NotificationManager: NSObject, @unchecked Sendable {
     // MARK: - Badge management
 
     /// Reset the app badge count to zero.
-    @MainActor
     public func clearBadge() {
         #if canImport(UIKit)
         UIApplication.shared.applicationIconBadgeNumber = 0
@@ -115,7 +126,7 @@ public final class NotificationManager: NSObject, @unchecked Sendable {
     // MARK: - Deep link parsing
 
     /// Parse a notification payload into a navigation destination.
-    private func parseDestination(from userInfo: [AnyHashable: Any]) -> NotificationDestination {
+    private nonisolated func parseDestination(from userInfo: [AnyHashable: Any]) -> NotificationDestination {
         guard let type = userInfo["type"] as? String else { return .unknown }
 
         switch type {
@@ -142,10 +153,10 @@ public final class NotificationManager: NSObject, @unchecked Sendable {
 
 // MARK: - UNUserNotificationCenterDelegate
 
-extension NotificationManager: UNUserNotificationCenterDelegate {
+extension NotificationManager: @preconcurrency UNUserNotificationCenterDelegate {
 
     /// Foreground notification — show the banner even when app is active.
-    public func userNotificationCenter(
+    nonisolated public func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         willPresent notification: UNNotification
     ) async -> UNNotificationPresentationOptions {
@@ -153,7 +164,7 @@ extension NotificationManager: UNUserNotificationCenterDelegate {
     }
 
     /// Notification tap — parse the payload and set the pending destination for navigation.
-    public func userNotificationCenter(
+    nonisolated public func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         didReceive response: UNNotificationResponse
     ) async {
