@@ -427,6 +427,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             ai_assist::pipeline::email_processor::spawn_email_processor(
                 Arc::clone(&db),
                 email_pipeline,
+                email_config.clone(),
                 None, // Uses EMAIL_PROCESS_INTERVAL_SECS env var or 2h default
             );
 
