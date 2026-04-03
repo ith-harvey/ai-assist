@@ -253,6 +253,41 @@ fn reply_subject_handles_uppercase_re() {
     assert_eq!(reply_subject, "RE: Meeting tomorrow");
 }
 
+// ── Attachment info tests ───────────────────────────────────────
+
+#[test]
+fn attachment_note_none_when_no_attachments() {
+    let info = AttachmentInfo {
+        count: 0,
+        names: vec![],
+    };
+    assert!(attachment_note(&info).is_none());
+}
+
+#[test]
+fn attachment_note_singular() {
+    let info = AttachmentInfo {
+        count: 1,
+        names: vec!["report.pdf".to_string()],
+    };
+    let note = attachment_note(&info).unwrap();
+    assert!(note.contains("1 attachment:"));
+    assert!(note.contains("report.pdf"));
+    assert!(!note.contains("attachments"));
+}
+
+#[test]
+fn attachment_note_plural() {
+    let info = AttachmentInfo {
+        count: 2,
+        names: vec!["report.pdf".to_string(), "photo.jpg".to_string()],
+    };
+    let note = attachment_note(&info).unwrap();
+    assert!(note.contains("2 attachments:"));
+    assert!(note.contains("report.pdf"));
+    assert!(note.contains("photo.jpg"));
+}
+
 // ── Config defaults tests ───────────────────────────────────────
 
 #[test]
