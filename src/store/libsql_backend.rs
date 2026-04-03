@@ -2247,7 +2247,7 @@ impl Database for LibSqlBackend {
                 sub.product_id.clone(),
                 sub.original_transaction_id.clone(),
                 sub.status.as_str(),
-                expires_at_str.unwrap_or_default(),
+                expires_at_str,
                 sub.created_at.to_rfc3339(),
                 sub.updated_at.to_rfc3339()
             ],
@@ -2322,7 +2322,7 @@ impl Database for LibSqlBackend {
     ) -> Result<(), DatabaseError> {
         let conn = self.conn();
         let now = Utc::now().to_rfc3339();
-        let expires_str = expires_at.map(|dt| dt.to_rfc3339()).unwrap_or_default();
+        let expires_str = expires_at.map(|dt| dt.to_rfc3339());
         conn.execute(
             "UPDATE subscriptions SET status = ?1, expires_at = ?2, updated_at = ?3 WHERE id = ?4",
             params![status.as_str(), expires_str, now, id],
@@ -2342,7 +2342,7 @@ fn row_to_subscription(row: &libsql::Row) -> Result<Subscription, DatabaseError>
         user_id: r.string(1, "user_id")?,
         product_id: r.string(2, "product_id")?,
         original_transaction_id: r.string(3, "original_transaction_id")?,
-        status: r.enum_or(4, SubscriptionStatus::Active),
+        status: r.enum_or(4, SubscriptionStatus::Expired),
         expires_at: r.optional_datetime(5),
         created_at: r.datetime(6, "created_at")?,
         updated_at: r.datetime(7, "updated_at")?,

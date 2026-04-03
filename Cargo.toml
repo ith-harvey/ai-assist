@@ -35,6 +35,8 @@ rustls = { version = "0.23", features = ["ring"] }
 rustls-pki-types = "1"
 webpki-roots = "1"
 dashmap = "6"
+jsonwebtoken = "9"
+base64 = "0.22"
 
 [dev-dependencies]
 tempfile = "3"

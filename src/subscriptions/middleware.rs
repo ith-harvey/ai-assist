@@ -12,25 +12,23 @@ use std::sync::Arc;
 
 use axum::{
     Json,
-    extract::{FromRequestParts, Query},
+    extract::FromRequestParts,
     http::{StatusCode, request::Parts},
 };
-use serde::Deserialize;
 
 use super::model::{SubscriptionTier, effective_tier};
+use crate::auth::AuthenticatedUser;
 use crate::context::AppContext;
-
-/// Query parameter to identify the user for entitlement checks.
-#[derive(Debug, Deserialize)]
-struct UserQuery {
-    user_id: Option<String>,
-}
 
 /// Axum extractor that enforces Premium entitlement.
 ///
-/// Extracts `user_id` from query parameters and checks the database
-/// for an active Premium subscription. Rejects with 403 if not entitled.
-pub struct RequirePremium;
+/// Extracts the authenticated user from the Bearer JWT, then checks the
+/// database for an active Premium subscription. Rejects with 401 if not
+/// authenticated, 403 if not entitled.
+pub struct RequirePremium {
+    /// The authenticated user's ID (available for downstream handlers).
+    pub user_id: String,
+}
 
 impl FromRequestParts<Arc<AppContext>> for RequirePremium {
     type Rejection = (StatusCode, Json<serde_json::Value>);
@@ -40,29 +38,15 @@ impl FromRequestParts<Arc<AppContext>> for RequirePremium {
         state: &Arc<AppContext>,
     ) -> impl std::future::Future<Output = Result<Self, Self::Rejection>> + Send {
         let ctx = state.clone();
-        let uri = parts.uri.clone();
 
         async move {
-            // Extract user_id from query string.
-            let query: UserQuery =
-                Query::try_from_uri(&uri)
-                    .map(|Query(q)| q)
-                    .unwrap_or(UserQuery { user_id: None });
-
-            let user_id = match query.user_id {
-                Some(id) if !id.is_empty() => id,
-                _ => {
-                    return Err((
-                        StatusCode::BAD_REQUEST,
-                        Json(serde_json::json!({"error": "user_id query parameter required for premium endpoints"})),
-                    ));
-                }
-            };
+            // Authenticate the user from the Bearer JWT.
+            let auth = AuthenticatedUser::from_request_parts(parts, state).await?;
 
             // Look up subscriptions.
             let subs = ctx
                 .db
-                .list_subscriptions_for_user(&user_id)
+                .list_subscriptions_for_user(&auth.user_id)
                 .await
                 .map_err(|e| {
                     (
@@ -84,7 +68,9 @@ impl FromRequestParts<Arc<AppContext>> for RequirePremium {
                 ));
             }
 
-            Ok(RequirePremium)
+            Ok(RequirePremium {
+                user_id: auth.user_id,
+            })
         }
     }
 }
@@ -92,10 +78,17 @@ impl FromRequestParts<Arc<AppContext>> for RequirePremium {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::auth::Claims;
 
     #[test]
-    fn user_query_deserializes() {
-        let q: UserQuery = serde_json::from_str(r#"{"user_id": "test"}"#).unwrap();
-        assert_eq!(q.user_id, Some("test".to_string()));
+    fn claims_serde_roundtrip() {
+        let claims = Claims {
+            sub: "user-123".to_string(),
+            exp: Some(1893456000),
+            iat: Some(1704067200),
+        };
+        let json = serde_json::to_string(&claims).unwrap();
+        let parsed: Claims = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.sub, "user-123");
     }
 }

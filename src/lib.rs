@@ -1,6 +1,7 @@
 //! AI Assist — lean agent core.
 
 pub mod agent;
+pub mod auth;
 pub mod calendar;
 pub mod cards;
 pub mod channels;
