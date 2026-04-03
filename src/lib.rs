@@ -1,6 +1,7 @@
 //! AI Assist — lean agent core.
 
 pub mod agent;
+pub mod auth;
 pub mod calendar;
 pub mod cards;
 pub mod channels;
@@ -14,6 +15,7 @@ pub mod logging;
 pub mod pipeline;
 pub mod safety;
 pub mod store;
+pub mod subscriptions;
 pub mod todos;
 pub mod tools;
 pub mod util;

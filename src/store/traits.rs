@@ -11,6 +11,7 @@ use uuid::Uuid;
 use crate::cards::model::{ApprovalCard, CardSilo, CardStatus, SiloCounts};
 use crate::documents::model::{Document, DocumentType};
 use crate::error::DatabaseError;
+use crate::subscriptions::model::{Subscription, SubscriptionStatus};
 use crate::todos::model::{TodoItem, TodoStatus};
 
 /// A conversation message from the database.
@@ -483,4 +484,32 @@ pub trait Database: Send + Sync {
         doc_type: Option<&DocumentType>,
         limit: u32,
     ) -> Result<Vec<Document>, DatabaseError>;
+
+    // ── Subscriptions ──────────────────────────────────────────────────
+
+    /// Create or update a subscription (upsert by original_transaction_id).
+    async fn upsert_subscription(&self, sub: &Subscription) -> Result<(), DatabaseError>;
+
+    /// Get a subscription by ID.
+    async fn get_subscription(&self, id: &str) -> Result<Option<Subscription>, DatabaseError>;
+
+    /// Get subscription by original App Store transaction ID.
+    async fn get_subscription_by_transaction(
+        &self,
+        original_transaction_id: &str,
+    ) -> Result<Option<Subscription>, DatabaseError>;
+
+    /// List all subscriptions for a user.
+    async fn list_subscriptions_for_user(
+        &self,
+        user_id: &str,
+    ) -> Result<Vec<Subscription>, DatabaseError>;
+
+    /// Update subscription status and expiry.
+    async fn update_subscription_status(
+        &self,
+        id: &str,
+        status: SubscriptionStatus,
+        expires_at: Option<DateTime<Utc>>,
+    ) -> Result<(), DatabaseError>;
 }
