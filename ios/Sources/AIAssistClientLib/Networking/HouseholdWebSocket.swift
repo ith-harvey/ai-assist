@@ -9,7 +9,6 @@ enum HouseholdWsMessage {
     case taskCreated(HouseholdTask)
     case taskUpdated(HouseholdTask)
     case taskDeleted(UUID)
-    case membersSync([HouseholdMember])
     case ping
 
     static func decode(from data: Data) -> HouseholdWsMessage? {
@@ -37,10 +36,6 @@ enum HouseholdWsMessage {
             guard let idString = json["id"] as? String,
                   let id = UUID(uuidString: idString) else { return nil }
             return .taskDeleted(id)
-        case "members_sync":
-            guard let membersData = try? JSONSerialization.data(withJSONObject: json["members"] ?? []),
-                  let members = try? decoder.decode([HouseholdMember].self, from: membersData) else { return nil }
-            return .membersSync(members)
         case "ping":
             return .ping
         default:
@@ -51,7 +46,7 @@ enum HouseholdWsMessage {
 
 /// Actions sent to the household tasks WebSocket server.
 enum HouseholdWsAction {
-    case create(title: String, category: HouseholdTaskCategory, assigneeId: UUID?, dueDate: Date?, recurrence: RecurrenceRule?, notes: String?)
+    case create(title: String, priority: HouseholdTaskPriority, assignedTo: String?, dueDate: Date?, recurrence: RecurrenceRule?, description: String?)
     case complete(taskId: UUID)
     case uncomplete(taskId: UUID)
     case update(task: HouseholdTask)
@@ -62,14 +57,14 @@ enum HouseholdWsAction {
         let formatter = ISO8601DateFormatter()
 
         switch self {
-        case .create(let title, let category, let assigneeId, let dueDate, let recurrence, let notes):
+        case .create(let title, let priority, let assignedTo, let dueDate, let recurrence, let description):
             payload["action"] = "create"
             payload["title"] = title
-            payload["category"] = category.rawValue
-            if let assigneeId { payload["assignee_id"] = assigneeId.uuidString.lowercased() }
+            payload["priority"] = priority.rawValue
+            if let assignedTo { payload["assigned_to"] = assignedTo }
             if let dueDate { payload["due_date"] = formatter.string(from: dueDate) }
-            if let recurrence { payload["recurrence"] = recurrence.rawValue }
-            if let notes { payload["notes"] = notes }
+            if let recurrence { payload["recurrence"] = recurrence.id }
+            if let description { payload["description"] = description }
         case .complete(let id):
             payload = ["action": "complete", "id": id.uuidString.lowercased()]
         case .uncomplete(let id):
@@ -78,12 +73,12 @@ enum HouseholdWsAction {
             payload["action"] = "update"
             payload["id"] = task.id.uuidString.lowercased()
             payload["title"] = task.title
-            payload["category"] = task.category.rawValue
-            payload["is_completed"] = task.isCompleted
-            if let notes = task.notes { payload["notes"] = notes }
-            if let assigneeId = task.assigneeId { payload["assignee_id"] = assigneeId.uuidString.lowercased() }
+            payload["status"] = task.status.rawValue
+            payload["priority"] = task.priority.rawValue
+            if let desc = task.description { payload["description"] = desc }
+            if let assignedTo = task.assignedTo { payload["assigned_to"] = assignedTo }
             if let dueDate = task.dueDate { payload["due_date"] = formatter.string(from: dueDate) }
-            if let recurrence = task.recurrence { payload["recurrence"] = recurrence.rawValue }
+            if let recurrence = task.recurrence { payload["recurrence"] = recurrence.id }
         case .delete(let id):
             payload = ["action": "delete", "id": id.uuidString.lowercased()]
         }
@@ -94,7 +89,7 @@ enum HouseholdWsAction {
 // MARK: - WebSocket Client
 
 /// WebSocket client for the household task system.
-/// Connects to `/ws/household`, syncs tasks and members, sends actions.
+/// Connects to `/ws/households/{householdId}/tasks` for real-time task updates.
 /// Falls back to sample data when backend is unavailable.
 @Observable
 public final class HouseholdWebSocket: @unchecked Sendable {
@@ -103,12 +98,14 @@ public final class HouseholdWebSocket: @unchecked Sendable {
 
     public var tasks: [HouseholdTask] = []
     public var members: [HouseholdMember] = []
+    public var household: Household?
     public var isConnected: Bool = false
 
     // MARK: - Configuration
 
     public private(set) var host: String
     public private(set) var port: Int
+    public var householdId: UUID?
 
     // MARK: - Private
 
@@ -118,6 +115,7 @@ public final class HouseholdWebSocket: @unchecked Sendable {
     private let maxReconnectDelay: TimeInterval = 30.0
     private var isIntentionalDisconnect = false
     private var usingSampleData = false
+    private var api: HouseholdAPI
 
     public init(
         host: String = UserDefaults.standard.string(forKey: "ai_assist_host") ?? "localhost",
@@ -126,14 +124,15 @@ public final class HouseholdWebSocket: @unchecked Sendable {
         self.host = host
         self.port = port
         self.session = URLSession(configuration: .default)
+        self.api = HouseholdAPI(host: host, port: port)
     }
 
     // MARK: - Computed
 
-    /// Active (not completed) tasks sorted by due date then creation.
+    /// Active tasks sorted by due date then priority.
     public var activeTasks: [HouseholdTask] {
         tasks
-            .filter { !$0.isCompleted }
+            .filter { $0.isActive }
             .sorted {
                 let d0 = $0.dueDate ?? .distantFuture
                 let d1 = $1.dueDate ?? .distantFuture
@@ -148,14 +147,14 @@ public final class HouseholdWebSocket: @unchecked Sendable {
             .sorted { ($0.completedAt ?? $0.updatedAt) > ($1.completedAt ?? $1.updatedAt) }
     }
 
-    /// Active tasks grouped by category.
-    public var tasksByCategory: [HouseholdTaskCategory: [HouseholdTask]] {
-        Dictionary(grouping: activeTasks, by: \.category)
+    /// Active tasks grouped by priority.
+    public var tasksByPriority: [HouseholdTaskPriority: [HouseholdTask]] {
+        Dictionary(grouping: activeTasks, by: \.priority)
     }
 
     /// Active tasks for a specific assignee.
-    public func activeTasks(for memberId: UUID) -> [HouseholdTask] {
-        activeTasks.filter { $0.assigneeId == memberId }
+    public func activeTasks(for userId: String) -> [HouseholdTask] {
+        activeTasks.filter { $0.assignedTo == userId }
     }
 
     /// Count of overdue tasks.
@@ -165,10 +164,27 @@ public final class HouseholdWebSocket: @unchecked Sendable {
 
     // MARK: - Connection
 
+    /// Connect to the household WebSocket. If no householdId is set, fetches from REST first.
     public func connect() {
         isIntentionalDisconnect = false
         reconnectAttempt = 0
-        openConnection()
+
+        if let householdId {
+            openConnection(householdId: householdId)
+        } else {
+            // Try to discover the user's household via REST
+            Task { @MainActor in
+                await discoverAndConnect()
+            }
+        }
+    }
+
+    /// Set the household and connect.
+    public func connect(householdId: UUID) {
+        self.householdId = householdId
+        isIntentionalDisconnect = false
+        reconnectAttempt = 0
+        openConnection(householdId: householdId)
     }
 
     public func disconnect() {
@@ -183,13 +199,35 @@ public final class HouseholdWebSocket: @unchecked Sendable {
         disconnect()
         self.host = host
         self.port = port
+        self.api = HouseholdAPI(host: host, port: port)
         if wasConnected {
             connect()
         }
     }
 
-    private func openConnection() {
-        guard let url = URL(string: "ws://\(host):\(port)/ws/household") else {
+    /// Fetch household list, pick the first one, load members, then connect WebSocket.
+    @MainActor
+    private func discoverAndConnect() async {
+        do {
+            let households = try await api.listHouseholds()
+            if let first = households.first {
+                self.household = first
+                self.householdId = first.id
+                let members = try await api.listMembers(householdId: first.id)
+                self.members = members
+                openConnection(householdId: first.id)
+            } else {
+                // No household yet — load sample data for preview
+                loadSampleData()
+            }
+        } catch {
+            loadSampleData()
+        }
+    }
+
+    private func openConnection(householdId: UUID) {
+        let idStr = householdId.uuidString.lowercased()
+        guard let url = URL(string: "ws://\(host):\(port)/ws/households/\(idStr)/tasks") else {
             loadSampleData()
             return
         }
@@ -208,11 +246,20 @@ public final class HouseholdWebSocket: @unchecked Sendable {
         reconnectAttempt = 0
         usingSampleData = false
         receiveMessage()
+
+        // Also fetch members via REST
+        Task { @MainActor in
+            if let members = try? await api.listMembers(householdId: householdId) {
+                self.members = members
+            }
+        }
     }
 
     private func loadSampleData() {
         usingSampleData = true
         isConnected = true
+        household = Household.sample
+        householdId = Household.sample.id
         tasks = HouseholdTask.samples
         members = HouseholdMember.samples
     }
@@ -263,8 +310,6 @@ public final class HouseholdWebSocket: @unchecked Sendable {
             }
         case .taskDeleted(let id):
             tasks.removeAll { $0.id == id }
-        case .membersSync(let synced):
-            members = synced
         case .ping:
             break
         }
@@ -275,7 +320,7 @@ public final class HouseholdWebSocket: @unchecked Sendable {
     public func complete(taskId: UUID) {
         if usingSampleData {
             if let index = tasks.firstIndex(where: { $0.id == taskId }) {
-                tasks[index].isCompleted = true
+                tasks[index].status = .completed
                 tasks[index].completedAt = Date()
                 tasks[index].updatedAt = Date()
             }
@@ -283,7 +328,7 @@ public final class HouseholdWebSocket: @unchecked Sendable {
         }
         send(action: .complete(taskId: taskId))
         if let index = tasks.firstIndex(where: { $0.id == taskId }) {
-            tasks[index].isCompleted = true
+            tasks[index].status = .completed
             tasks[index].completedAt = Date()
             tasks[index].updatedAt = Date()
         }
@@ -292,7 +337,7 @@ public final class HouseholdWebSocket: @unchecked Sendable {
     public func uncomplete(taskId: UUID) {
         if usingSampleData {
             if let index = tasks.firstIndex(where: { $0.id == taskId }) {
-                tasks[index].isCompleted = false
+                tasks[index].status = .pending
                 tasks[index].completedAt = nil
                 tasks[index].updatedAt = Date()
             }
@@ -300,7 +345,7 @@ public final class HouseholdWebSocket: @unchecked Sendable {
         }
         send(action: .uncomplete(taskId: taskId))
         if let index = tasks.firstIndex(where: { $0.id == taskId }) {
-            tasks[index].isCompleted = false
+            tasks[index].status = .pending
             tasks[index].completedAt = nil
             tasks[index].updatedAt = Date()
         }
@@ -315,13 +360,15 @@ public final class HouseholdWebSocket: @unchecked Sendable {
         tasks.removeAll { $0.id == taskId }
     }
 
-    public func createTask(title: String, category: HouseholdTaskCategory, assigneeId: UUID? = nil, dueDate: Date? = nil, recurrence: RecurrenceRule? = nil, notes: String? = nil) {
+    public func createTask(title: String, priority: HouseholdTaskPriority = .medium, assignedTo: String? = nil, dueDate: Date? = nil, recurrence: RecurrenceRule? = nil, description: String? = nil) {
+        guard let householdId else { return }
+
         let newTask = HouseholdTask(
+            householdId: householdId,
             title: title,
-            notes: notes,
-            category: category,
-            assigneeId: assigneeId,
-            assigneeName: members.first(where: { $0.id == assigneeId })?.name,
+            description: description,
+            priority: priority,
+            assignedTo: assignedTo,
             dueDate: dueDate,
             recurrence: recurrence
         )
@@ -330,7 +377,7 @@ public final class HouseholdWebSocket: @unchecked Sendable {
             tasks.append(newTask)
             return
         }
-        send(action: .create(title: title, category: category, assigneeId: assigneeId, dueDate: dueDate, recurrence: recurrence, notes: notes))
+        send(action: .create(title: title, priority: priority, assignedTo: assignedTo, dueDate: dueDate, recurrence: recurrence, description: description))
         tasks.append(newTask)
     }
 
@@ -374,7 +421,9 @@ public final class HouseholdWebSocket: @unchecked Sendable {
 
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
             guard let self, !self.isIntentionalDisconnect else { return }
-            self.openConnection()
+            if let householdId = self.householdId {
+                self.openConnection(householdId: householdId)
+            }
         }
     }
 

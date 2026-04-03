@@ -3,17 +3,17 @@ import SwiftUI
 /// Quick-add sheet for creating a new household task with smart defaults.
 ///
 /// Minimal friction: title is required, everything else is optional.
-/// Category defaults to .custom, assignee defaults to unassigned.
+/// Priority defaults to .medium, assignee defaults to unassigned.
 /// Due date has quick-pick buttons (Today, Tomorrow, This Week) plus a custom picker.
 struct QuickAddTaskSheet: View {
     let socket: HouseholdWebSocket
 
     @State private var title = ""
-    @State private var category: HouseholdTaskCategory = .custom
-    @State private var assigneeId: UUID?
+    @State private var priority: HouseholdTaskPriority = .medium
+    @State private var assignedTo: String?
     @State private var dueDate: Date?
     @State private var recurrence: RecurrenceRule?
-    @State private var notes = ""
+    @State private var description = ""
     @State private var showDatePicker = false
 
     @Environment(\.dismiss) private var dismiss
@@ -24,11 +24,14 @@ struct QuickAddTaskSheet: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
                     titleField
-                    categoryPicker
-                    assigneePicker
+                    priorityPicker
+                    MemberPickerView(
+                        members: socket.members,
+                        selectedUserId: $assignedTo
+                    )
                     dueDatePicker
                     recurrencePicker
-                    notesField
+                    descriptionField
                 }
                 .padding(20)
             }
@@ -63,90 +66,43 @@ struct QuickAddTaskSheet: View {
             .accessibilityLabel("Task title")
     }
 
-    // MARK: - Category
+    // MARK: - Priority
 
-    private var categoryPicker: some View {
+    private var priorityPicker: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("CATEGORY")
+            Text("PRIORITY")
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(.secondary)
 
             HStack(spacing: 8) {
-                ForEach(HouseholdTaskCategory.allCases) { cat in
+                ForEach(HouseholdTaskPriority.allCases) { p in
                     Button {
-                        category = cat
+                        priority = p
                     } label: {
                         VStack(spacing: 4) {
-                            Image(systemName: cat.icon)
+                            Image(systemName: p.icon)
                                 .font(.system(size: 18))
-                            Text(cat.label)
+                            Text(p.label)
                                 .font(.system(size: 11))
                         }
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 10)
                         .background(
                             RoundedRectangle(cornerRadius: 12)
-                                .fill(category == cat ? cat.color.opacity(0.12) : Color.clear)
+                                .fill(priority == p ? p.color.opacity(0.12) : Color.clear)
                         )
                         .overlay(
                             RoundedRectangle(cornerRadius: 12)
-                                .strokeBorder(category == cat ? cat.color.opacity(0.4) : Color.secondary.opacity(0.15), lineWidth: 1)
+                                .strokeBorder(priority == p ? p.color.opacity(0.4) : Color.secondary.opacity(0.15), lineWidth: 1)
                         )
-                        .foregroundStyle(category == cat ? cat.color : .secondary)
+                        .foregroundStyle(priority == p ? p.color : .secondary)
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel("\(cat.label) category")
-                    .accessibilityAddTraits(category == cat ? .isSelected : [])
+                    .accessibilityLabel("\(p.label) priority")
+                    .accessibilityAddTraits(priority == p ? .isSelected : [])
                 }
             }
         }
-    }
-
-    // MARK: - Assignee
-
-    private var assigneePicker: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("ASSIGN TO")
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(.secondary)
-
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 10) {
-                    assigneeButton(name: "Anyone", emoji: "👥", id: nil)
-                    ForEach(socket.members) { member in
-                        assigneeButton(name: member.name, emoji: member.emoji, id: member.id)
-                    }
-                }
-            }
-        }
-    }
-
-    private func assigneeButton(name: String, emoji: String, id: UUID?) -> some View {
-        let isSelected = assigneeId == id
-        return Button {
-            assigneeId = id
-        } label: {
-            VStack(spacing: 4) {
-                Text(emoji)
-                    .font(.system(size: 24))
-                Text(name)
-                    .font(.system(size: 11, weight: isSelected ? .semibold : .regular))
-            }
-            .frame(width: 64)
-            .padding(.vertical, 8)
-            .background(
-                RoundedRectangle(cornerRadius: 12)
-                    .fill(isSelected ? Color.accentColor.opacity(0.1) : Color.clear)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 12)
-                    .strokeBorder(isSelected ? Color.accentColor.opacity(0.4) : Color.secondary.opacity(0.15), lineWidth: 1)
-            )
-            .foregroundStyle(isSelected ? .accentColor : .secondary)
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Assign to \(name)")
-        .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 
     // MARK: - Due Date
@@ -250,15 +206,15 @@ struct QuickAddTaskSheet: View {
         .buttonStyle(.plain)
     }
 
-    // MARK: - Notes
+    // MARK: - Description
 
-    private var notesField: some View {
+    private var descriptionField: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("NOTES")
+            Text("DESCRIPTION")
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(.secondary)
 
-            TextField("Add notes...", text: $notes, axis: .vertical)
+            TextField("Add a description...", text: $description, axis: .vertical)
                 .lineLimit(2...5)
                 .padding(14)
                 .cardBackground()
@@ -273,11 +229,11 @@ struct QuickAddTaskSheet: View {
 
         socket.createTask(
             title: trimmedTitle,
-            category: category,
-            assigneeId: assigneeId,
+            priority: priority,
+            assignedTo: assignedTo,
             dueDate: dueDate,
             recurrence: recurrence,
-            notes: notes.isEmpty ? nil : notes
+            description: description.isEmpty ? nil : description
         )
         dismiss()
     }

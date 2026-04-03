@@ -2,19 +2,19 @@ import SwiftUI
 
 /// Full-screen detail view for a household task.
 ///
-/// Shows title, assignee picker, due date, recurrence, notes, and completion toggle.
+/// Shows title, assignee picker, due date, recurrence, description, priority, and status.
 /// Editable inline — changes push through the WebSocket.
 public struct HouseholdTaskDetailView: View {
     let task: HouseholdTask
     let socket: HouseholdWebSocket
 
     @State private var editedTitle: String
-    @State private var editedNotes: String
-    @State private var editedCategory: HouseholdTaskCategory
-    @State private var editedAssigneeId: UUID?
+    @State private var editedDescription: String
+    @State private var editedPriority: HouseholdTaskPriority
+    @State private var editedStatus: HouseholdTaskStatus
+    @State private var editedAssignedTo: String?
     @State private var editedDueDate: Date?
     @State private var editedRecurrence: RecurrenceRule?
-    @State private var isCompleted: Bool
     @State private var showDatePicker = false
     @State private var hasChanges = false
 
@@ -24,24 +24,24 @@ public struct HouseholdTaskDetailView: View {
         self.task = task
         self.socket = socket
         _editedTitle = State(initialValue: task.title)
-        _editedNotes = State(initialValue: task.notes ?? "")
-        _editedCategory = State(initialValue: task.category)
-        _editedAssigneeId = State(initialValue: task.assigneeId)
+        _editedDescription = State(initialValue: task.description ?? "")
+        _editedPriority = State(initialValue: task.priority)
+        _editedStatus = State(initialValue: task.status)
+        _editedAssignedTo = State(initialValue: task.assignedTo)
         _editedDueDate = State(initialValue: task.dueDate)
         _editedRecurrence = State(initialValue: task.recurrence)
-        _isCompleted = State(initialValue: task.isCompleted)
     }
 
     public var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
-                completionHeader
+                statusHeader
                 titleSection
-                categorySection
+                prioritySection
                 assigneeSection
                 dueDateSection
                 recurrenceSection
-                notesSection
+                descriptionSection
             }
             .padding(20)
         }
@@ -62,35 +62,45 @@ public struct HouseholdTaskDetailView: View {
         }
     }
 
-    // MARK: - Completion Header
+    // MARK: - Status Header
 
-    private var completionHeader: some View {
-        Button {
-            isCompleted.toggle()
-            hasChanges = true
-            // Immediate feedback
-            if isCompleted {
-                socket.complete(taskId: task.id)
-            } else {
-                socket.uncomplete(taskId: task.id)
+    private var statusHeader: some View {
+        HStack(spacing: 12) {
+            ForEach([HouseholdTaskStatus.pending, .inProgress, .completed], id: \.self) { status in
+                Button {
+                    editedStatus = status
+                    hasChanges = true
+                    // Immediate feedback for complete/uncomplete
+                    if status == .completed {
+                        socket.complete(taskId: task.id)
+                    } else if task.isCompleted && status != .completed {
+                        socket.uncomplete(taskId: task.id)
+                    }
+                } label: {
+                    VStack(spacing: 4) {
+                        Image(systemName: status.icon)
+                            .font(.system(size: 22))
+                            .foregroundStyle(editedStatus == status ? status.color : .secondary)
+                        Text(status.label)
+                            .font(.system(size: 11, weight: editedStatus == status ? .semibold : .regular))
+                            .foregroundStyle(editedStatus == status ? status.color : .secondary)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 12)
+                    .background(
+                        RoundedRectangle(cornerRadius: 12)
+                            .fill(editedStatus == status ? status.color.opacity(0.1) : Color.clear)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12)
+                            .strokeBorder(editedStatus == status ? status.color.opacity(0.4) : Color.secondary.opacity(0.15), lineWidth: 1)
+                    )
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("\(status.label) status")
+                .accessibilityAddTraits(editedStatus == status ? .isSelected : [])
             }
-        } label: {
-            HStack(spacing: 12) {
-                Image(systemName: isCompleted ? "checkmark.circle.fill" : "circle")
-                    .font(.system(size: 28))
-                    .foregroundStyle(isCompleted ? .green : .secondary)
-
-                Text(isCompleted ? "Completed" : "Mark as complete")
-                    .font(.headline)
-                    .foregroundStyle(isCompleted ? .green : .primary)
-
-                Spacer()
-            }
-            .padding(16)
-            .cardBackground()
         }
-        .buttonStyle(.plain)
-        .accessibilityLabel(isCompleted ? "Task completed, tap to undo" : "Tap to mark task complete")
     }
 
     // MARK: - Title
@@ -106,38 +116,38 @@ public struct HouseholdTaskDetailView: View {
         }
     }
 
-    // MARK: - Category
+    // MARK: - Priority
 
-    private var categorySection: some View {
+    private var prioritySection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            sectionLabel("Category")
+            sectionLabel("Priority")
             HStack(spacing: 8) {
-                ForEach(HouseholdTaskCategory.allCases) { category in
+                ForEach(HouseholdTaskPriority.allCases) { priority in
                     Button {
-                        editedCategory = category
+                        editedPriority = priority
                         hasChanges = true
                     } label: {
                         HStack(spacing: 4) {
-                            Image(systemName: category.icon)
+                            Image(systemName: priority.icon)
                                 .font(.system(size: 14))
-                            Text(category.label)
-                                .font(.system(size: 14, weight: editedCategory == category ? .semibold : .regular))
+                            Text(priority.label)
+                                .font(.system(size: 14, weight: editedPriority == priority ? .semibold : .regular))
                         }
                         .padding(.horizontal, 12)
                         .padding(.vertical, 8)
                         .background(
                             Capsule()
-                                .fill(editedCategory == category ? category.color.opacity(0.15) : Color.clear)
+                                .fill(editedPriority == priority ? priority.color.opacity(0.15) : Color.clear)
                         )
                         .overlay(
                             Capsule()
-                                .strokeBorder(editedCategory == category ? category.color.opacity(0.5) : Color.secondary.opacity(0.2), lineWidth: 1)
+                                .strokeBorder(editedPriority == priority ? priority.color.opacity(0.5) : Color.secondary.opacity(0.2), lineWidth: 1)
                         )
-                        .foregroundStyle(editedCategory == category ? category.color : .secondary)
+                        .foregroundStyle(editedPriority == priority ? priority.color : .secondary)
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel("\(category.label) category")
-                    .accessibilityAddTraits(editedCategory == category ? .isSelected : [])
+                    .accessibilityLabel("\(priority.label) priority")
+                    .accessibilityAddTraits(editedPriority == priority ? .isSelected : [])
                 }
             }
         }
@@ -146,50 +156,14 @@ public struct HouseholdTaskDetailView: View {
     // MARK: - Assignee
 
     private var assigneeSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            sectionLabel("Assigned to")
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
-                    // Unassigned option
-                    assigneeChip(name: "Anyone", emoji: "👥", isSelected: editedAssigneeId == nil) {
-                        editedAssigneeId = nil
-                        hasChanges = true
-                    }
-
-                    ForEach(socket.members) { member in
-                        assigneeChip(name: member.name, emoji: member.emoji, isSelected: editedAssigneeId == member.id) {
-                            editedAssigneeId = member.id
-                            hasChanges = true
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    private func assigneeChip(name: String, emoji: String, isSelected: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            HStack(spacing: 6) {
-                Text(emoji)
-                    .font(.system(size: 18))
-                Text(name)
-                    .font(.system(size: 14, weight: isSelected ? .semibold : .regular))
-            }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 8)
-            .background(
-                Capsule()
-                    .fill(isSelected ? Color.accentColor.opacity(0.12) : Color.clear)
-            )
-            .overlay(
-                Capsule()
-                    .strokeBorder(isSelected ? Color.accentColor.opacity(0.4) : Color.secondary.opacity(0.2), lineWidth: 1)
-            )
-            .foregroundStyle(isSelected ? .accentColor : .secondary)
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Assign to \(name)")
-        .accessibilityAddTraits(isSelected ? .isSelected : [])
+        MemberPickerView(
+            members: socket.members,
+            selectedUserId: Binding(
+                get: { editedAssignedTo },
+                set: { editedAssignedTo = $0; hasChanges = true }
+            ),
+            label: "ASSIGNED TO"
+        )
     }
 
     // MARK: - Due Date
@@ -267,7 +241,7 @@ public struct HouseholdTaskDetailView: View {
                         hasChanges = true
                     }
 
-                    ForEach(RecurrenceRule.allCases.filter { $0 != .custom }) { rule in
+                    ForEach(RecurrenceRule.presets, id: \.id) { rule in
                         recurrenceChip(rule.label, isSelected: editedRecurrence == rule) {
                             editedRecurrence = rule
                             hasChanges = true
@@ -299,14 +273,14 @@ public struct HouseholdTaskDetailView: View {
         .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 
-    // MARK: - Notes
+    // MARK: - Description
 
-    private var notesSection: some View {
+    private var descriptionSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            sectionLabel("Notes")
-            TextField("Add notes...", text: $editedNotes, axis: .vertical)
+            sectionLabel("Description")
+            TextField("Add a description...", text: $editedDescription, axis: .vertical)
                 .lineLimit(3...8)
-                .onChange(of: editedNotes) { _, _ in hasChanges = true }
+                .onChange(of: editedDescription) { _, _ in hasChanges = true }
                 .padding(14)
                 .cardBackground()
         }
@@ -324,13 +298,12 @@ public struct HouseholdTaskDetailView: View {
     private func saveChanges() {
         var updated = task
         updated.title = editedTitle
-        updated.notes = editedNotes.isEmpty ? nil : editedNotes
-        updated.category = editedCategory
-        updated.assigneeId = editedAssigneeId
-        updated.assigneeName = socket.members.first(where: { $0.id == editedAssigneeId })?.name
+        updated.description = editedDescription.isEmpty ? nil : editedDescription
+        updated.priority = editedPriority
+        updated.status = editedStatus
+        updated.assignedTo = editedAssignedTo
         updated.dueDate = editedDueDate
         updated.recurrence = editedRecurrence
-        updated.isCompleted = isCompleted
         updated.updatedAt = Date()
         socket.updateTask(updated)
         hasChanges = false

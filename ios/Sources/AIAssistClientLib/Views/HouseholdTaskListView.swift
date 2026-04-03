@@ -1,10 +1,16 @@
 import SwiftUI
 
+/// Scope filter: My Tasks vs All Household tasks.
+private enum HouseholdScope: String, CaseIterable {
+    case all = "All"
+    case mine = "My Tasks"
+}
+
 /// Filter mode for the household task list.
 private enum HouseholdFilter: Hashable {
     case all
-    case category(HouseholdTaskCategory)
-    case assignee(UUID)
+    case priority(HouseholdTaskPriority)
+    case assignee(String) // userId
 }
 
 /// Tab for active vs completed.
@@ -13,51 +19,64 @@ private enum HouseholdTab: String, CaseIterable {
     case completed = "Completed"
 }
 
-/// Main household task list with category grouping and assignee filtering.
+/// Main household task list with priority grouping, assignee filtering, and My Tasks toggle.
 ///
+/// - Scope toggle: My Tasks | All
 /// - Segmented control: Active | Completed
-/// - Filter chips: All, Chores, Errands, Meals, Other, plus assignee avatars
-/// - Tasks grouped by category with section headers
-/// - Swipe right → complete, swipe left → delete
-/// - Tap → push detail view
-/// - Pull to refresh
+/// - Filter chips: All, Low, Medium, High, Urgent, plus assignee avatars
+/// - Tasks grouped by priority with section headers
+/// - Swipe right -> complete, swipe left -> delete
+/// - Tap -> push detail view
 /// - Quick-add FAB
+/// - Toolbar button to manage household
 public struct HouseholdTaskListView: View {
     let socket: HouseholdWebSocket
     @State private var selectedTab: HouseholdTab = .active
+    @State private var scope: HouseholdScope = .all
     @State private var filter: HouseholdFilter = .all
     @State private var selectedTask: HouseholdTask?
     @State private var showAddSheet = false
+    @State private var showHouseholdSettings = false
 
     public init(socket: HouseholdWebSocket) {
         self.socket = socket
     }
 
-    public var body: some View {
-        ZStack(alignment: .bottomTrailing) {
-            if socket.tasks.isEmpty {
-                emptyState
-            } else {
-                VStack(spacing: 0) {
-                    filterBar
-                    taskList
-                }
-            }
+    /// Whether the user has a household set up.
+    private var hasHousehold: Bool {
+        socket.household != nil
+    }
 
-            // Quick-add FAB
-            addButton
+    public var body: some View {
+        Group {
+            if hasHousehold {
+                taskContent
+            } else {
+                HouseholdSetupView(socket: socket)
+            }
         }
-        .secondaryBackground()
         .navigationTitle("Household")
         .toolbar {
-            ToolbarItem(placement: .principal) {
-                Picker("Filter", selection: $selectedTab) {
-                    ForEach(HouseholdTab.allCases, id: \.self) { tab in
-                        Text(tab.rawValue).tag(tab)
+            if hasHousehold {
+                ToolbarItem(placement: .principal) {
+                    Picker("Filter", selection: $selectedTab) {
+                        ForEach(HouseholdTab.allCases, id: \.self) { tab in
+                            Text(tab.rawValue).tag(tab)
+                        }
                     }
+                    .pickerStyle(.segmented)
+                    .frame(maxWidth: 220)
                 }
-                .pickerStyle(.segmented)
-                .frame(maxWidth: 220)
+
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        showHouseholdSettings = true
+                    } label: {
+                        Image(systemName: "person.2.circle")
+                            .font(.system(size: 16))
+                    }
+                    .accessibilityLabel("Household settings")
+                }
             }
         }
         .navigationDestination(item: $selectedTask) { task in
@@ -66,6 +85,53 @@ public struct HouseholdTaskListView: View {
         .sheet(isPresented: $showAddSheet) {
             QuickAddTaskSheet(socket: socket)
         }
+        .navigationDestination(isPresented: $showHouseholdSettings) {
+            HouseholdView(socket: socket)
+        }
+    }
+
+    // MARK: - Task Content
+
+    private var taskContent: some View {
+        ZStack(alignment: .bottomTrailing) {
+            if socket.tasks.isEmpty {
+                emptyState
+            } else {
+                VStack(spacing: 0) {
+                    scopeToggle
+                    filterBar
+                    taskList
+                }
+            }
+            addButton
+        }
+        .secondaryBackground()
+    }
+
+    // MARK: - Scope Toggle
+
+    private var scopeToggle: some View {
+        HStack(spacing: 0) {
+            ForEach(HouseholdScope.allCases, id: \.self) { s in
+                Button {
+                    withAnimation(.spring(response: 0.25)) { scope = s }
+                } label: {
+                    Text(s.rawValue)
+                        .font(.system(size: 13, weight: scope == s ? .semibold : .regular))
+                        .foregroundStyle(scope == s ? .accentColor : .secondary)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 8)
+                        .background(
+                            scope == s ? Color.accentColor.opacity(0.1) : Color.clear
+                        )
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.secondary.opacity(0.15), lineWidth: 1))
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
     }
 
     // MARK: - Filter Bar
@@ -77,9 +143,9 @@ public struct HouseholdTaskListView: View {
                     filter = .all
                 }
 
-                ForEach(HouseholdTaskCategory.allCases) { category in
-                    filterChip(category.label, icon: category.icon, color: category.color, isSelected: filter == .category(category)) {
-                        filter = .category(category)
+                ForEach(HouseholdTaskPriority.allCases) { priority in
+                    filterChip(priority.label, icon: priority.icon, color: priority.color, isSelected: filter == .priority(priority)) {
+                        filter = .priority(priority)
                     }
                 }
 
@@ -88,23 +154,29 @@ public struct HouseholdTaskListView: View {
                         .frame(height: 24)
 
                     ForEach(socket.members) { member in
-                        filterChip(member.name, emoji: member.emoji, isSelected: filter == .assignee(member.id)) {
-                            filter = .assignee(member.id)
+                        filterChip(member.displayName, initials: member.initials, isSelected: filter == .assignee(member.userId)) {
+                            filter = .assignee(member.userId)
                         }
                     }
                 }
             }
             .padding(.horizontal, 16)
-            .padding(.vertical, 10)
+            .padding(.vertical, 6)
         }
     }
 
-    private func filterChip(_ label: String, icon: String? = nil, emoji: String? = nil, color: Color = .primary, isSelected: Bool, action: @escaping () -> Void) -> some View {
+    private func filterChip(_ label: String, icon: String? = nil, initials: String? = nil, color: Color = .primary, isSelected: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             HStack(spacing: 4) {
-                if let emoji {
-                    Text(emoji)
-                        .font(.system(size: 14))
+                if let initials {
+                    ZStack {
+                        Circle()
+                            .fill(isSelected ? color.opacity(0.15) : Color.secondary.opacity(0.1))
+                            .frame(width: 20, height: 20)
+                        Text(initials)
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundStyle(isSelected ? color : .secondary)
+                    }
                 } else if let icon {
                     Image(systemName: icon)
                         .font(.system(size: 12))
@@ -132,21 +204,32 @@ public struct HouseholdTaskListView: View {
     // MARK: - Task List
 
     private var filteredActiveTasks: [HouseholdTask] {
-        let base = socket.activeTasks
-        switch filter {
-        case .all: return base
-        case .category(let cat): return base.filter { $0.category == cat }
-        case .assignee(let id): return base.filter { $0.assigneeId == id }
-        }
+        applyFilters(to: socket.activeTasks)
     }
 
     private var filteredCompletedTasks: [HouseholdTask] {
-        let base = socket.completedTasks
-        switch filter {
-        case .all: return base
-        case .category(let cat): return base.filter { $0.category == cat }
-        case .assignee(let id): return base.filter { $0.assigneeId == id }
+        applyFilters(to: socket.completedTasks)
+    }
+
+    private func applyFilters(to tasks: [HouseholdTask]) -> [HouseholdTask] {
+        var result = tasks
+
+        // Scope filter
+        if scope == .mine {
+            // Show only tasks assigned to "me" — for now use all members as a fallback
+            // In a real app, the current user ID would come from auth
+            // For sample data, filter unassigned tasks out
+            result = result.filter { $0.assignedTo != nil }
         }
+
+        // Detail filter
+        switch filter {
+        case .all: break
+        case .priority(let p): result = result.filter { $0.priority == p }
+        case .assignee(let userId): result = result.filter { $0.assignedTo == userId }
+        }
+
+        return result
     }
 
     private var taskList: some View {
@@ -158,22 +241,23 @@ public struct HouseholdTaskListView: View {
                     EmptyStateView(
                         icon: "checkmark.circle",
                         title: "All done!",
-                        subtitle: filter == .all ? "No active tasks" : "No tasks match this filter"
+                        subtitle: filter == .all && scope == .all ? "No active tasks" : "No tasks match this filter"
                     )
                     .plainCardListRow()
                 } else {
-                    // Group by category
-                    let grouped = Dictionary(grouping: tasks, by: \.category)
-                    let orderedCategories = HouseholdTaskCategory.allCases.filter { grouped[$0] != nil }
+                    // Group by priority (urgent first)
+                    let grouped = Dictionary(grouping: tasks, by: \.priority)
+                    let orderedPriorities: [HouseholdTaskPriority] = [.urgent, .high, .medium, .low]
+                    let activePriorities = orderedPriorities.filter { grouped[$0] != nil }
 
-                    ForEach(orderedCategories) { category in
+                    ForEach(activePriorities) { priority in
                         Section {
-                            ForEach(grouped[category] ?? []) { task in
+                            ForEach(grouped[priority] ?? []) { task in
                                 householdTaskCard(task)
                                     .plainCardListRow()
                             }
                         } header: {
-                            categoryHeader(category, count: grouped[category]?.count ?? 0)
+                            priorityHeader(priority, count: grouped[priority]?.count ?? 0)
                         }
                     }
                 }
@@ -195,23 +279,23 @@ public struct HouseholdTaskListView: View {
         .scrollContentBackground(.hidden)
         .animation(.default, value: selectedTab)
         .animation(.default, value: filter)
+        .animation(.default, value: scope)
         #if os(iOS)
         .refreshable {
-            // Re-sync from server when pulled
             socket.connect()
         }
         .scrollDismissesKeyboard(.interactively)
         #endif
     }
 
-    // MARK: - Category Header
+    // MARK: - Priority Header
 
-    private func categoryHeader(_ category: HouseholdTaskCategory, count: Int) -> some View {
+    private func priorityHeader(_ priority: HouseholdTaskPriority, count: Int) -> some View {
         HStack(spacing: 6) {
-            Image(systemName: category.icon)
+            Image(systemName: priority.icon)
                 .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(category.color)
-            Text(category.label)
+                .foregroundStyle(priority.color)
+            Text(priority.label)
                 .font(.system(size: 14, weight: .semibold))
                 .foregroundStyle(.primary)
             Text("(\(count))")
@@ -231,6 +315,7 @@ public struct HouseholdTaskListView: View {
     private func householdTaskCard(_ task: HouseholdTask) -> some View {
         HouseholdTaskCardView(
             task: task,
+            members: socket.members,
             onTap: { selectedTask = task },
             onComplete: {
                 if task.isCompleted {
@@ -257,7 +342,7 @@ public struct HouseholdTaskListView: View {
                 .shadow(color: .accentColor.opacity(0.35), radius: 8, y: 4)
         }
         .padding(.trailing, 20)
-        .padding(.bottom, 90) // Clear the input bar
+        .padding(.bottom, 90)
         .accessibilityLabel("Add new task")
     }
 
@@ -276,18 +361,19 @@ public struct HouseholdTaskListView: View {
 
 // MARK: - Household Task Card
 
-/// A card-style household task row with category color stripe and swipe actions.
+/// A card-style household task row with priority color stripe, assignee badge, and swipe actions.
 struct HouseholdTaskCardView: View {
     let task: HouseholdTask
+    let members: [HouseholdMember]
     var onTap: () -> Void
     var onComplete: (() -> Void)? = nil
     var onDelete: (() -> Void)? = nil
 
     var body: some View {
         HStack(spacing: 0) {
-            // Category color stripe
+            // Priority color stripe
             RoundedRectangle(cornerRadius: 2)
-                .fill(task.category.color)
+                .fill(task.priority.color)
                 .frame(width: 4)
                 .padding(.vertical, 6)
 
@@ -312,15 +398,10 @@ struct HouseholdTaskCardView: View {
                         .lineLimit(2)
 
                     HStack(spacing: 6) {
-                        // Assignee
-                        if let name = task.assigneeName {
-                            HStack(spacing: 2) {
-                                Image(systemName: "person.fill")
-                                    .font(.system(size: 9))
-                                Text(name)
-                                    .font(.system(size: 11))
-                            }
-                            .foregroundStyle(.secondary)
+                        // Assignee badge
+                        if let userId = task.assignedTo {
+                            let member = members.first(where: { $0.userId == userId })
+                            MemberBadgeView(member: member, userId: userId)
                         }
 
                         // Due date
