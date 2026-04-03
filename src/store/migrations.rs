@@ -198,6 +198,20 @@ const SCHEMA: &str = r#"
     );
     CREATE INDEX IF NOT EXISTS idx_documents_todo_id ON documents(todo_id);
     CREATE INDEX IF NOT EXISTS idx_documents_doc_type ON documents(doc_type);
+
+    CREATE TABLE IF NOT EXISTS subscriptions (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        product_id TEXT NOT NULL,
+        original_transaction_id TEXT NOT NULL UNIQUE,
+        status TEXT NOT NULL DEFAULT 'active',
+        expires_at TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_subscriptions_user_id ON subscriptions(user_id);
+    CREATE INDEX IF NOT EXISTS idx_subscriptions_status ON subscriptions(status);
+    CREATE INDEX IF NOT EXISTS idx_subscriptions_original_txn ON subscriptions(original_transaction_id);
 "#;
 
 /// Create all tables and indexes idempotently.
@@ -257,6 +271,7 @@ mod tests {
             "todos",
             "job_actions",
             "documents",
+            "subscriptions",
         ];
 
         for table in &expected_tables {
@@ -301,7 +316,7 @@ mod tests {
             .unwrap();
         let row = rows.next().await.unwrap().unwrap();
         let count: i64 = row.get(0).unwrap();
-        assert!(count >= 11, "Expected at least 11 tables, got {count}");
+        assert!(count >= 12, "Expected at least 12 tables, got {count}");
     }
 
     #[tokio::test]
@@ -339,6 +354,15 @@ mod tests {
             "created_by", "created_at", "updated_at",
         ] {
             assert!(doc_cols.contains(&col.to_string()), "documents.{col} missing");
+        }
+
+        // Verify subscriptions table columns
+        let sub_cols = get_column_names(&conn, "subscriptions").await;
+        for col in &[
+            "id", "user_id", "product_id", "original_transaction_id",
+            "status", "expires_at", "created_at", "updated_at",
+        ] {
+            assert!(sub_cols.contains(&col.to_string()), "subscriptions.{col} missing");
         }
 
         // Verify llm_calls table columns

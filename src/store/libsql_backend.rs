@@ -17,6 +17,7 @@ use crate::documents::model::{Document, DocumentType};
 use crate::error::DatabaseError;
 use crate::store::migrations;
 use crate::store::traits::{ConversationMessage, Database, MessageStatus, StoredMessage};
+use crate::subscriptions::model::{Subscription, SubscriptionStatus};
 use crate::todos::model::{TodoBucket, TodoItem, TodoStatus, TodoType};
 
 /// libSQL database backend.
@@ -2227,6 +2228,125 @@ impl Database for LibSqlBackend {
         }
         Ok(docs)
     }
+
+    // ── Subscriptions ──────────────────────────────────────────────────
+
+    async fn upsert_subscription(&self, sub: &Subscription) -> Result<(), DatabaseError> {
+        let conn = self.conn();
+        let expires_at_str = sub.expires_at.map(|dt| dt.to_rfc3339());
+        conn.execute(
+            "INSERT INTO subscriptions (id, user_id, product_id, original_transaction_id, status, expires_at, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT(original_transaction_id) DO UPDATE SET
+                 status = excluded.status,
+                 expires_at = excluded.expires_at,
+                 updated_at = excluded.updated_at",
+            params![
+                sub.id.clone(),
+                sub.user_id.clone(),
+                sub.product_id.clone(),
+                sub.original_transaction_id.clone(),
+                sub.status.as_str(),
+                expires_at_str.unwrap_or_default(),
+                sub.created_at.to_rfc3339(),
+                sub.updated_at.to_rfc3339()
+            ],
+        )
+        .await
+        .map_err(|e| DatabaseError::Query(format!("upsert_subscription: {e}")))?;
+        Ok(())
+    }
+
+    async fn get_subscription(&self, id: &str) -> Result<Option<Subscription>, DatabaseError> {
+        let conn = self.conn();
+        let mut rows = conn
+            .query(
+                "SELECT id, user_id, product_id, original_transaction_id, status, expires_at, created_at, updated_at FROM subscriptions WHERE id = ?1",
+                params![id],
+            )
+            .await
+            .map_err(|e| DatabaseError::Query(format!("get_subscription: {e}")))?;
+
+        match rows.next().await {
+            Ok(Some(row)) => Ok(Some(row_to_subscription(&row)?)),
+            Ok(None) => Ok(None),
+            Err(e) => Err(DatabaseError::Query(format!("get_subscription next: {e}"))),
+        }
+    }
+
+    async fn get_subscription_by_transaction(
+        &self,
+        original_transaction_id: &str,
+    ) -> Result<Option<Subscription>, DatabaseError> {
+        let conn = self.conn();
+        let mut rows = conn
+            .query(
+                "SELECT id, user_id, product_id, original_transaction_id, status, expires_at, created_at, updated_at FROM subscriptions WHERE original_transaction_id = ?1",
+                params![original_transaction_id],
+            )
+            .await
+            .map_err(|e| DatabaseError::Query(format!("get_subscription_by_transaction: {e}")))?;
+
+        match rows.next().await {
+            Ok(Some(row)) => Ok(Some(row_to_subscription(&row)?)),
+            Ok(None) => Ok(None),
+            Err(e) => Err(DatabaseError::Query(format!("get_subscription_by_transaction next: {e}"))),
+        }
+    }
+
+    async fn list_subscriptions_for_user(
+        &self,
+        user_id: &str,
+    ) -> Result<Vec<Subscription>, DatabaseError> {
+        let conn = self.conn();
+        let mut rows = conn
+            .query(
+                "SELECT id, user_id, product_id, original_transaction_id, status, expires_at, created_at, updated_at FROM subscriptions WHERE user_id = ?1 ORDER BY created_at DESC",
+                params![user_id],
+            )
+            .await
+            .map_err(|e| DatabaseError::Query(format!("list_subscriptions_for_user: {e}")))?;
+
+        let mut subs = Vec::new();
+        while let Some(row) = rows.next().await.map_err(|e| DatabaseError::Query(format!("list_subscriptions next: {e}")))? {
+            subs.push(row_to_subscription(&row)?);
+        }
+        Ok(subs)
+    }
+
+    async fn update_subscription_status(
+        &self,
+        id: &str,
+        status: SubscriptionStatus,
+        expires_at: Option<DateTime<Utc>>,
+    ) -> Result<(), DatabaseError> {
+        let conn = self.conn();
+        let now = Utc::now().to_rfc3339();
+        let expires_str = expires_at.map(|dt| dt.to_rfc3339()).unwrap_or_default();
+        conn.execute(
+            "UPDATE subscriptions SET status = ?1, expires_at = ?2, updated_at = ?3 WHERE id = ?4",
+            params![status.as_str(), expires_str, now, id],
+        )
+        .await
+        .map_err(|e| DatabaseError::Query(format!("update_subscription_status: {e}")))?;
+        Ok(())
+    }
+}
+
+// ── Row mapping helpers for subscriptions ──────────────────────────
+
+fn row_to_subscription(row: &libsql::Row) -> Result<Subscription, DatabaseError> {
+    let r = RowReader::new(row, "subscription");
+    Ok(Subscription {
+        id: r.string(0, "id")?,
+        user_id: r.string(1, "user_id")?,
+        product_id: r.string(2, "product_id")?,
+        original_transaction_id: r.string(3, "original_transaction_id")?,
+        status: r.enum_or(4, SubscriptionStatus::Active),
+        expires_at: r.optional_datetime(5),
+        created_at: r.datetime(6, "created_at")?,
+        updated_at: r.datetime(7, "updated_at")?,
+    })
 }
 
 // ── Row mapping helpers for documents ───────────────────────────────

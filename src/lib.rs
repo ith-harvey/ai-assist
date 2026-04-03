@@ -14,6 +14,7 @@ pub mod logging;
 pub mod pipeline;
 pub mod safety;
 pub mod store;
+pub mod subscriptions;
 pub mod todos;
 pub mod tools;
 pub mod util;
