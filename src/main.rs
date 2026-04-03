@@ -8,7 +8,7 @@ use ai_assist::calendar::routes::calendar_routes;
 use ai_assist::cards::ws::card_routes;
 use ai_assist::channels::email::EmailConfig;
 use ai_assist::channels::{ChannelManager, CliChannel, IosChannel, TelegramChannel};
-use ai_assist::config::{AgentConfig, GoogleOAuthConfig, RoutineConfig};
+use ai_assist::config::{AgentConfig, CalendarSyncConfig, GoogleOAuthConfig, RoutineConfig};
 use ai_assist::documents::routes::document_routes;
 use ai_assist::llm::{LlmBackend, LlmConfig, create_provider};
 use ai_assist::safety::SafetyLayer;
@@ -322,6 +322,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         eprintln!("   Google Calendar: disabled (set GOOGLE_CLIENT_ID to enable)");
     }
     let app = app.merge(calendar_routes(Arc::clone(&ctx)));
+
+    // Background calendar sync worker
+    let calendar_sync_config = CalendarSyncConfig::from_env();
+    if calendar_sync_config.enabled {
+        if let Some(ref oauth) = google_oauth_config {
+            let _sync_handle = ai_assist::calendar::worker::spawn_sync_worker(
+                Arc::clone(&db),
+                oauth.clone(),
+                calendar_sync_config.clone(),
+            );
+            eprintln!(
+                "   Calendar sync: enabled (interval: {}s)",
+                calendar_sync_config.interval_secs
+            );
+        }
+    }
 
     tokio::spawn(async move {
         let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", ws_port))

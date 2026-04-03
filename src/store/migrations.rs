@@ -198,6 +198,47 @@ const SCHEMA: &str = r#"
     );
     CREATE INDEX IF NOT EXISTS idx_documents_todo_id ON documents(todo_id);
     CREATE INDEX IF NOT EXISTS idx_documents_doc_type ON documents(doc_type);
+
+    CREATE TABLE IF NOT EXISTS calendar_sync_state (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        calendar_id TEXT NOT NULL,
+        calendar_name TEXT NOT NULL DEFAULT '',
+        sync_token TEXT,
+        last_sync_at TEXT,
+        sync_status TEXT NOT NULL DEFAULT 'idle',
+        error_message TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE (user_id, calendar_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_calendar_sync_state_user ON calendar_sync_state(user_id);
+
+    CREATE TABLE IF NOT EXISTS calendar_events (
+        id TEXT PRIMARY KEY,
+        google_event_id TEXT NOT NULL,
+        calendar_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        title TEXT NOT NULL,
+        start_time TEXT NOT NULL,
+        end_time TEXT NOT NULL,
+        all_day INTEGER NOT NULL DEFAULT 0,
+        location TEXT,
+        description TEXT,
+        attendees TEXT NOT NULL DEFAULT '[]',
+        color_id TEXT,
+        etag TEXT,
+        google_updated_at TEXT,
+        sync_status TEXT NOT NULL DEFAULT 'synced',
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE (calendar_id, google_event_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_calendar_events_user ON calendar_events(user_id);
+    CREATE INDEX IF NOT EXISTS idx_calendar_events_calendar ON calendar_events(calendar_id);
+    CREATE INDEX IF NOT EXISTS idx_calendar_events_user_start ON calendar_events(user_id, start_time);
+    CREATE INDEX IF NOT EXISTS idx_calendar_events_sync_status ON calendar_events(sync_status);
+    CREATE INDEX IF NOT EXISTS idx_calendar_events_google_id ON calendar_events(google_event_id);
 "#;
 
 /// Create all tables and indexes idempotently.
@@ -257,6 +298,8 @@ mod tests {
             "todos",
             "job_actions",
             "documents",
+            "calendar_sync_state",
+            "calendar_events",
         ];
 
         for table in &expected_tables {
@@ -301,7 +344,7 @@ mod tests {
             .unwrap();
         let row = rows.next().await.unwrap().unwrap();
         let count: i64 = row.get(0).unwrap();
-        assert!(count >= 11, "Expected at least 11 tables, got {count}");
+        assert!(count >= 13, "Expected at least 13 tables, got {count}");
     }
 
     #[tokio::test]

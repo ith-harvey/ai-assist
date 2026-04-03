@@ -173,6 +173,39 @@ impl GoogleOAuthConfig {
     }
 }
 
+/// Configuration for periodic calendar sync.
+#[derive(Debug, Clone)]
+pub struct CalendarSyncConfig {
+    /// Whether background calendar sync is enabled.
+    pub enabled: bool,
+    /// Sync interval in seconds.
+    pub interval_secs: u64,
+}
+
+impl Default for CalendarSyncConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            interval_secs: 300, // 5 minutes
+        }
+    }
+}
+
+impl CalendarSyncConfig {
+    /// Build from environment variables.
+    pub fn from_env() -> Self {
+        Self {
+            enabled: std::env::var("CALENDAR_SYNC_ENABLED")
+                .map(|v| v != "false" && v != "0")
+                .unwrap_or(true),
+            interval_secs: std::env::var("CALENDAR_SYNC_INTERVAL_SECS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(300),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
