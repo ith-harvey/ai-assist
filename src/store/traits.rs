@@ -8,6 +8,9 @@ use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
 use uuid::Uuid;
 
+use crate::calendar::sync::{
+    CachedCalendarEvent, CalendarSyncState, EventSyncStatus, SyncStatus,
+};
 use crate::cards::model::{ApprovalCard, CardSilo, CardStatus, SiloCounts};
 use crate::documents::model::{Document, DocumentType};
 use crate::error::DatabaseError;
@@ -480,4 +483,100 @@ pub trait Database: Send + Sync {
         doc_type: Option<&DocumentType>,
         limit: u32,
     ) -> Result<Vec<Document>, DatabaseError>;
+
+    // ── Calendar Sync ──────────────────────────────────────────────
+
+    /// Get the sync state for a specific calendar.
+    async fn get_calendar_sync_state(
+        &self,
+        user_id: &str,
+        calendar_id: &str,
+    ) -> Result<Option<CalendarSyncState>, DatabaseError>;
+
+    /// List all sync states for a user.
+    async fn list_calendar_sync_states(
+        &self,
+        user_id: &str,
+    ) -> Result<Vec<CalendarSyncState>, DatabaseError>;
+
+    /// Create or update sync state for a calendar.
+    async fn upsert_calendar_sync_state(
+        &self,
+        state: &CalendarSyncState,
+    ) -> Result<(), DatabaseError>;
+
+    /// Save a new sync token for a calendar.
+    async fn save_calendar_sync_token(
+        &self,
+        user_id: &str,
+        calendar_id: &str,
+        sync_token: &str,
+    ) -> Result<(), DatabaseError>;
+
+    /// Update the sync status (idle/syncing/error) for a calendar.
+    async fn update_calendar_sync_status(
+        &self,
+        user_id: &str,
+        calendar_id: &str,
+        status: SyncStatus,
+        error_message: Option<&str>,
+    ) -> Result<(), DatabaseError>;
+
+    /// Delete sync state and all cached events for a calendar.
+    async fn delete_calendar_sync_state(
+        &self,
+        user_id: &str,
+        calendar_id: &str,
+    ) -> Result<(), DatabaseError>;
+
+    // ── Calendar Events (local cache) ──────────────────────────────
+
+    /// Upsert a cached calendar event (insert or update by calendar_id + google_event_id).
+    async fn upsert_calendar_event(
+        &self,
+        event: &CachedCalendarEvent,
+    ) -> Result<(), DatabaseError>;
+
+    /// Get a cached event by its local UUID.
+    async fn get_calendar_event(
+        &self,
+        id: Uuid,
+    ) -> Result<Option<CachedCalendarEvent>, DatabaseError>;
+
+    /// List cached events for a user within a time range.
+    async fn list_calendar_events(
+        &self,
+        user_id: &str,
+        calendar_id: Option<&str>,
+        start: &DateTime<Utc>,
+        end: &DateTime<Utc>,
+    ) -> Result<Vec<CachedCalendarEvent>, DatabaseError>;
+
+    /// List events that need to be pushed to Google (sync_status != synced).
+    async fn list_pending_sync_events(
+        &self,
+        user_id: &str,
+        calendar_id: &str,
+    ) -> Result<Vec<CachedCalendarEvent>, DatabaseError>;
+
+    /// Update the sync_status of a cached event.
+    async fn update_calendar_event_sync_status(
+        &self,
+        id: Uuid,
+        status: EventSyncStatus,
+    ) -> Result<(), DatabaseError>;
+
+    /// Delete a cached event by google_event_id within a calendar.
+    async fn delete_calendar_event_by_google_id(
+        &self,
+        user_id: &str,
+        calendar_id: &str,
+        google_event_id: &str,
+    ) -> Result<bool, DatabaseError>;
+
+    /// Delete all cached events for a user (used on disconnect).
+    async fn delete_all_calendar_events(
+        &self,
+        user_id: &str,
+    ) -> Result<usize, DatabaseError>;
 }

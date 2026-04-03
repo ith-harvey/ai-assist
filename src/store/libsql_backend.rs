@@ -12,6 +12,9 @@ use libsql::{Connection, Database as LibSqlDatabase, params};
 use tracing::{debug, info};
 use uuid::Uuid;
 
+use crate::calendar::sync::{
+    CachedCalendarEvent, CalendarSyncState, EventSyncStatus, SyncStatus,
+};
 use crate::cards::model::{ApprovalCard, CardPayload, CardSilo, CardStatus, SiloCounts};
 use crate::documents::model::{Document, DocumentType};
 use crate::error::DatabaseError;
@@ -2227,6 +2230,371 @@ impl Database for LibSqlBackend {
         }
         Ok(docs)
     }
+
+    // ── Calendar Sync State ────────────────────────────────────────
+
+    async fn get_calendar_sync_state(
+        &self,
+        user_id: &str,
+        calendar_id: &str,
+    ) -> Result<Option<CalendarSyncState>, DatabaseError> {
+        let conn = self.conn();
+        let mut rows = conn
+            .query(
+                "SELECT id, user_id, calendar_id, calendar_name, sync_token, last_sync_at, sync_status, error_message, created_at, updated_at FROM calendar_sync_state WHERE user_id = ?1 AND calendar_id = ?2",
+                params![user_id, calendar_id],
+            )
+            .await
+            .map_err(|e| DatabaseError::Query(format!("get_calendar_sync_state: {e}")))?;
+
+        match rows.next().await.map_err(|e| DatabaseError::Query(format!("get_calendar_sync_state next: {e}")))? {
+            Some(row) => Ok(Some(row_to_calendar_sync_state(&row)?)),
+            None => Ok(None),
+        }
+    }
+
+    async fn list_calendar_sync_states(
+        &self,
+        user_id: &str,
+    ) -> Result<Vec<CalendarSyncState>, DatabaseError> {
+        let conn = self.conn();
+        let mut rows = conn
+            .query(
+                "SELECT id, user_id, calendar_id, calendar_name, sync_token, last_sync_at, sync_status, error_message, created_at, updated_at FROM calendar_sync_state WHERE user_id = ?1 ORDER BY calendar_name",
+                params![user_id],
+            )
+            .await
+            .map_err(|e| DatabaseError::Query(format!("list_calendar_sync_states: {e}")))?;
+
+        let mut states = Vec::new();
+        while let Some(row) = rows.next().await.map_err(|e| DatabaseError::Query(format!("list_calendar_sync_states next: {e}")))? {
+            states.push(row_to_calendar_sync_state(&row)?);
+        }
+        Ok(states)
+    }
+
+    async fn upsert_calendar_sync_state(
+        &self,
+        state: &CalendarSyncState,
+    ) -> Result<(), DatabaseError> {
+        let conn = self.conn();
+        conn.execute(
+            "INSERT INTO calendar_sync_state (id, user_id, calendar_id, calendar_name, sync_token, last_sync_at, sync_status, error_message, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+             ON CONFLICT (user_id, calendar_id) DO UPDATE SET
+                calendar_name = excluded.calendar_name,
+                sync_token = excluded.sync_token,
+                last_sync_at = excluded.last_sync_at,
+                sync_status = excluded.sync_status,
+                error_message = excluded.error_message,
+                updated_at = excluded.updated_at",
+            params![
+                state.id.to_string(),
+                state.user_id,
+                state.calendar_id,
+                state.calendar_name,
+                state.sync_token.as_deref().unwrap_or(""),
+                state.last_sync_at.map(|d| d.to_rfc3339()).unwrap_or_default(),
+                state.sync_status.to_string(),
+                state.error_message.as_deref().unwrap_or(""),
+                state.created_at.to_rfc3339(),
+                state.updated_at.to_rfc3339(),
+            ],
+        )
+        .await
+        .map_err(|e| DatabaseError::Query(format!("upsert_calendar_sync_state: {e}")))?;
+        Ok(())
+    }
+
+    async fn save_calendar_sync_token(
+        &self,
+        user_id: &str,
+        calendar_id: &str,
+        sync_token: &str,
+    ) -> Result<(), DatabaseError> {
+        let conn = self.conn();
+        let now = Utc::now().to_rfc3339();
+        conn.execute(
+            "UPDATE calendar_sync_state SET sync_token = ?1, last_sync_at = ?2, updated_at = ?2 WHERE user_id = ?3 AND calendar_id = ?4",
+            params![sync_token, now, user_id, calendar_id],
+        )
+        .await
+        .map_err(|e| DatabaseError::Query(format!("save_calendar_sync_token: {e}")))?;
+        Ok(())
+    }
+
+    async fn update_calendar_sync_status(
+        &self,
+        user_id: &str,
+        calendar_id: &str,
+        status: SyncStatus,
+        error_message: Option<&str>,
+    ) -> Result<(), DatabaseError> {
+        let conn = self.conn();
+        let now = Utc::now().to_rfc3339();
+
+        // Ensure sync state exists before updating
+        conn.execute(
+            "INSERT INTO calendar_sync_state (id, user_id, calendar_id, sync_status, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT (user_id, calendar_id) DO UPDATE SET
+                sync_status = excluded.sync_status,
+                error_message = ?6,
+                updated_at = excluded.updated_at",
+            params![
+                Uuid::new_v4().to_string(),
+                user_id,
+                calendar_id,
+                status.to_string(),
+                now,
+                error_message.unwrap_or(""),
+            ],
+        )
+        .await
+        .map_err(|e| DatabaseError::Query(format!("update_calendar_sync_status: {e}")))?;
+        Ok(())
+    }
+
+    async fn delete_calendar_sync_state(
+        &self,
+        user_id: &str,
+        calendar_id: &str,
+    ) -> Result<(), DatabaseError> {
+        let conn = self.conn();
+        conn.execute(
+            "DELETE FROM calendar_sync_state WHERE user_id = ?1 AND calendar_id = ?2",
+            params![user_id, calendar_id],
+        )
+        .await
+        .map_err(|e| DatabaseError::Query(format!("delete_calendar_sync_state: {e}")))?;
+        conn.execute(
+            "DELETE FROM calendar_events WHERE user_id = ?1 AND calendar_id = ?2",
+            params![user_id, calendar_id],
+        )
+        .await
+        .map_err(|e| DatabaseError::Query(format!("delete_calendar_sync_state events: {e}")))?;
+        Ok(())
+    }
+
+    // ── Calendar Events (local cache) ──────────────────────────────
+
+    async fn upsert_calendar_event(
+        &self,
+        event: &CachedCalendarEvent,
+    ) -> Result<(), DatabaseError> {
+        let conn = self.conn();
+        let attendees_json = serde_json::to_string(&event.attendees).unwrap_or_else(|_| "[]".to_string());
+        conn.execute(
+            "INSERT INTO calendar_events (id, google_event_id, calendar_id, user_id, title, start_time, end_time, all_day, location, description, attendees, color_id, etag, google_updated_at, sync_status, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
+             ON CONFLICT (calendar_id, google_event_id) DO UPDATE SET
+                title = excluded.title,
+                start_time = excluded.start_time,
+                end_time = excluded.end_time,
+                all_day = excluded.all_day,
+                location = excluded.location,
+                description = excluded.description,
+                attendees = excluded.attendees,
+                color_id = excluded.color_id,
+                etag = excluded.etag,
+                google_updated_at = excluded.google_updated_at,
+                sync_status = excluded.sync_status,
+                updated_at = excluded.updated_at",
+            params![
+                event.id.to_string(),
+                event.google_event_id,
+                event.calendar_id,
+                event.user_id,
+                event.title,
+                event.start_time.to_rfc3339(),
+                event.end_time.to_rfc3339(),
+                event.all_day as i64,
+                event.location.as_deref().unwrap_or(""),
+                event.description.as_deref().unwrap_or(""),
+                attendees_json,
+                event.color_id.as_deref().unwrap_or(""),
+                event.etag.as_deref().unwrap_or(""),
+                event.google_updated_at.map(|d| d.to_rfc3339()).unwrap_or_default(),
+                event.sync_status.to_string(),
+                event.created_at.to_rfc3339(),
+                event.updated_at.to_rfc3339(),
+            ],
+        )
+        .await
+        .map_err(|e| DatabaseError::Query(format!("upsert_calendar_event: {e}")))?;
+        Ok(())
+    }
+
+    async fn get_calendar_event(
+        &self,
+        id: Uuid,
+    ) -> Result<Option<CachedCalendarEvent>, DatabaseError> {
+        let conn = self.conn();
+        let mut rows = conn
+            .query(
+                "SELECT id, google_event_id, calendar_id, user_id, title, start_time, end_time, all_day, location, description, attendees, color_id, etag, google_updated_at, sync_status, created_at, updated_at FROM calendar_events WHERE id = ?1",
+                params![id.to_string()],
+            )
+            .await
+            .map_err(|e| DatabaseError::Query(format!("get_calendar_event: {e}")))?;
+
+        match rows.next().await.map_err(|e| DatabaseError::Query(format!("get_calendar_event next: {e}")))? {
+            Some(row) => Ok(Some(row_to_cached_event(&row)?)),
+            None => Ok(None),
+        }
+    }
+
+    async fn list_calendar_events(
+        &self,
+        user_id: &str,
+        calendar_id: Option<&str>,
+        start: &DateTime<Utc>,
+        end: &DateTime<Utc>,
+    ) -> Result<Vec<CachedCalendarEvent>, DatabaseError> {
+        let conn = self.conn();
+        let start_str = start.to_rfc3339();
+        let end_str = end.to_rfc3339();
+
+        let mut rows = if let Some(cal_id) = calendar_id {
+            conn.query(
+                "SELECT id, google_event_id, calendar_id, user_id, title, start_time, end_time, all_day, location, description, attendees, color_id, etag, google_updated_at, sync_status, created_at, updated_at FROM calendar_events WHERE user_id = ?1 AND calendar_id = ?2 AND start_time < ?4 AND end_time > ?3 AND sync_status != 'deleted' ORDER BY start_time",
+                params![user_id, cal_id, start_str, end_str],
+            )
+            .await
+        } else {
+            conn.query(
+                "SELECT id, google_event_id, calendar_id, user_id, title, start_time, end_time, all_day, location, description, attendees, color_id, etag, google_updated_at, sync_status, created_at, updated_at FROM calendar_events WHERE user_id = ?1 AND start_time < ?3 AND end_time > ?2 AND sync_status != 'deleted' ORDER BY start_time",
+                params![user_id, start_str, end_str],
+            )
+            .await
+        }
+        .map_err(|e| DatabaseError::Query(format!("list_calendar_events: {e}")))?;
+
+        let mut events = Vec::new();
+        while let Some(row) = rows.next().await.map_err(|e| DatabaseError::Query(format!("list_calendar_events next: {e}")))? {
+            events.push(row_to_cached_event(&row)?);
+        }
+        Ok(events)
+    }
+
+    async fn list_pending_sync_events(
+        &self,
+        user_id: &str,
+        calendar_id: &str,
+    ) -> Result<Vec<CachedCalendarEvent>, DatabaseError> {
+        let conn = self.conn();
+        let mut rows = conn
+            .query(
+                "SELECT id, google_event_id, calendar_id, user_id, title, start_time, end_time, all_day, location, description, attendees, color_id, etag, google_updated_at, sync_status, created_at, updated_at FROM calendar_events WHERE user_id = ?1 AND calendar_id = ?2 AND sync_status != 'synced'",
+                params![user_id, calendar_id],
+            )
+            .await
+            .map_err(|e| DatabaseError::Query(format!("list_pending_sync_events: {e}")))?;
+
+        let mut events = Vec::new();
+        while let Some(row) = rows.next().await.map_err(|e| DatabaseError::Query(format!("list_pending_sync_events next: {e}")))? {
+            events.push(row_to_cached_event(&row)?);
+        }
+        Ok(events)
+    }
+
+    async fn update_calendar_event_sync_status(
+        &self,
+        id: Uuid,
+        status: EventSyncStatus,
+    ) -> Result<(), DatabaseError> {
+        let conn = self.conn();
+        let now = Utc::now().to_rfc3339();
+        conn.execute(
+            "UPDATE calendar_events SET sync_status = ?1, updated_at = ?2 WHERE id = ?3",
+            params![status.to_string(), now, id.to_string()],
+        )
+        .await
+        .map_err(|e| DatabaseError::Query(format!("update_calendar_event_sync_status: {e}")))?;
+        Ok(())
+    }
+
+    async fn delete_calendar_event_by_google_id(
+        &self,
+        user_id: &str,
+        calendar_id: &str,
+        google_event_id: &str,
+    ) -> Result<bool, DatabaseError> {
+        let conn = self.conn();
+        let affected = conn
+            .execute(
+                "DELETE FROM calendar_events WHERE user_id = ?1 AND calendar_id = ?2 AND google_event_id = ?3",
+                params![user_id, calendar_id, google_event_id],
+            )
+            .await
+            .map_err(|e| DatabaseError::Query(format!("delete_calendar_event_by_google_id: {e}")))?;
+        Ok(affected > 0)
+    }
+
+    async fn delete_all_calendar_events(
+        &self,
+        user_id: &str,
+    ) -> Result<usize, DatabaseError> {
+        let conn = self.conn();
+        let affected = conn
+            .execute(
+                "DELETE FROM calendar_events WHERE user_id = ?1",
+                params![user_id],
+            )
+            .await
+            .map_err(|e| DatabaseError::Query(format!("delete_all_calendar_events: {e}")))?;
+        // Also clear sync state
+        let _ = conn
+            .execute(
+                "DELETE FROM calendar_sync_state WHERE user_id = ?1",
+                params![user_id],
+            )
+            .await;
+        Ok(affected as usize)
+    }
+}
+
+// ── Row mapping helpers for calendar ──────────────────────────────
+
+fn row_to_calendar_sync_state(row: &libsql::Row) -> Result<CalendarSyncState, DatabaseError> {
+    let r = RowReader::new(row, "calendar_sync_state");
+    Ok(CalendarSyncState {
+        id: r.uuid(0, "id")?,
+        user_id: r.string(1, "user_id")?,
+        calendar_id: r.string(2, "calendar_id")?,
+        calendar_name: r.string_or(3, ""),
+        sync_token: r.optional_string(4),
+        last_sync_at: r.optional_datetime(5),
+        sync_status: SyncStatus::from_str_lossy(&r.string_or(6, "idle")),
+        error_message: r.optional_string(7),
+        created_at: r.datetime(8, "created_at")?,
+        updated_at: r.datetime(9, "updated_at")?,
+    })
+}
+
+fn row_to_cached_event(row: &libsql::Row) -> Result<CachedCalendarEvent, DatabaseError> {
+    let r = RowReader::new(row, "calendar_event");
+    let attendees_str = r.string_or(10, "[]");
+    let attendees: Vec<String> = serde_json::from_str(&attendees_str).unwrap_or_default();
+    Ok(CachedCalendarEvent {
+        id: r.uuid(0, "id")?,
+        google_event_id: r.string(1, "google_event_id")?,
+        calendar_id: r.string(2, "calendar_id")?,
+        user_id: r.string(3, "user_id")?,
+        title: r.string(4, "title")?,
+        start_time: r.datetime(5, "start_time")?,
+        end_time: r.datetime(6, "end_time")?,
+        all_day: r.bool_at(7),
+        location: r.optional_string(8),
+        description: r.optional_string(9),
+        attendees,
+        color_id: r.optional_string(11),
+        etag: r.optional_string(12),
+        google_updated_at: r.optional_datetime(13),
+        sync_status: EventSyncStatus::from_str_lossy(&r.string_or(14, "synced")),
+        created_at: r.datetime(15, "created_at")?,
+        updated_at: r.datetime(16, "updated_at")?,
+    })
 }
 
 // ── Row mapping helpers for documents ───────────────────────────────

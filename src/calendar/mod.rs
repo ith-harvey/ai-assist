@@ -8,6 +8,10 @@
 
 pub mod events;
 pub mod routes;
+pub mod sync;
+#[cfg(test)]
+mod sync_tests;
+pub mod worker;
 
 use chrono::{DateTime, Utc};
 use secrecy::ExposeSecret;
