@@ -1,7 +1,8 @@
 import Foundation
 
 /// REST API client for fetching calendar events from the server.
-public final class CalendarAPI: @unchecked Sendable {
+@MainActor
+public final class CalendarAPI {
     private let config: ServerConfig
 
     private var decoder: JSONDecoder {

@@ -4,7 +4,8 @@ import Observation
 /// WebSocket client for the card system.
 /// Connects to the Rust server, decodes `WsMessage` variants, and sends `CardAction`.
 @Observable
-public final class CardWebSocket: @unchecked Sendable {
+@MainActor
+public final class CardWebSocket {
     // MARK: - Published state
 
     public var cards: [ApprovalCard] = []
@@ -24,7 +25,7 @@ public final class CardWebSocket: @unchecked Sendable {
     // MARK: - Private
 
     private var webSocketTask: URLSessionWebSocketTask?
-    private let session: URLSession
+    nonisolated(unsafe) private let session: URLSession
     private var reconnectAttempt: Int = 0
     private let maxReconnectDelay: TimeInterval = 30.0
     private var isIntentionalDisconnect = false
@@ -90,7 +91,7 @@ public final class CardWebSocket: @unchecked Sendable {
         }
     }
 
-    private func handleMessage(_ message: URLSessionWebSocketTask.Message) {
+    private nonisolated func handleMessage(_ message: URLSessionWebSocketTask.Message) {
         let data: Data
         switch message {
         case .string(let text):
@@ -104,7 +105,7 @@ public final class CardWebSocket: @unchecked Sendable {
 
         guard let wsMessage = try? WsMessage.decode(from: data) else { return }
 
-        DispatchQueue.main.async { [weak self] in
+        Task { @MainActor [weak self] in
             self?.applyMessage(wsMessage)
         }
     }
@@ -181,8 +182,8 @@ public final class CardWebSocket: @unchecked Sendable {
 
     // MARK: - Reconnection
 
-    private func handleDisconnect() {
-        DispatchQueue.main.async { [weak self] in
+    private nonisolated func handleDisconnect() {
+        Task { @MainActor [weak self] in
             self?.isConnected = false
         }
 
@@ -191,7 +192,8 @@ public final class CardWebSocket: @unchecked Sendable {
         let delay = reconnectDelay()
         reconnectAttempt += 1
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
             guard let self, !self.isIntentionalDisconnect else { return }
             self.openConnection()
         }

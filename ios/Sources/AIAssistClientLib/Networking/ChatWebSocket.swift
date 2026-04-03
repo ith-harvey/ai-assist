@@ -25,7 +25,8 @@ public struct StatusEvent: Identifiable, Sendable {
 /// Connects to the Rust server at `/ws/chat`, sends user messages,
 /// and receives responses, status updates, and streaming chunks.
 @Observable
-public final class ChatWebSocket: @unchecked Sendable {
+@MainActor
+public final class ChatWebSocket {
     // MARK: - Published state
 
     public var messages: [ChatMessage] = []
@@ -68,7 +69,7 @@ public final class ChatWebSocket: @unchecked Sendable {
     // MARK: - Private
 
     private var webSocketTask: URLSessionWebSocketTask?
-    private let session: URLSession
+    nonisolated(unsafe) private let session: URLSession
     private var reconnectAttempt: Int = 0
     private let maxReconnectDelay: TimeInterval = 30.0
     private var isIntentionalDisconnect = false
@@ -128,9 +129,7 @@ public final class ChatWebSocket: @unchecked Sendable {
 
         // Add the user message to local state immediately
         let userMessage = ChatMessage(content: trimmed, isFromUser: true)
-        DispatchQueue.main.async { [weak self] in
-            self?.messages.append(userMessage)
-        }
+        messages.append(userMessage)
 
         // Send over WebSocket (include thread_id for conversation continuity)
         let payload: [String: String] = [
@@ -158,7 +157,7 @@ public final class ChatWebSocket: @unchecked Sendable {
         }
     }
 
-    private func handleMessage(_ message: URLSessionWebSocketTask.Message) {
+    private nonisolated func handleMessage(_ message: URLSessionWebSocketTask.Message) {
         let data: Data
         switch message {
         case .string(let text):
@@ -173,7 +172,7 @@ public final class ChatWebSocket: @unchecked Sendable {
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let type = json["type"] as? String else { return }
 
-        DispatchQueue.main.async { [weak self] in
+        Task { @MainActor [weak self] in
             self?.applyMessage(type: type, json: json)
         }
     }
@@ -325,7 +324,8 @@ public final class ChatWebSocket: @unchecked Sendable {
                 )
             }
 
-            DispatchQueue.main.async {
+            Task { @MainActor [weak self] in
+                guard let self else { return }
                 // Track known IDs for dedup against live WS messages
                 self.knownMessageIds = Set(historyMessages.map(\.id))
                 // Only replace if we haven't received live messages yet
@@ -343,8 +343,8 @@ public final class ChatWebSocket: @unchecked Sendable {
 
     // MARK: - Reconnection
 
-    private func handleDisconnect() {
-        DispatchQueue.main.async { [weak self] in
+    private nonisolated func handleDisconnect() {
+        Task { @MainActor [weak self] in
             self?.isConnected = false
             self?.currentStatus = nil
         }
@@ -354,7 +354,8 @@ public final class ChatWebSocket: @unchecked Sendable {
         let delay = reconnectDelay()
         reconnectAttempt += 1
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
             guard let self, !self.isIntentionalDisconnect else { return }
             self.openConnection()
         }

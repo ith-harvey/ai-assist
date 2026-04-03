@@ -6,7 +6,8 @@ import Observation
 /// Fetches from `GET /api/todos/:id/deliverables` which returns both documents
 /// and compose/reply approval cards. Merges them into a sorted `[DeliverableItem]`.
 @Observable
-public final class DeliverableAPI: @unchecked Sendable {
+@MainActor
+public final class DeliverableAPI {
     public var deliverables: [DeliverableItem] = []
     public var isLoading = false
     public var error: String?

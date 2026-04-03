@@ -6,7 +6,8 @@ import Observation
 /// Fetches documents from the ai-assist backend via `/api/documents` endpoints.
 /// Uses `@Observable` pattern for SwiftUI integration.
 @Observable
-public final class DocumentAPI: @unchecked Sendable {
+@MainActor
+public final class DocumentAPI {
     public var documents: [Document] = []
     public var isLoading = false
     public var error: String?

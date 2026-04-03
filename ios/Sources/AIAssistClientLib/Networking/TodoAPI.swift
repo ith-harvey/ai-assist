@@ -1,7 +1,8 @@
 import Foundation
 
 /// REST API client for fetching todo detail with documents.
-public final class TodoAPI: @unchecked Sendable {
+@MainActor
+public final class TodoAPI {
     private let config: ServerConfig
 
     private var decoder: JSONDecoder {

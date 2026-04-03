@@ -8,7 +8,8 @@ import Observation
 ///
 /// Mirrors the `TodoWebSocket` / `CardWebSocket` pattern.
 @Observable
-public final class TodoActivitySocket: @unchecked Sendable {
+@MainActor
+public final class TodoActivitySocket {
 
     // MARK: - Published State
 
@@ -31,11 +32,11 @@ public final class TodoActivitySocket: @unchecked Sendable {
     // MARK: - Private
 
     private var webSocketTask: URLSessionWebSocketTask?
-    private let session: URLSession
+    nonisolated(unsafe) private let session: URLSession
     private var reconnectAttempt: Int = 0
     private let maxReconnectDelay: TimeInterval = 30.0
     private var isIntentionalDisconnect = false
-    private var initialLoadDebounceItem: DispatchWorkItem?
+    private var initialLoadDebounceTask: Task<Void, Never>?
 
     public init(
         todoId: UUID,
@@ -73,8 +74,8 @@ public final class TodoActivitySocket: @unchecked Sendable {
         isIntentionalDisconnect = false
         reconnectAttempt = 0
         hasCompletedInitialLoad = false
-        initialLoadDebounceItem?.cancel()
-        initialLoadDebounceItem = nil
+        initialLoadDebounceTask?.cancel()
+        initialLoadDebounceTask = nil
         messages = []
         latestActivity = nil
         openConnection()
@@ -147,7 +148,7 @@ public final class TodoActivitySocket: @unchecked Sendable {
         }
     }
 
-    private func handleMessage(_ message: URLSessionWebSocketTask.Message) {
+    private nonisolated func handleMessage(_ message: URLSessionWebSocketTask.Message) {
         let data: Data
         switch message {
         case .string(let text):
@@ -162,7 +163,7 @@ public final class TodoActivitySocket: @unchecked Sendable {
         do {
             let activityMessage = try ActivityMessage.decode(from: data)
             print("📡 [ActivitySocket] Decoded: \(activityMessage.id) (terminal: \(activityMessage.isTerminal))")
-            DispatchQueue.main.async { [weak self] in
+            Task { @MainActor [weak self] in
                 guard let self else { return }
                 self.messages.append(activityMessage)
                 self.latestActivity = activityMessage
@@ -171,13 +172,13 @@ public final class TodoActivitySocket: @unchecked Sendable {
                 // Debounce initial load detection: history messages arrive in a burst,
                 // so we wait 250ms after the last message to declare initial load complete.
                 if !self.hasCompletedInitialLoad {
-                    self.initialLoadDebounceItem?.cancel()
-                    let item = DispatchWorkItem { [weak self] in
+                    self.initialLoadDebounceTask?.cancel()
+                    self.initialLoadDebounceTask = Task { @MainActor [weak self] in
+                        try? await Task.sleep(nanoseconds: 250_000_000)
+                        guard !Task.isCancelled else { return }
                         self?.hasCompletedInitialLoad = true
                         print("📡 [ActivitySocket] Initial load complete")
                     }
-                    self.initialLoadDebounceItem = item
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: item)
                 }
             }
         } catch {
@@ -190,9 +191,9 @@ public final class TodoActivitySocket: @unchecked Sendable {
 
     // MARK: - Reconnection
 
-    private func handleDisconnect() {
+    private nonisolated func handleDisconnect() {
         print("📡 [ActivitySocket] handleDisconnect called (intentional: \(isIntentionalDisconnect), finished: \(isFinished), attempt: \(reconnectAttempt))")
-        DispatchQueue.main.async { [weak self] in
+        Task { @MainActor [weak self] in
             self?.isConnected = false
         }
 
@@ -211,7 +212,8 @@ public final class TodoActivitySocket: @unchecked Sendable {
         reconnectAttempt += 1
         print("📡 [ActivitySocket] Scheduling reconnect in \(delay)s (attempt \(reconnectAttempt))")
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
             guard let self, !self.isIntentionalDisconnect else { return }
             print("📡 [ActivitySocket] Reconnecting now...")
             self.openConnection()

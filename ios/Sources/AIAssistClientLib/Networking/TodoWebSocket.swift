@@ -88,7 +88,8 @@ enum TodoWsAction: Encodable {
 /// Mirrors `CardWebSocket` pattern — connects to `/ws/todos`, syncs state, sends actions.
 /// Uses hardcoded sample data until backend is ready.
 @Observable
-public final class TodoWebSocket: @unchecked Sendable {
+@MainActor
+public final class TodoWebSocket {
 
     // MARK: - Published State
 
@@ -107,7 +108,7 @@ public final class TodoWebSocket: @unchecked Sendable {
     // MARK: - Private
 
     private var webSocketTask: URLSessionWebSocketTask?
-    private let session: URLSession
+    nonisolated(unsafe) private let session: URLSession
     private var reconnectAttempt: Int = 0
     private let maxReconnectDelay: TimeInterval = 30.0
     private var isIntentionalDisconnect = false
@@ -182,7 +183,8 @@ public final class TodoWebSocket: @unchecked Sendable {
 
         // Give the connection a moment, then check if it actually connected.
         // If backend isn't ready, fall back to sample data.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(2.0 * 1_000_000_000))
             guard let self else { return }
             if !self.isConnected && self.todos.isEmpty {
                 self.loadSampleData()
@@ -219,7 +221,7 @@ public final class TodoWebSocket: @unchecked Sendable {
         }
     }
 
-    private func handleMessage(_ message: URLSessionWebSocketTask.Message) {
+    private nonisolated func handleMessage(_ message: URLSessionWebSocketTask.Message) {
         let data: Data
         switch message {
         case .string(let text):
@@ -233,7 +235,7 @@ public final class TodoWebSocket: @unchecked Sendable {
 
         guard let wsMessage = TodoWsMessage.decode(from: data) else { return }
 
-        DispatchQueue.main.async { [weak self] in
+        Task { @MainActor [weak self] in
             self?.applyMessage(wsMessage)
         }
     }
@@ -333,8 +335,8 @@ public final class TodoWebSocket: @unchecked Sendable {
 
     // MARK: - Reconnection
 
-    private func handleDisconnect() {
-        DispatchQueue.main.async { [weak self] in
+    private nonisolated func handleDisconnect() {
+        Task { @MainActor [weak self] in
             self?.isConnected = false
         }
 
@@ -342,7 +344,7 @@ public final class TodoWebSocket: @unchecked Sendable {
 
         // If we were using real data, fall back to sample
         if !usingSampleData && todos.isEmpty {
-            DispatchQueue.main.async { [weak self] in
+            Task { @MainActor [weak self] in
                 self?.loadSampleData()
             }
             return
@@ -351,7 +353,8 @@ public final class TodoWebSocket: @unchecked Sendable {
         let delay = reconnectDelay()
         reconnectAttempt += 1
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
             guard let self, !self.isIntentionalDisconnect else { return }
             self.openConnection()
         }
