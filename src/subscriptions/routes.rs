@@ -336,7 +336,7 @@ fn verify_apple_cert_chain(x5c: &[String]) -> Result<(), String> {
     let apple_root_spki = apple_root_ca_spki();
 
     if root_spki != apple_root_spki {
-        // Allow override via environment for testing.
+        #[cfg(test)]
         if std::env::var("AI_ASSIST_SKIP_APPLE_CERT_CHECK").is_ok() {
             tracing::warn!("Skipping Apple root CA verification (AI_ASSIST_SKIP_APPLE_CERT_CHECK set)");
             return Ok(());
