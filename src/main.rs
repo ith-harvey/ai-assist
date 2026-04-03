@@ -10,6 +10,7 @@ use ai_assist::channels::email::EmailConfig;
 use ai_assist::channels::{ChannelManager, CliChannel, IosChannel, TelegramChannel};
 use ai_assist::config::{AgentConfig, GoogleOAuthConfig, RoutineConfig};
 use ai_assist::documents::routes::document_routes;
+use ai_assist::households::routes::household_routes;
 use ai_assist::llm::{LlmBackend, LlmConfig, create_provider};
 use ai_assist::safety::SafetyLayer;
 use ai_assist::store::{Database, LibSqlBackend};
@@ -262,6 +263,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ── Centralized Application Context ───────────────────────────────
     let (todo_tx, _) = tokio::sync::broadcast::channel::<ai_assist::todos::model::TodoWsMessage>(256);
+    let (household_tx, _) = tokio::sync::broadcast::channel::<ai_assist::households::model::HouseholdWsMessage>(256);
     let choice_registry = ai_assist::cards::choice_registry::ChoiceRegistry::new();
 
     let ctx = Arc::new(ai_assist::context::AppContext {
@@ -271,6 +273,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tools: Arc::clone(&tools),
         workspace: Arc::clone(&workspace),
         todo_tx: todo_tx.clone(),
+        household_tx: household_tx.clone(),
         activity_channels: Arc::clone(&activity_channels),
         card_queue: card_queue.clone(),
         approval_registry: TodoApprovalRegistry::new(),
@@ -313,7 +316,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .merge(ios_router)
         .merge(todo_routes(Arc::clone(&ctx)))
         .merge(activity_routes(Arc::clone(&ctx)))
-        .merge(document_routes(Arc::clone(&ctx)));
+        .merge(document_routes(Arc::clone(&ctx)))
+        .merge(household_routes(Arc::clone(&ctx)));
 
     // Google Calendar OAuth routes
     if let Some(ref config) = google_oauth_config {

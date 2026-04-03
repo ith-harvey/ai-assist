@@ -11,6 +11,7 @@ use uuid::Uuid;
 use crate::cards::model::{ApprovalCard, CardSilo, CardStatus, SiloCounts};
 use crate::documents::model::{Document, DocumentType};
 use crate::error::DatabaseError;
+use crate::households::model::{Household, HouseholdMember, HouseholdTask, HouseholdTaskStatus};
 use crate::todos::model::{TodoItem, TodoStatus};
 
 /// A conversation message from the database.
@@ -480,4 +481,69 @@ pub trait Database: Send + Sync {
         doc_type: Option<&DocumentType>,
         limit: u32,
     ) -> Result<Vec<Document>, DatabaseError>;
+
+    // ── Households ─────────────────────────────────────────────────
+
+    /// Create a new household.
+    async fn create_household(&self, household: &Household) -> Result<(), DatabaseError>;
+
+    /// Get a household by ID.
+    async fn get_household(&self, id: Uuid) -> Result<Option<Household>, DatabaseError>;
+
+    /// List households that a user belongs to.
+    async fn list_households_for_user(
+        &self,
+        user_id: &str,
+    ) -> Result<Vec<Household>, DatabaseError>;
+
+    /// Update a household (name).
+    async fn update_household(&self, household: &Household) -> Result<(), DatabaseError>;
+
+    /// Delete a household. Returns true if a row was deleted.
+    async fn delete_household(&self, id: Uuid) -> Result<bool, DatabaseError>;
+
+    // ── Household Members ──────────────────────────────────────────
+
+    /// Add a member to a household.
+    async fn add_household_member(&self, member: &HouseholdMember) -> Result<(), DatabaseError>;
+
+    /// List members of a household.
+    async fn list_household_members(
+        &self,
+        household_id: Uuid,
+    ) -> Result<Vec<HouseholdMember>, DatabaseError>;
+
+    /// Remove a member from a household. Returns true if a row was deleted.
+    async fn remove_household_member(
+        &self,
+        household_id: Uuid,
+        user_id: &str,
+    ) -> Result<bool, DatabaseError>;
+
+    // ── Household Tasks ────────────────────────────────────────────
+
+    /// Create a new household task.
+    async fn create_household_task(&self, task: &HouseholdTask) -> Result<(), DatabaseError>;
+
+    /// Get a household task by ID.
+    async fn get_household_task(&self, id: Uuid) -> Result<Option<HouseholdTask>, DatabaseError>;
+
+    /// List tasks for a household, optionally filtered by status.
+    async fn list_household_tasks(
+        &self,
+        household_id: Uuid,
+        status: Option<&HouseholdTaskStatus>,
+    ) -> Result<Vec<HouseholdTask>, DatabaseError>;
+
+    /// List tasks assigned to a specific user across all their households.
+    async fn list_tasks_for_user(
+        &self,
+        user_id: &str,
+    ) -> Result<Vec<HouseholdTask>, DatabaseError>;
+
+    /// Update a household task (full replace of mutable fields).
+    async fn update_household_task(&self, task: &HouseholdTask) -> Result<(), DatabaseError>;
+
+    /// Delete a household task. Returns true if a row was deleted.
+    async fn delete_household_task(&self, id: Uuid) -> Result<bool, DatabaseError>;
 }
