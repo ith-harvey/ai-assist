@@ -11,6 +11,7 @@ pub mod error;
 pub mod extensions;
 pub mod llm;
 pub mod logging;
+pub mod notifications;
 pub mod pipeline;
 pub mod safety;
 pub mod store;
