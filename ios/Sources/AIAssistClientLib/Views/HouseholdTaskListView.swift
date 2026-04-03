@@ -4,7 +4,7 @@ import SwiftUI
 private enum HouseholdFilter: Hashable {
     case all
     case category(HouseholdTaskCategory)
-    case assignee(UUID)
+    case assignee(String) // user_id
 }
 
 /// Tab for active vs completed.
@@ -44,7 +44,6 @@ public struct HouseholdTaskListView: View {
                 }
             }
 
-            // Quick-add FAB
             addButton
         }
         .secondaryBackground()
@@ -88,8 +87,8 @@ public struct HouseholdTaskListView: View {
                         .frame(height: 24)
 
                     ForEach(socket.members) { member in
-                        filterChip(member.name, emoji: member.emoji, isSelected: filter == .assignee(member.id)) {
-                            filter = .assignee(member.id)
+                        filterChip(member.displayName, emoji: member.emoji, isSelected: filter == .assignee(member.userId)) {
+                            filter = .assignee(member.userId)
                         }
                     }
                 }
@@ -136,7 +135,7 @@ public struct HouseholdTaskListView: View {
         switch filter {
         case .all: return base
         case .category(let cat): return base.filter { $0.category == cat }
-        case .assignee(let id): return base.filter { $0.assigneeId == id }
+        case .assignee(let uid): return base.filter { $0.assignedTo == uid }
         }
     }
 
@@ -145,7 +144,7 @@ public struct HouseholdTaskListView: View {
         switch filter {
         case .all: return base
         case .category(let cat): return base.filter { $0.category == cat }
-        case .assignee(let id): return base.filter { $0.assigneeId == id }
+        case .assignee(let uid): return base.filter { $0.assignedTo == uid }
         }
     }
 
@@ -162,7 +161,6 @@ public struct HouseholdTaskListView: View {
                     )
                     .plainCardListRow()
                 } else {
-                    // Group by category
                     let grouped = Dictionary(grouping: tasks, by: \.category)
                     let orderedCategories = HouseholdTaskCategory.allCases.filter { grouped[$0] != nil }
 
@@ -197,7 +195,6 @@ public struct HouseholdTaskListView: View {
         .animation(.default, value: filter)
         #if os(iOS)
         .refreshable {
-            // Re-sync from server when pulled
             socket.connect()
         }
         .scrollDismissesKeyboard(.interactively)
@@ -231,6 +228,7 @@ public struct HouseholdTaskListView: View {
     private func householdTaskCard(_ task: HouseholdTask) -> some View {
         HouseholdTaskCardView(
             task: task,
+            members: socket.members,
             onTap: { selectedTask = task },
             onComplete: {
                 if task.isCompleted {
@@ -257,20 +255,18 @@ public struct HouseholdTaskListView: View {
                 .shadow(color: .accentColor.opacity(0.35), radius: 8, y: 4)
         }
         .padding(.trailing, 20)
-        .padding(.bottom, 90) // Clear the input bar
+        .padding(.bottom, 90)
         .accessibilityLabel("Add new task")
     }
 
     // MARK: - Empty State
 
     private var emptyState: some View {
-        VStack(spacing: 20) {
-            EmptyStateView(
-                icon: "house.fill",
-                title: "No household tasks yet",
-                subtitle: "Tap + to add your first task and start organizing your household together"
-            )
-        }
+        EmptyStateView(
+            icon: "house.fill",
+            title: "No household tasks yet",
+            subtitle: "Tap + to add your first task and start organizing your household together"
+        )
     }
 }
 
@@ -279,6 +275,7 @@ public struct HouseholdTaskListView: View {
 /// A card-style household task row with category color stripe and swipe actions.
 struct HouseholdTaskCardView: View {
     let task: HouseholdTask
+    let members: [HouseholdMember]
     var onTap: () -> Void
     var onComplete: (() -> Void)? = nil
     var onDelete: (() -> Void)? = nil
@@ -296,9 +293,9 @@ struct HouseholdTaskCardView: View {
                 Button {
                     onComplete?()
                 } label: {
-                    Image(systemName: task.isCompleted ? "checkmark.circle.fill" : "circle")
+                    Image(systemName: task.status.icon)
                         .font(.system(size: 22))
-                        .foregroundStyle(task.isCompleted ? .green : .secondary)
+                        .foregroundStyle(task.status.color)
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(task.isCompleted ? "Mark incomplete" : "Mark complete")
@@ -312,8 +309,19 @@ struct HouseholdTaskCardView: View {
                         .lineLimit(2)
 
                     HStack(spacing: 6) {
+                        // Priority badge (if high or urgent)
+                        if task.priority == .high || task.priority == .urgent {
+                            HStack(spacing: 2) {
+                                Image(systemName: task.priority == .urgent ? "exclamationmark.2" : "exclamationmark")
+                                    .font(.system(size: 9, weight: .bold))
+                                Text(task.priority.label)
+                                    .font(.system(size: 11, weight: .semibold))
+                            }
+                            .foregroundStyle(task.priority.color)
+                        }
+
                         // Assignee
-                        if let name = task.assigneeName {
+                        if let name = task.assigneeName(in: members) {
                             HStack(spacing: 2) {
                                 Image(systemName: "person.fill")
                                     .font(.system(size: 9))
