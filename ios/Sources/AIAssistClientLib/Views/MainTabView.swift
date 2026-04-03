@@ -1,14 +1,17 @@
+import StoreKit
 import SwiftUI
 
 /// Root tab bar view with 4 tabs: Home (todos), Messages, Calendar, Brain.
 /// Owns the shared CardWebSocket so silo counts drive live tab badges.
 /// Owns the shared ChatWebSocket so the AI input bar works on every tab.
 /// Owns the shared TodoWebSocket so todo data stays in sync across all tabs.
+/// Owns the shared SubscriptionService for premium entitlement gating.
 public struct MainTabView: View {
     @State private var selectedTab = 0
     @State private var cardSocket = CardWebSocket()
     @State private var chatSocket = ChatWebSocket()
     @State private var todoSocket = TodoWebSocket()
+    @State private var subscriptionService = SubscriptionService()
     @State private var inputText = ""
 
     /// Whether the global input bar is visible (driven by keyboard / scroll).
@@ -20,6 +23,7 @@ public struct MainTabView: View {
 
     /// Settings sheet state
     @State private var showSettings = false
+    @State private var showPaywall = false
     @State private var hostInput = ""
     @State private var portInput = ""
 
@@ -111,6 +115,9 @@ public struct MainTabView: View {
         .sheet(isPresented: $showSettings) {
             settingsSheet
         }
+        .sheet(isPresented: $showPaywall) {
+            PaywallView(subscriptionService: subscriptionService)
+        }
         #if os(iOS)
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
             isKeyboardVisible = true
@@ -149,6 +156,22 @@ public struct MainTabView: View {
                             .foregroundStyle(cardSocket.isConnected ? .green : .red)
                     }
                 }
+                SubscriptionStatusView(subscriptionService: subscriptionService)
+
+                if !subscriptionService.isPremium {
+                    Section {
+                        Button {
+                            showSettings = false
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                                showPaywall = true
+                            }
+                        } label: {
+                            Label("Upgrade to Premium", systemImage: "crown.fill")
+                                .foregroundStyle(.yellow)
+                        }
+                    }
+                }
+
                 Section {
                     Button("Change Server", role: .destructive) {
                         showSettings = false
@@ -174,6 +197,7 @@ public struct MainTabView: View {
                             cardSocket.updateServer(host: hostInput, port: port)
                             chatSocket.updateServer(host: hostInput, port: port)
                             todoSocket.updateServer(host: hostInput, port: port)
+                            subscriptionService.updateServer(host: hostInput, port: port)
                             cardSocket.connect()
                             chatSocket.connect()
                             todoSocket.connect()
@@ -184,7 +208,7 @@ public struct MainTabView: View {
                 }
             }
         }
-        .presentationDetents([.medium])
+        .presentationDetents([.medium, .large])
     }
 
     // MARK: - Shared AI Input Bar
