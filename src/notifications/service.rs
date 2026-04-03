@@ -17,6 +17,8 @@ pub struct ApnsConfig {
     pub key_id: String,
     pub team_id: String,
     pub key_path: String,
+    /// The `apns-topic` header value — typically the iOS app's bundle ID.
+    pub topic: String,
     /// Use sandbox endpoint (default: false, i.e. production).
     pub sandbox: bool,
 }
@@ -27,6 +29,7 @@ impl ApnsConfig {
         let key_id = std::env::var("APNS_KEY_ID").ok()?;
         let team_id = std::env::var("APNS_TEAM_ID").ok()?;
         let key_path = std::env::var("APNS_KEY_PATH").ok()?;
+        let topic = std::env::var("APNS_TOPIC").ok()?;
         let sandbox = std::env::var("APNS_SANDBOX")
             .map(|v| v == "true" || v == "1")
             .unwrap_or(false);
@@ -34,6 +37,7 @@ impl ApnsConfig {
             key_id,
             team_id,
             key_path,
+            topic,
             sandbox,
         })
     }
@@ -43,6 +47,7 @@ impl ApnsConfig {
 pub struct NotificationService {
     client: Client,
     db: Arc<dyn Database>,
+    topic: String,
 }
 
 impl NotificationService {
@@ -70,7 +75,11 @@ impl NotificationService {
             "APNS notification service initialized"
         );
 
-        Ok(Self { client, db })
+        Ok(Self {
+            client,
+            db,
+            topic: config.topic.clone(),
+        })
     }
 
     /// Send a push notification to all devices registered for the target user.
@@ -97,7 +106,7 @@ impl NotificationService {
         for device_token in &tokens {
             let options = NotificationOptions {
                 apns_priority: Some(Priority::High),
-                apns_topic: None,
+                apns_topic: Some(&self.topic),
                 apns_expiration: Some(86400), // 24 hours
                 ..Default::default()
             };
@@ -171,14 +180,23 @@ impl NotificationService {
         })
     }
 
-    /// Send a notification to multiple users.
+    /// Send notifications to multiple users concurrently.
     pub async fn send_batch(
-        &self,
-        notifications: &[PushNotification],
+        self: &Arc<Self>,
+        notifications: Vec<PushNotification>,
     ) -> Vec<Result<SendResult, ApnsError>> {
-        let mut results = Vec::with_capacity(notifications.len());
+        let mut set = tokio::task::JoinSet::new();
         for notification in notifications {
-            results.push(self.send(notification).await);
+            let svc = Arc::clone(self);
+            set.spawn(async move { svc.send(&notification).await });
+        }
+
+        let mut results = Vec::with_capacity(set.len());
+        while let Some(join_result) = set.join_next().await {
+            match join_result {
+                Ok(send_result) => results.push(send_result),
+                Err(e) => results.push(Err(ApnsError::Send(format!("Task panicked: {e}")))),
+            }
         }
         results
     }

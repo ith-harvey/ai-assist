@@ -266,6 +266,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (todo_tx, _) = tokio::sync::broadcast::channel::<ai_assist::todos::model::TodoWsMessage>(256);
     let choice_registry = ai_assist::cards::choice_registry::ChoiceRegistry::new();
 
+    // ── APNS Notification Service (optional) ────────────────────────────
+    let notification_service = if let Some(apns_config) = ApnsConfig::from_env() {
+        match NotificationService::new(&apns_config, Arc::clone(&db)) {
+            Ok(service) => {
+                eprintln!("   APNS: enabled ({}, topic={})", if apns_config.sandbox { "sandbox" } else { "production" }, apns_config.topic);
+                Some(Arc::new(service))
+            }
+            Err(e) => {
+                eprintln!("   APNS: failed to initialize — {e}");
+                None
+            }
+        }
+    } else {
+        eprintln!("   APNS: disabled (set APNS_KEY_ID, APNS_TEAM_ID, APNS_KEY_PATH, APNS_TOPIC to enable)");
+        None
+    };
+
     let ctx = Arc::new(ai_assist::context::AppContext {
         db: Arc::clone(&db),
         llm: llm.clone(),
@@ -280,6 +297,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         email_config: email_config_for_cards,
         reply_drafter: reply_drafter.clone(),
         oauth_config: google_oauth_config.clone(),
+        notification_service,
         agent_queue: std::sync::OnceLock::new(),
     });
 
@@ -309,21 +327,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create iOS channel (needs to exist before router build)
     let ios_channel = IosChannel::new(Some(Arc::clone(&db)), navigate_rx);
     let ios_router = ios_channel.router();
-
-    // ── APNS Notification Service (optional) ────────────────────────────
-    if let Some(apns_config) = ApnsConfig::from_env() {
-        match NotificationService::new(&apns_config, Arc::clone(&db)) {
-            Ok(_service) => {
-                eprintln!("   APNS: enabled ({})", if apns_config.sandbox { "sandbox" } else { "production" });
-                // Service will be wired into triggers when integration points are added
-            }
-            Err(e) => {
-                eprintln!("   APNS: failed to initialize — {e}");
-            }
-        }
-    } else {
-        eprintln!("   APNS: disabled (set APNS_KEY_ID, APNS_TEAM_ID, APNS_KEY_PATH to enable)");
-    }
 
     // Spawn Axum WS/REST server — all routes share Arc<AppContext>
     let app = card_routes(Arc::clone(&ctx))
