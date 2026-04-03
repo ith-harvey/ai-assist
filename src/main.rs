@@ -10,6 +10,7 @@ use ai_assist::channels::email::EmailConfig;
 use ai_assist::channels::{ChannelManager, CliChannel, IosChannel, TelegramChannel};
 use ai_assist::config::{AgentConfig, GoogleOAuthConfig, RoutineConfig};
 use ai_assist::documents::routes::document_routes;
+use ai_assist::notifications::routes::notification_routes;
 use ai_assist::llm::{LlmBackend, LlmConfig, create_provider};
 use ai_assist::safety::SafetyLayer;
 use ai_assist::store::{Database, LibSqlBackend};
@@ -313,7 +314,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .merge(ios_router)
         .merge(todo_routes(Arc::clone(&ctx)))
         .merge(activity_routes(Arc::clone(&ctx)))
-        .merge(document_routes(Arc::clone(&ctx)));
+        .merge(document_routes(Arc::clone(&ctx)))
+        .merge(notification_routes(Arc::clone(&ctx)));
 
     // Google Calendar OAuth routes
     if let Some(ref config) = google_oauth_config {

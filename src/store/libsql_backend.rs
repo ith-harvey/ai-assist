@@ -15,6 +15,9 @@ use uuid::Uuid;
 use crate::cards::model::{ApprovalCard, CardPayload, CardSilo, CardStatus, SiloCounts};
 use crate::documents::model::{Document, DocumentType};
 use crate::error::DatabaseError;
+use crate::notifications::model::{
+    DeliveryStatus, DeviceToken, NotificationPreferences, NotificationRecord, NotificationType,
+};
 use crate::store::migrations;
 use crate::store::traits::{ConversationMessage, Database, MessageStatus, StoredMessage};
 use crate::todos::model::{TodoBucket, TodoItem, TodoStatus, TodoType};
@@ -2227,6 +2230,210 @@ impl Database for LibSqlBackend {
         }
         Ok(docs)
     }
+
+    // ── Device Tokens ──────────────────────────────────────────────────
+
+    async fn register_device_token(&self, token: &DeviceToken) -> Result<(), DatabaseError> {
+        let conn = self.conn();
+        conn.execute(
+            "INSERT INTO device_tokens (id, user_id, token, platform, device_name, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT (token) DO UPDATE SET user_id = ?2, platform = ?4, device_name = ?5",
+            params![
+                token.id.to_string(),
+                token.user_id,
+                token.token,
+                token.platform,
+                opt_text(token.device_name.as_deref()),
+                token.created_at.to_rfc3339(),
+            ],
+        )
+        .await
+        .map_err(|e| DatabaseError::Query(format!("register_device_token: {e}")))?;
+
+        debug!(user_id = %token.user_id, platform = %token.platform, "Device token registered");
+        Ok(())
+    }
+
+    async fn remove_device_token(&self, id: Uuid) -> Result<bool, DatabaseError> {
+        let conn = self.conn();
+        let changed = conn
+            .execute(
+                "DELETE FROM device_tokens WHERE id = ?1",
+                params![id.to_string()],
+            )
+            .await
+            .map_err(|e| DatabaseError::Query(format!("remove_device_token: {e}")))?;
+
+        Ok(changed > 0)
+    }
+
+    async fn remove_device_token_by_value(&self, token: &str) -> Result<bool, DatabaseError> {
+        let conn = self.conn();
+        let changed = conn
+            .execute(
+                "DELETE FROM device_tokens WHERE token = ?1",
+                params![token],
+            )
+            .await
+            .map_err(|e| DatabaseError::Query(format!("remove_device_token_by_value: {e}")))?;
+
+        Ok(changed > 0)
+    }
+
+    async fn list_device_tokens(&self, user_id: &str) -> Result<Vec<DeviceToken>, DatabaseError> {
+        let conn = self.conn();
+        let mut rows = conn
+            .query(
+                "SELECT id, user_id, token, platform, device_name, created_at
+                 FROM device_tokens WHERE user_id = ?1 ORDER BY created_at DESC",
+                params![user_id],
+            )
+            .await
+            .map_err(|e| DatabaseError::Query(format!("list_device_tokens: {e}")))?;
+
+        let mut tokens = Vec::new();
+        while let Ok(Some(row)) = rows.next().await {
+            match row_to_device_token(&row) {
+                Ok(t) => tokens.push(t),
+                Err(e) => tracing::warn!("Skipping device token row: {e}"),
+            }
+        }
+        Ok(tokens)
+    }
+
+    // ── Notification Preferences ───────────────────────────────────────
+
+    async fn get_notification_preferences(
+        &self,
+        user_id: &str,
+    ) -> Result<NotificationPreferences, DatabaseError> {
+        let conn = self.conn();
+        let mut rows = conn
+            .query(
+                "SELECT user_id, task_assigned, task_due_soon, task_completed,
+                        calendar_reminder, new_message, card_pending,
+                        quiet_hours_start, quiet_hours_end, updated_at
+                 FROM notification_preferences WHERE user_id = ?1",
+                params![user_id],
+            )
+            .await
+            .map_err(|e| DatabaseError::Query(format!("get_notification_preferences: {e}")))?;
+
+        match rows.next().await {
+            Ok(Some(row)) => row_to_notification_preferences(&row),
+            _ => Ok(NotificationPreferences::defaults(user_id.to_string())),
+        }
+    }
+
+    async fn save_notification_preferences(
+        &self,
+        prefs: &NotificationPreferences,
+    ) -> Result<(), DatabaseError> {
+        let conn = self.conn();
+        let now = Utc::now().to_rfc3339();
+        conn.execute(
+            "INSERT INTO notification_preferences
+                (user_id, task_assigned, task_due_soon, task_completed,
+                 calendar_reminder, new_message, card_pending,
+                 quiet_hours_start, quiet_hours_end, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+             ON CONFLICT (user_id) DO UPDATE SET
+                task_assigned = ?2, task_due_soon = ?3, task_completed = ?4,
+                calendar_reminder = ?5, new_message = ?6, card_pending = ?7,
+                quiet_hours_start = ?8, quiet_hours_end = ?9, updated_at = ?10",
+            params![
+                prefs.user_id,
+                prefs.task_assigned as i64,
+                prefs.task_due_soon as i64,
+                prefs.task_completed as i64,
+                prefs.calendar_reminder as i64,
+                prefs.new_message as i64,
+                prefs.card_pending as i64,
+                opt_text(prefs.quiet_hours_start.as_deref()),
+                opt_text(prefs.quiet_hours_end.as_deref()),
+                now,
+            ],
+        )
+        .await
+        .map_err(|e| DatabaseError::Query(format!("save_notification_preferences: {e}")))?;
+
+        debug!(user_id = %prefs.user_id, "Notification preferences saved");
+        Ok(())
+    }
+
+    // ── Notification History ───────────────────────────────────────────
+
+    async fn insert_notification_record(
+        &self,
+        record: &NotificationRecord,
+    ) -> Result<(), DatabaseError> {
+        let conn = self.conn();
+        conn.execute(
+            "INSERT INTO notification_history
+                (id, user_id, notification_type, title, body, reference_id, status, error, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                record.id.to_string(),
+                record.user_id,
+                record.notification_type.as_str(),
+                record.title,
+                record.body,
+                opt_text(record.reference_id.as_deref()),
+                record.status.as_str(),
+                opt_text(record.error.as_deref()),
+                record.created_at.to_rfc3339(),
+            ],
+        )
+        .await
+        .map_err(|e| DatabaseError::Query(format!("insert_notification_record: {e}")))?;
+
+        Ok(())
+    }
+
+    async fn update_notification_status(
+        &self,
+        id: Uuid,
+        status: DeliveryStatus,
+        error: Option<&str>,
+    ) -> Result<(), DatabaseError> {
+        let conn = self.conn();
+        conn.execute(
+            "UPDATE notification_history SET status = ?1, error = ?2 WHERE id = ?3",
+            params![status.as_str(), opt_text(error), id.to_string()],
+        )
+        .await
+        .map_err(|e| DatabaseError::Query(format!("update_notification_status: {e}")))?;
+
+        Ok(())
+    }
+
+    async fn list_notification_history(
+        &self,
+        user_id: &str,
+        limit: u32,
+    ) -> Result<Vec<NotificationRecord>, DatabaseError> {
+        let conn = self.conn();
+        let mut rows = conn
+            .query(
+                "SELECT id, user_id, notification_type, title, body,
+                        reference_id, status, error, created_at
+                 FROM notification_history WHERE user_id = ?1
+                 ORDER BY created_at DESC LIMIT ?2",
+                params![user_id, limit as i64],
+            )
+            .await
+            .map_err(|e| DatabaseError::Query(format!("list_notification_history: {e}")))?;
+
+        let mut records = Vec::new();
+        while let Ok(Some(row)) = rows.next().await {
+            match row_to_notification_record(&row) {
+                Ok(r) => records.push(r),
+                Err(e) => tracing::warn!("Skipping notification history row: {e}"),
+            }
+        }
+        Ok(records)
+    }
 }
 
 // ── Row mapping helpers for documents ───────────────────────────────
@@ -2385,6 +2592,56 @@ fn row_to_routine_run(
         tokens_used: row.get::<i64>(8).ok().map(|v| v as i32),
         job_id: r.optional_uuid(9),
         created_at: r.datetime_lenient(10),
+    })
+}
+
+// ── Row mapping helpers for notifications ───────────────────────────
+
+fn row_to_device_token(row: &libsql::Row) -> Result<DeviceToken, DatabaseError> {
+    let r = RowReader::new(row, "device_token");
+    Ok(DeviceToken {
+        id: r.uuid(0, "id")?,
+        user_id: r.string(1, "user_id")?,
+        token: r.string(2, "token")?,
+        platform: r.string(3, "platform")?,
+        device_name: r.optional_string(4),
+        created_at: r.datetime_lenient(5),
+    })
+}
+
+fn row_to_notification_preferences(
+    row: &libsql::Row,
+) -> Result<NotificationPreferences, DatabaseError> {
+    let r = RowReader::new(row, "notification_preferences");
+    Ok(NotificationPreferences {
+        user_id: r.string(0, "user_id")?,
+        task_assigned: r.bool_at(1),
+        task_due_soon: r.bool_at(2),
+        task_completed: r.bool_at(3),
+        calendar_reminder: r.bool_at(4),
+        new_message: r.bool_at(5),
+        card_pending: r.bool_at(6),
+        quiet_hours_start: r.optional_string(7),
+        quiet_hours_end: r.optional_string(8),
+        updated_at: r.datetime_lenient(9),
+    })
+}
+
+fn row_to_notification_record(row: &libsql::Row) -> Result<NotificationRecord, DatabaseError> {
+    let r = RowReader::new(row, "notification_history");
+    let type_str = r.string(2, "notification_type")?;
+    let notification_type = NotificationType::from_str(&type_str).unwrap_or(NotificationType::NewMessage);
+    let status_str = r.string_or(6, "queued");
+    Ok(NotificationRecord {
+        id: r.uuid(0, "id")?,
+        user_id: r.string(1, "user_id")?,
+        notification_type,
+        title: r.string(3, "title")?,
+        body: r.string(4, "body")?,
+        reference_id: r.optional_string(5),
+        status: DeliveryStatus::from_str(&status_str),
+        error: r.optional_string(7),
+        created_at: r.datetime_lenient(8),
     })
 }
 

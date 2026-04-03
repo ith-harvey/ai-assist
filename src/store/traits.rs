@@ -11,6 +11,9 @@ use uuid::Uuid;
 use crate::cards::model::{ApprovalCard, CardSilo, CardStatus, SiloCounts};
 use crate::documents::model::{Document, DocumentType};
 use crate::error::DatabaseError;
+use crate::notifications::model::{
+    DeliveryStatus, DeviceToken, NotificationPreferences, NotificationRecord,
+};
 use crate::todos::model::{TodoItem, TodoStatus};
 
 /// A conversation message from the database.
@@ -480,4 +483,55 @@ pub trait Database: Send + Sync {
         doc_type: Option<&DocumentType>,
         limit: u32,
     ) -> Result<Vec<Document>, DatabaseError>;
+
+    // ── Device Tokens ──────────────────────────────────────────────────
+
+    /// Register a device token for push notifications.
+    async fn register_device_token(&self, token: &DeviceToken) -> Result<(), DatabaseError>;
+
+    /// Remove a device token by ID.
+    async fn remove_device_token(&self, id: Uuid) -> Result<bool, DatabaseError>;
+
+    /// Remove a device token by its raw token string (e.g. on APNs rejection).
+    async fn remove_device_token_by_value(&self, token: &str) -> Result<bool, DatabaseError>;
+
+    /// List all device tokens for a user.
+    async fn list_device_tokens(&self, user_id: &str) -> Result<Vec<DeviceToken>, DatabaseError>;
+
+    // ── Notification Preferences ───────────────────────────────────────
+
+    /// Get notification preferences for a user. Returns defaults if none saved.
+    async fn get_notification_preferences(
+        &self,
+        user_id: &str,
+    ) -> Result<NotificationPreferences, DatabaseError>;
+
+    /// Save (upsert) notification preferences for a user.
+    async fn save_notification_preferences(
+        &self,
+        prefs: &NotificationPreferences,
+    ) -> Result<(), DatabaseError>;
+
+    // ── Notification History ───────────────────────────────────────────
+
+    /// Record a notification in history.
+    async fn insert_notification_record(
+        &self,
+        record: &NotificationRecord,
+    ) -> Result<(), DatabaseError>;
+
+    /// Update the delivery status of a notification record.
+    async fn update_notification_status(
+        &self,
+        id: Uuid,
+        status: DeliveryStatus,
+        error: Option<&str>,
+    ) -> Result<(), DatabaseError>;
+
+    /// List recent notification history for a user.
+    async fn list_notification_history(
+        &self,
+        user_id: &str,
+        limit: u32,
+    ) -> Result<Vec<NotificationRecord>, DatabaseError>;
 }

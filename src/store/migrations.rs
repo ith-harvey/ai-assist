@@ -198,6 +198,46 @@ const SCHEMA: &str = r#"
     );
     CREATE INDEX IF NOT EXISTS idx_documents_todo_id ON documents(todo_id);
     CREATE INDEX IF NOT EXISTS idx_documents_doc_type ON documents(doc_type);
+
+    CREATE TABLE IF NOT EXISTS device_tokens (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        token TEXT NOT NULL UNIQUE,
+        platform TEXT NOT NULL,
+        device_name TEXT,
+        created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_device_tokens_user_id ON device_tokens(user_id);
+    CREATE INDEX IF NOT EXISTS idx_device_tokens_token ON device_tokens(token);
+
+    CREATE TABLE IF NOT EXISTS notification_preferences (
+        user_id TEXT PRIMARY KEY,
+        task_assigned INTEGER NOT NULL DEFAULT 1,
+        task_due_soon INTEGER NOT NULL DEFAULT 1,
+        task_completed INTEGER NOT NULL DEFAULT 1,
+        calendar_reminder INTEGER NOT NULL DEFAULT 1,
+        new_message INTEGER NOT NULL DEFAULT 1,
+        card_pending INTEGER NOT NULL DEFAULT 1,
+        quiet_hours_start TEXT,
+        quiet_hours_end TEXT,
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS notification_history (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        notification_type TEXT NOT NULL,
+        title TEXT NOT NULL,
+        body TEXT NOT NULL,
+        reference_id TEXT,
+        status TEXT NOT NULL DEFAULT 'queued',
+        error TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_notification_history_user_id ON notification_history(user_id);
+    CREATE INDEX IF NOT EXISTS idx_notification_history_type ON notification_history(notification_type);
+    CREATE INDEX IF NOT EXISTS idx_notification_history_status ON notification_history(status);
+    CREATE INDEX IF NOT EXISTS idx_notification_history_created ON notification_history(created_at);
 "#;
 
 /// Create all tables and indexes idempotently.
@@ -257,6 +297,9 @@ mod tests {
             "todos",
             "job_actions",
             "documents",
+            "device_tokens",
+            "notification_preferences",
+            "notification_history",
         ];
 
         for table in &expected_tables {
@@ -301,7 +344,7 @@ mod tests {
             .unwrap();
         let row = rows.next().await.unwrap().unwrap();
         let count: i64 = row.get(0).unwrap();
-        assert!(count >= 11, "Expected at least 11 tables, got {count}");
+        assert!(count >= 14, "Expected at least 14 tables, got {count}");
     }
 
     #[tokio::test]
@@ -339,6 +382,33 @@ mod tests {
             "created_by", "created_at", "updated_at",
         ] {
             assert!(doc_cols.contains(&col.to_string()), "documents.{col} missing");
+        }
+
+        // Verify device_tokens table columns
+        let dt_cols = get_column_names(&conn, "device_tokens").await;
+        for col in &[
+            "id", "user_id", "token", "platform", "device_name", "created_at",
+        ] {
+            assert!(dt_cols.contains(&col.to_string()), "device_tokens.{col} missing");
+        }
+
+        // Verify notification_preferences table columns
+        let np_cols = get_column_names(&conn, "notification_preferences").await;
+        for col in &[
+            "user_id", "task_assigned", "task_due_soon", "task_completed",
+            "calendar_reminder", "new_message", "card_pending",
+            "quiet_hours_start", "quiet_hours_end", "updated_at",
+        ] {
+            assert!(np_cols.contains(&col.to_string()), "notification_preferences.{col} missing");
+        }
+
+        // Verify notification_history table columns
+        let nh_cols = get_column_names(&conn, "notification_history").await;
+        for col in &[
+            "id", "user_id", "notification_type", "title", "body",
+            "reference_id", "status", "error", "created_at",
+        ] {
+            assert!(nh_cols.contains(&col.to_string()), "notification_history.{col} missing");
         }
 
         // Verify llm_calls table columns
