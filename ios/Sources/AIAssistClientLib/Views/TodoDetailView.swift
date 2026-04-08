@@ -823,7 +823,7 @@ public struct TodoDetailView: View {
         )
         .contentShape(Rectangle())
         .onTapGesture {
-            approvalCard = cardSocket.cards.first(where: { $0.id == cardId })
+            approvalCard = cardSocket.cards(for: .todos).first(where: { $0.id == cardId })
         }
         .padding(.vertical, 2)
     }

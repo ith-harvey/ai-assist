@@ -149,8 +149,12 @@ impl Agent {
             }
 
             // Execute the approved tool and continue the loop
-            let job_ctx =
+            let mut job_ctx =
                 JobContext::with_user(&message.user_id, "chat", "Interactive chat session");
+
+            // Propagate todo_id from the stored pending approval (not from message content,
+            // which is JSON `{"ExecApproval":...}` and doesn't contain the [todo_id:] prefix)
+            job_ctx.todo_id = pending.todo_id;
 
             let _ = self
                 .channels
