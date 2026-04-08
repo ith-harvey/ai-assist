@@ -9,6 +9,7 @@ pub mod documents;
 pub mod context;
 pub mod error;
 pub mod extensions;
+pub mod households;
 pub mod llm;
 pub mod logging;
 pub mod pipeline;

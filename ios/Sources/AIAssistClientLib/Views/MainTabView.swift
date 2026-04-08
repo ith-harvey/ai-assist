@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Root tab bar view with 4 tabs: Home (todos), Messages, Calendar, Brain.
+/// Root tab bar view with 5 tabs: To-Dos, Household, Messages, Calendar, Brain.
 /// Owns the shared CardWebSocket so silo counts drive live tab badges.
 /// Owns the shared ChatWebSocket so the AI input bar works on every tab.
 /// Owns the shared TodoWebSocket so todo data stays in sync across all tabs.
@@ -9,6 +9,7 @@ public struct MainTabView: View {
     @State private var cardSocket = CardWebSocket()
     @State private var chatSocket = ChatWebSocket()
     @State private var todoSocket = TodoWebSocket()
+    @State private var householdSocket = HouseholdWebSocket()
     @State private var inputText = ""
 
     /// Whether the global input bar is visible (driven by keyboard / scroll).
@@ -33,10 +34,21 @@ public struct MainTabView: View {
                     .safeAreaInset(edge: .bottom) { aiInputBar }
             }
             .tabItem {
-                Image(systemName: "house.fill")
-                Text("Home")
+                Image(systemName: "checklist")
+                Text("To-Dos")
             }
             .tag(0)
+
+            // Household — shared family task lists
+            NavigationStack {
+                HouseholdTaskListView(socket: householdSocket)
+                    .safeAreaInset(edge: .bottom) { aiInputBar }
+            }
+            .tabItem {
+                Image(systemName: "house.fill")
+                Text("Household")
+            }
+            .tag(1)
 
             // Messages — approval card swiping queue
             ContentView(socket: cardSocket)
@@ -45,7 +57,7 @@ public struct MainTabView: View {
                     Image(systemName: "message.fill")
                     Text("Messages")
                 }
-                .tag(1)
+                .tag(2)
                 .badge(cardSocket.siloCounts.messages)
 
             // Calendar
@@ -58,7 +70,7 @@ public struct MainTabView: View {
                 Image(systemName: "calendar")
                 Text("Calendar")
             }
-            .tag(2)
+            .tag(3)
             .badge(cardSocket.siloCounts.calendar)
 
             // Brain — conversation viewer
@@ -71,7 +83,7 @@ public struct MainTabView: View {
                 Image(systemName: "brain.head.profile")
                 Text("Brain")
             }
-            .tag(3)
+            .tag(4)
         }
         .tint(.accentColor)
         .onChange(of: chatSocket.navigateToTodoId) { _, newId in
@@ -88,11 +100,13 @@ public struct MainTabView: View {
             cardSocket.connect()
             chatSocket.connect()
             todoSocket.connect()
+            householdSocket.connect()
         }
         .onDisappear {
             cardSocket.disconnect()
             chatSocket.disconnect()
             todoSocket.disconnect()
+            householdSocket.disconnect()
         }
         .overlay(alignment: .topTrailing) {
             Button {
@@ -174,9 +188,11 @@ public struct MainTabView: View {
                             cardSocket.updateServer(host: hostInput, port: port)
                             chatSocket.updateServer(host: hostInput, port: port)
                             todoSocket.updateServer(host: hostInput, port: port)
+                            householdSocket.updateServer(host: hostInput, port: port)
                             cardSocket.connect()
                             chatSocket.connect()
                             todoSocket.connect()
+                            householdSocket.connect()
                         }
                         showSettings = false
                     }
@@ -191,7 +207,7 @@ public struct MainTabView: View {
 
     @ViewBuilder
     private var aiInputBar: some View {
-        AIInputBar(chatSocket: chatSocket, inputText: $inputText, showStatusOverlay: selectedTab != 3)
+        AIInputBar(chatSocket: chatSocket, inputText: $inputText, showStatusOverlay: selectedTab != 4)
             .offset(y: isInputBarVisible || shouldForceShowBar ? 0 : 120)
             .animation(.spring(response: 0.35, dampingFraction: 0.8), value: isInputBarVisible || shouldForceShowBar)
     }

@@ -15,6 +15,10 @@ use uuid::Uuid;
 use crate::cards::model::{ApprovalCard, CardPayload, CardSilo, CardStatus, SiloCounts};
 use crate::documents::model::{Document, DocumentType};
 use crate::error::DatabaseError;
+use crate::households::model::{
+    Household, HouseholdMember, HouseholdRole, HouseholdTask, HouseholdTaskPriority,
+    HouseholdTaskStatus, RecurrenceRule,
+};
 use crate::store::migrations;
 use crate::store::traits::{ConversationMessage, Database, MessageStatus, StoredMessage};
 use crate::todos::model::{TodoBucket, TodoItem, TodoStatus, TodoType};
@@ -2246,6 +2250,334 @@ impl Database for LibSqlBackend {
         }
         Ok(docs)
     }
+
+    // ── Households ─────────────────────────────────────────────────
+
+    async fn create_household(&self, household: &Household) -> Result<(), DatabaseError> {
+        let conn = self.conn();
+        conn.execute(
+            "INSERT INTO households (id, name, created_by, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                household.id.to_string(),
+                household.name.as_str(),
+                household.created_by.as_str(),
+                household.created_at.to_rfc3339(),
+                household.updated_at.to_rfc3339(),
+            ],
+        )
+        .await
+        .map_err(|e| DatabaseError::Query(format!("create_household: {e}")))?;
+        debug!(id = %household.id, "Household created");
+        Ok(())
+    }
+
+    async fn get_household(&self, id: Uuid) -> Result<Option<Household>, DatabaseError> {
+        let conn = self.conn();
+        let mut rows = conn
+            .query(
+                &format!("SELECT {HOUSEHOLD_COLUMNS} FROM households WHERE id = ?1"),
+                params![id.to_string()],
+            )
+            .await
+            .map_err(|e| DatabaseError::Query(format!("get_household: {e}")))?;
+
+        match rows.next().await {
+            Ok(Some(row)) => Ok(Some(row_to_household(&row)?)),
+            Ok(None) => Ok(None),
+            Err(e) => Err(DatabaseError::Query(format!("get_household row: {e}"))),
+        }
+    }
+
+    async fn list_households_for_user(
+        &self,
+        user_id: &str,
+    ) -> Result<Vec<Household>, DatabaseError> {
+        let conn = self.conn();
+        let mut rows = conn
+            .query(
+                "SELECT h.id, h.name, h.created_by, h.created_at, h.updated_at \
+                 FROM households h \
+                 INNER JOIN household_members m ON h.id = m.household_id \
+                 WHERE m.user_id = ?1 ORDER BY h.name ASC",
+                params![user_id],
+            )
+            .await
+            .map_err(|e| DatabaseError::Query(format!("list_households_for_user: {e}")))?;
+
+        let mut households = Vec::new();
+        while let Ok(Some(row)) = rows.next().await {
+            households.push(row_to_household(&row)?);
+        }
+        Ok(households)
+    }
+
+    async fn update_household(&self, household: &Household) -> Result<(), DatabaseError> {
+        let conn = self.conn();
+        conn.execute(
+            "UPDATE households SET name = ?1, updated_at = ?2 WHERE id = ?3",
+            params![
+                household.name.as_str(),
+                household.updated_at.to_rfc3339(),
+                household.id.to_string(),
+            ],
+        )
+        .await
+        .map_err(|e| DatabaseError::Query(format!("update_household: {e}")))?;
+        Ok(())
+    }
+
+    async fn delete_household(&self, id: Uuid) -> Result<bool, DatabaseError> {
+        let conn = self.conn();
+        let id_str = id.to_string();
+
+        // Manual cascade: delete tasks and members first (FK enforcement not enabled)
+        conn.execute(
+            "DELETE FROM household_tasks WHERE household_id = ?1",
+            params![id_str.as_str()],
+        )
+        .await
+        .map_err(|e| DatabaseError::Query(format!("delete_household tasks: {e}")))?;
+
+        conn.execute(
+            "DELETE FROM household_members WHERE household_id = ?1",
+            params![id_str.as_str()],
+        )
+        .await
+        .map_err(|e| DatabaseError::Query(format!("delete_household members: {e}")))?;
+
+        let rows_affected = conn
+            .execute(
+                "DELETE FROM households WHERE id = ?1",
+                params![id_str.as_str()],
+            )
+            .await
+            .map_err(|e| DatabaseError::Query(format!("delete_household: {e}")))?;
+        Ok(rows_affected > 0)
+    }
+
+    // ── Household Members ──────────────────────────────────────────
+
+    async fn add_household_member(&self, member: &HouseholdMember) -> Result<(), DatabaseError> {
+        let conn = self.conn();
+        let role = serde_json::to_value(&member.role)
+            .map_err(|e| DatabaseError::Serialization(e.to_string()))?;
+        let role_str = role.as_str().unwrap_or("member");
+
+        conn.execute(
+            "INSERT INTO household_members (id, household_id, user_id, display_name, role, joined_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                member.id.to_string(),
+                member.household_id.to_string(),
+                member.user_id.as_str(),
+                member.display_name.as_str(),
+                role_str,
+                member.joined_at.to_rfc3339(),
+            ],
+        )
+        .await
+        .map_err(|e| DatabaseError::Query(format!("add_household_member: {e}")))?;
+        debug!(id = %member.id, household = %member.household_id, "Household member added");
+        Ok(())
+    }
+
+    async fn list_household_members(
+        &self,
+        household_id: Uuid,
+    ) -> Result<Vec<HouseholdMember>, DatabaseError> {
+        let conn = self.conn();
+        let mut rows = conn
+            .query(
+                &format!(
+                    "SELECT {HOUSEHOLD_MEMBER_COLUMNS} FROM household_members WHERE household_id = ?1 ORDER BY joined_at ASC"
+                ),
+                params![household_id.to_string()],
+            )
+            .await
+            .map_err(|e| DatabaseError::Query(format!("list_household_members: {e}")))?;
+
+        let mut members = Vec::new();
+        while let Ok(Some(row)) = rows.next().await {
+            members.push(row_to_household_member(&row)?);
+        }
+        Ok(members)
+    }
+
+    async fn remove_household_member(
+        &self,
+        household_id: Uuid,
+        user_id: &str,
+    ) -> Result<bool, DatabaseError> {
+        let conn = self.conn();
+        let rows_affected = conn
+            .execute(
+                "DELETE FROM household_members WHERE household_id = ?1 AND user_id = ?2",
+                params![household_id.to_string(), user_id],
+            )
+            .await
+            .map_err(|e| DatabaseError::Query(format!("remove_household_member: {e}")))?;
+        Ok(rows_affected > 0)
+    }
+
+    // ── Household Tasks ────────────────────────────────────────────
+
+    async fn create_household_task(&self, task: &HouseholdTask) -> Result<(), DatabaseError> {
+        let conn = self.conn();
+        let status = serde_json::to_value(&task.status)
+            .map_err(|e| DatabaseError::Serialization(e.to_string()))?;
+        let status_str = status.as_str().unwrap_or("pending");
+        let priority = serde_json::to_value(&task.priority)
+            .map_err(|e| DatabaseError::Serialization(e.to_string()))?;
+        let priority_str = priority.as_str().unwrap_or("medium");
+        let recurrence_json = task
+            .recurrence
+            .as_ref()
+            .map(|r| serde_json::to_string(r).unwrap_or_default());
+
+        conn.execute(
+            "INSERT INTO household_tasks (id, household_id, title, description, status, priority, assigned_to, due_date, recurrence, created_by, created_at, updated_at, completed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+            params![
+                task.id.to_string(),
+                task.household_id.to_string(),
+                task.title.as_str(),
+                task.description.as_deref().unwrap_or(""),
+                status_str,
+                priority_str,
+                task.assigned_to.as_deref(),
+                task.due_date.map(|d| d.to_rfc3339()),
+                recurrence_json,
+                task.created_by.as_str(),
+                task.created_at.to_rfc3339(),
+                task.updated_at.to_rfc3339(),
+                task.completed_at.map(|d| d.to_rfc3339()),
+            ],
+        )
+        .await
+        .map_err(|e| DatabaseError::Query(format!("create_household_task: {e}")))?;
+        debug!(id = %task.id, household = %task.household_id, "Household task created");
+        Ok(())
+    }
+
+    async fn get_household_task(&self, id: Uuid) -> Result<Option<HouseholdTask>, DatabaseError> {
+        let conn = self.conn();
+        let mut rows = conn
+            .query(
+                &format!("SELECT {HOUSEHOLD_TASK_COLUMNS} FROM household_tasks WHERE id = ?1"),
+                params![id.to_string()],
+            )
+            .await
+            .map_err(|e| DatabaseError::Query(format!("get_household_task: {e}")))?;
+
+        match rows.next().await {
+            Ok(Some(row)) => Ok(Some(row_to_household_task(&row)?)),
+            Ok(None) => Ok(None),
+            Err(e) => Err(DatabaseError::Query(format!("get_household_task row: {e}"))),
+        }
+    }
+
+    async fn list_household_tasks(
+        &self,
+        household_id: Uuid,
+        status: Option<&HouseholdTaskStatus>,
+    ) -> Result<Vec<HouseholdTask>, DatabaseError> {
+        let conn = self.conn();
+        let mut rows = if let Some(s) = status {
+            let s_val = serde_json::to_value(s)
+                .map_err(|e| DatabaseError::Serialization(e.to_string()))?;
+            let s_str = s_val.as_str().unwrap_or("pending").to_string();
+            conn.query(
+                &format!(
+                    "SELECT {HOUSEHOLD_TASK_COLUMNS} FROM household_tasks WHERE household_id = ?1 AND status = ?2 ORDER BY due_date ASC, created_at ASC"
+                ),
+                params![household_id.to_string(), s_str],
+            )
+            .await
+        } else {
+            conn.query(
+                &format!(
+                    "SELECT {HOUSEHOLD_TASK_COLUMNS} FROM household_tasks WHERE household_id = ?1 ORDER BY due_date ASC, created_at ASC"
+                ),
+                params![household_id.to_string()],
+            )
+            .await
+        }
+        .map_err(|e| DatabaseError::Query(format!("list_household_tasks: {e}")))?;
+
+        let mut tasks = Vec::new();
+        while let Ok(Some(row)) = rows.next().await {
+            tasks.push(row_to_household_task(&row)?);
+        }
+        Ok(tasks)
+    }
+
+    async fn list_tasks_for_user(
+        &self,
+        user_id: &str,
+    ) -> Result<Vec<HouseholdTask>, DatabaseError> {
+        let conn = self.conn();
+        let mut rows = conn
+            .query(
+                &format!(
+                    "SELECT {HOUSEHOLD_TASK_COLUMNS} FROM household_tasks WHERE assigned_to = ?1 ORDER BY due_date ASC, created_at ASC"
+                ),
+                params![user_id],
+            )
+            .await
+            .map_err(|e| DatabaseError::Query(format!("list_tasks_for_user: {e}")))?;
+
+        let mut tasks = Vec::new();
+        while let Ok(Some(row)) = rows.next().await {
+            tasks.push(row_to_household_task(&row)?);
+        }
+        Ok(tasks)
+    }
+
+    async fn update_household_task(&self, task: &HouseholdTask) -> Result<(), DatabaseError> {
+        let conn = self.conn();
+        let status = serde_json::to_value(&task.status)
+            .map_err(|e| DatabaseError::Serialization(e.to_string()))?;
+        let status_str = status.as_str().unwrap_or("pending");
+        let priority = serde_json::to_value(&task.priority)
+            .map_err(|e| DatabaseError::Serialization(e.to_string()))?;
+        let priority_str = priority.as_str().unwrap_or("medium");
+        let recurrence_json = task
+            .recurrence
+            .as_ref()
+            .map(|r| serde_json::to_string(r).unwrap_or_default());
+
+        conn.execute(
+            "UPDATE household_tasks SET title = ?1, description = ?2, status = ?3, priority = ?4, assigned_to = ?5, due_date = ?6, recurrence = ?7, updated_at = ?8, completed_at = ?9 WHERE id = ?10",
+            params![
+                task.title.as_str(),
+                task.description.as_deref().unwrap_or(""),
+                status_str,
+                priority_str,
+                task.assigned_to.as_deref(),
+                task.due_date.map(|d| d.to_rfc3339()),
+                recurrence_json,
+                task.updated_at.to_rfc3339(),
+                task.completed_at.map(|d| d.to_rfc3339()),
+                task.id.to_string(),
+            ],
+        )
+        .await
+        .map_err(|e| DatabaseError::Query(format!("update_household_task: {e}")))?;
+        Ok(())
+    }
+
+    async fn delete_household_task(&self, id: Uuid) -> Result<bool, DatabaseError> {
+        let conn = self.conn();
+        let rows_affected = conn
+            .execute(
+                "DELETE FROM household_tasks WHERE id = ?1",
+                params![id.to_string()],
+            )
+            .await
+            .map_err(|e| DatabaseError::Query(format!("delete_household_task: {e}")))?;
+        Ok(rows_affected > 0)
+    }
 }
 
 // ── Row mapping helpers for documents ───────────────────────────────
@@ -2404,6 +2736,63 @@ fn row_to_routine_run(
         tokens_used: row.get::<i64>(8).ok().map(|v| v as i32),
         job_id: r.optional_uuid(9),
         created_at: r.datetime_lenient(10),
+    })
+}
+
+// ── Row mapping helpers for households ──────────────────────────────
+
+const HOUSEHOLD_COLUMNS: &str =
+    "id, name, created_by, created_at, updated_at";
+
+fn row_to_household(row: &libsql::Row) -> Result<Household, DatabaseError> {
+    let r = RowReader::new(row, "household");
+    Ok(Household {
+        id: r.uuid(0, "id")?,
+        name: r.string(1, "name")?,
+        created_by: r.string(2, "created_by")?,
+        created_at: r.datetime_lenient(3),
+        updated_at: r.datetime_lenient(4),
+    })
+}
+
+const HOUSEHOLD_MEMBER_COLUMNS: &str =
+    "id, household_id, user_id, display_name, role, joined_at";
+
+fn row_to_household_member(row: &libsql::Row) -> Result<HouseholdMember, DatabaseError> {
+    let r = RowReader::new(row, "household_member");
+    Ok(HouseholdMember {
+        id: r.uuid(0, "id")?,
+        household_id: r.uuid(1, "household_id")?,
+        user_id: r.string(2, "user_id")?,
+        display_name: r.string(3, "display_name")?,
+        role: r.enum_or(4, HouseholdRole::Member),
+        joined_at: r.datetime_lenient(5),
+    })
+}
+
+const HOUSEHOLD_TASK_COLUMNS: &str =
+    "id, household_id, title, description, status, priority, assigned_to, due_date, recurrence, created_by, created_at, updated_at, completed_at";
+
+fn row_to_household_task(row: &libsql::Row) -> Result<HouseholdTask, DatabaseError> {
+    let r = RowReader::new(row, "household_task");
+    let recurrence_str = r.optional_string(8);
+    let recurrence: Option<RecurrenceRule> = recurrence_str
+        .and_then(|s| serde_json::from_str(&s).ok());
+
+    Ok(HouseholdTask {
+        id: r.uuid(0, "id")?,
+        household_id: r.uuid(1, "household_id")?,
+        title: r.string(2, "title")?,
+        description: r.optional_string(3),
+        status: r.enum_or(4, HouseholdTaskStatus::Pending),
+        priority: r.enum_or(5, HouseholdTaskPriority::Medium),
+        assigned_to: r.optional_string(6),
+        due_date: r.optional_datetime(7),
+        recurrence,
+        created_by: r.string(9, "created_by")?,
+        created_at: r.datetime_lenient(10),
+        updated_at: r.datetime_lenient(11),
+        completed_at: r.optional_datetime(12),
     })
 }
 
@@ -4442,5 +4831,218 @@ mod tests {
 
         let results = db.search_documents("keyword", None, 2).await.unwrap();
         assert_eq!(results.len(), 2);
+    }
+
+    // ── Household tests ────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn household_crud() {
+        let db = test_db().await;
+        let h = Household::new("Smith Family", "user1");
+        let hid = h.id;
+
+        db.create_household(&h).await.unwrap();
+
+        let fetched = db.get_household(hid).await.unwrap().unwrap();
+        assert_eq!(fetched.name, "Smith Family");
+
+        let updated = Household {
+            name: "Smith-Jones Family".into(),
+            updated_at: chrono::Utc::now(),
+            ..fetched
+        };
+        db.update_household(&updated).await.unwrap();
+
+        let fetched = db.get_household(hid).await.unwrap().unwrap();
+        assert_eq!(fetched.name, "Smith-Jones Family");
+
+        assert!(db.delete_household(hid).await.unwrap());
+        assert!(db.get_household(hid).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn household_delete_nonexistent() {
+        let db = test_db().await;
+        assert!(!db.delete_household(Uuid::new_v4()).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn household_members_crud() {
+        let db = test_db().await;
+        let h = Household::new("Test House", "user1");
+        db.create_household(&h).await.unwrap();
+
+        let m1 = HouseholdMember::new(h.id, "user1", "Alice", HouseholdRole::Owner);
+        let m2 = HouseholdMember::new(h.id, "user2", "Bob", HouseholdRole::Member);
+        db.add_household_member(&m1).await.unwrap();
+        db.add_household_member(&m2).await.unwrap();
+
+        let members = db.list_household_members(h.id).await.unwrap();
+        assert_eq!(members.len(), 2);
+
+        assert!(db.remove_household_member(h.id, "user2").await.unwrap());
+        let members = db.list_household_members(h.id).await.unwrap();
+        assert_eq!(members.len(), 1);
+        assert_eq!(members[0].user_id, "user1");
+    }
+
+    #[tokio::test]
+    async fn household_member_unique_constraint() {
+        let db = test_db().await;
+        let h = Household::new("Test", "user1");
+        db.create_household(&h).await.unwrap();
+
+        let m = HouseholdMember::new(h.id, "user1", "Alice", HouseholdRole::Owner);
+        db.add_household_member(&m).await.unwrap();
+
+        let m2 = HouseholdMember::new(h.id, "user1", "Alice Again", HouseholdRole::Member);
+        assert!(db.add_household_member(&m2).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn list_households_for_user() {
+        let db = test_db().await;
+        let h1 = Household::new("Alpha House", "user1");
+        let h2 = Household::new("Beta House", "user2");
+        db.create_household(&h1).await.unwrap();
+        db.create_household(&h2).await.unwrap();
+
+        db.add_household_member(&HouseholdMember::new(h1.id, "user1", "Alice", HouseholdRole::Owner)).await.unwrap();
+        db.add_household_member(&HouseholdMember::new(h2.id, "user1", "Alice", HouseholdRole::Member)).await.unwrap();
+        db.add_household_member(&HouseholdMember::new(h2.id, "user2", "Bob", HouseholdRole::Owner)).await.unwrap();
+
+        let user1_households = db.list_households_for_user("user1").await.unwrap();
+        assert_eq!(user1_households.len(), 2);
+
+        let user2_households = db.list_households_for_user("user2").await.unwrap();
+        assert_eq!(user2_households.len(), 1);
+        assert_eq!(user2_households[0].name, "Beta House");
+    }
+
+    #[tokio::test]
+    async fn household_task_crud() {
+        let db = test_db().await;
+        let h = Household::new("Home", "user1");
+        db.create_household(&h).await.unwrap();
+
+        let task = HouseholdTask::new(h.id, "Take out trash", "user1")
+            .with_description("Every Tuesday")
+            .with_priority(HouseholdTaskPriority::High)
+            .with_assigned_to("user2")
+            .with_recurrence(RecurrenceRule::Weekly);
+        let tid = task.id;
+
+        db.create_household_task(&task).await.unwrap();
+
+        let fetched = db.get_household_task(tid).await.unwrap().unwrap();
+        assert_eq!(fetched.title, "Take out trash");
+        assert_eq!(fetched.description.as_deref(), Some("Every Tuesday"));
+        assert_eq!(fetched.priority, HouseholdTaskPriority::High);
+        assert_eq!(fetched.assigned_to.as_deref(), Some("user2"));
+        assert_eq!(fetched.recurrence, Some(RecurrenceRule::Weekly));
+        assert_eq!(fetched.status, HouseholdTaskStatus::Pending);
+
+        let updated = HouseholdTask {
+            status: HouseholdTaskStatus::Completed,
+            completed_at: Some(chrono::Utc::now()),
+            updated_at: chrono::Utc::now(),
+            ..fetched
+        };
+        db.update_household_task(&updated).await.unwrap();
+
+        let fetched = db.get_household_task(tid).await.unwrap().unwrap();
+        assert_eq!(fetched.status, HouseholdTaskStatus::Completed);
+        assert!(fetched.completed_at.is_some());
+
+        assert!(db.delete_household_task(tid).await.unwrap());
+        assert!(db.get_household_task(tid).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn household_task_list_by_status() {
+        let db = test_db().await;
+        let h = Household::new("Home", "user1");
+        db.create_household(&h).await.unwrap();
+
+        let t1 = HouseholdTask::new(h.id, "Task A", "user1");
+        let mut t2 = HouseholdTask::new(h.id, "Task B", "user1");
+        t2.status = HouseholdTaskStatus::Completed;
+        t2.completed_at = Some(chrono::Utc::now());
+
+        db.create_household_task(&t1).await.unwrap();
+        db.create_household_task(&t2).await.unwrap();
+
+        let all = db.list_household_tasks(h.id, None).await.unwrap();
+        assert_eq!(all.len(), 2);
+
+        let pending = db
+            .list_household_tasks(h.id, Some(&HouseholdTaskStatus::Pending))
+            .await
+            .unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].title, "Task A");
+
+        let completed = db
+            .list_household_tasks(h.id, Some(&HouseholdTaskStatus::Completed))
+            .await
+            .unwrap();
+        assert_eq!(completed.len(), 1);
+        assert_eq!(completed[0].title, "Task B");
+    }
+
+    #[tokio::test]
+    async fn list_tasks_for_user() {
+        let db = test_db().await;
+        let h1 = Household::new("House1", "user1");
+        let h2 = Household::new("House2", "user1");
+        db.create_household(&h1).await.unwrap();
+        db.create_household(&h2).await.unwrap();
+
+        let t1 = HouseholdTask::new(h1.id, "Task 1", "user1").with_assigned_to("user2");
+        let t2 = HouseholdTask::new(h2.id, "Task 2", "user1").with_assigned_to("user2");
+        let t3 = HouseholdTask::new(h1.id, "Task 3", "user1").with_assigned_to("user3");
+
+        db.create_household_task(&t1).await.unwrap();
+        db.create_household_task(&t2).await.unwrap();
+        db.create_household_task(&t3).await.unwrap();
+
+        let user2_tasks = db.list_tasks_for_user("user2").await.unwrap();
+        assert_eq!(user2_tasks.len(), 2);
+
+        let user3_tasks = db.list_tasks_for_user("user3").await.unwrap();
+        assert_eq!(user3_tasks.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn household_cascade_delete() {
+        let db = test_db().await;
+        let h = Household::new("Home", "user1");
+        db.create_household(&h).await.unwrap();
+        db.add_household_member(&HouseholdMember::new(h.id, "user1", "Alice", HouseholdRole::Owner)).await.unwrap();
+        db.create_household_task(&HouseholdTask::new(h.id, "Task", "user1")).await.unwrap();
+
+        assert!(db.delete_household(h.id).await.unwrap());
+
+        let members = db.list_household_members(h.id).await.unwrap();
+        assert!(members.is_empty());
+        let tasks = db.list_household_tasks(h.id, None).await.unwrap();
+        assert!(tasks.is_empty());
+    }
+
+    #[tokio::test]
+    async fn household_task_custom_recurrence() {
+        let db = test_db().await;
+        let h = Household::new("Home", "user1");
+        db.create_household(&h).await.unwrap();
+
+        let task = HouseholdTask::new(h.id, "Water plants", "user1")
+            .with_recurrence(RecurrenceRule::Custom { interval_days: 3 });
+        db.create_household_task(&task).await.unwrap();
+
+        let fetched = db.get_household_task(task.id).await.unwrap().unwrap();
+        assert_eq!(
+            fetched.recurrence,
+            Some(RecurrenceRule::Custom { interval_days: 3 })
+        );
     }
 }

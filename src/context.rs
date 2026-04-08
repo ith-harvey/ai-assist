@@ -13,6 +13,7 @@ use crate::cards::choice_registry::ChoiceRegistry;
 use crate::cards::queue::CardQueue;
 use crate::cards::reply_drafter::ReplyDrafter;
 use crate::config::GoogleOAuthConfig;
+use crate::households::model::HouseholdWsMessage;
 use crate::llm::LlmProvider;
 use crate::channels::email::EmailConfig;
 use crate::safety::SafetyLayer;
@@ -43,6 +44,7 @@ pub struct AppContext {
 
     // ── Broadcast channels ──
     pub todo_tx: broadcast::Sender<TodoWsMessage>,
+    pub household_tx: broadcast::Sender<HouseholdWsMessage>,
     pub activity_channels: Arc<ActivityChannelMap>,
 
     // ── Card system ──

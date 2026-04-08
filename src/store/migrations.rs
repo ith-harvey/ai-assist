@@ -198,6 +198,47 @@ const SCHEMA: &str = r#"
     );
     CREATE INDEX IF NOT EXISTS idx_documents_todo_id ON documents(todo_id);
     CREATE INDEX IF NOT EXISTS idx_documents_doc_type ON documents(doc_type);
+
+    CREATE TABLE IF NOT EXISTS households (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        created_by TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_households_created_by ON households(created_by);
+
+    CREATE TABLE IF NOT EXISTS household_members (
+        id TEXT PRIMARY KEY,
+        household_id TEXT NOT NULL REFERENCES households(id) ON DELETE CASCADE,
+        user_id TEXT NOT NULL,
+        display_name TEXT NOT NULL,
+        role TEXT NOT NULL DEFAULT 'member',
+        joined_at TEXT NOT NULL,
+        UNIQUE (household_id, user_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_household_members_household ON household_members(household_id);
+    CREATE INDEX IF NOT EXISTS idx_household_members_user ON household_members(user_id);
+
+    CREATE TABLE IF NOT EXISTS household_tasks (
+        id TEXT PRIMARY KEY,
+        household_id TEXT NOT NULL REFERENCES households(id) ON DELETE CASCADE,
+        title TEXT NOT NULL,
+        description TEXT,
+        status TEXT NOT NULL DEFAULT 'pending',
+        priority TEXT NOT NULL DEFAULT 'medium',
+        assigned_to TEXT,
+        due_date TEXT,
+        recurrence TEXT,
+        created_by TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        completed_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_household_tasks_household ON household_tasks(household_id);
+    CREATE INDEX IF NOT EXISTS idx_household_tasks_assigned ON household_tasks(assigned_to);
+    CREATE INDEX IF NOT EXISTS idx_household_tasks_status ON household_tasks(status);
+    CREATE INDEX IF NOT EXISTS idx_household_tasks_due_date ON household_tasks(due_date);
 "#;
 
 /// Create all tables and indexes idempotently.
@@ -257,6 +298,9 @@ mod tests {
             "todos",
             "job_actions",
             "documents",
+            "households",
+            "household_members",
+            "household_tasks",
         ];
 
         for table in &expected_tables {
@@ -301,7 +345,7 @@ mod tests {
             .unwrap();
         let row = rows.next().await.unwrap().unwrap();
         let count: i64 = row.get(0).unwrap();
-        assert!(count >= 11, "Expected at least 11 tables, got {count}");
+        assert!(count >= 14, "Expected at least 14 tables, got {count}");
     }
 
     #[tokio::test]
@@ -349,6 +393,30 @@ mod tests {
             "purpose", "created_at",
         ] {
             assert!(llm_cols.contains(&col.to_string()), "llm_calls.{col} missing");
+        }
+
+        // Verify households table columns
+        let h_cols = get_column_names(&conn, "households").await;
+        for col in &["id", "name", "created_by", "created_at", "updated_at"] {
+            assert!(h_cols.contains(&col.to_string()), "households.{col} missing");
+        }
+
+        // Verify household_members table columns
+        let hm_cols = get_column_names(&conn, "household_members").await;
+        for col in &[
+            "id", "household_id", "user_id", "display_name", "role", "joined_at",
+        ] {
+            assert!(hm_cols.contains(&col.to_string()), "household_members.{col} missing");
+        }
+
+        // Verify household_tasks table columns
+        let ht_cols = get_column_names(&conn, "household_tasks").await;
+        for col in &[
+            "id", "household_id", "title", "description", "status",
+            "priority", "assigned_to", "due_date", "recurrence",
+            "created_by", "created_at", "updated_at", "completed_at",
+        ] {
+            assert!(ht_cols.contains(&col.to_string()), "household_tasks.{col} missing");
         }
     }
 
