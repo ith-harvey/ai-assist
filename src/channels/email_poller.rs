@@ -4,7 +4,7 @@
 //! `IncomingMessage` or push to any stream. It only:
 //! 1. Fetches unseen emails via IMAP
 //! 2. Persists new ones to the `messages` table (status = "pending")
-//! 3. Marks them \Seen in IMAP
+//! 3. Marks them \Seen in IMAP only after successful DB persistence
 //!
 //! The `email_processor` timer loop picks up pending emails from the DB
 //! and runs them through the pipeline.
@@ -121,13 +121,13 @@ async fn poll_once(config: &EmailConfig, db: &Arc<dyn Database>) {
         {
             Ok(id) => {
                 debug!(id = %id, msg_id = %msg_id, "Persisted email to DB");
+                uids_to_mark.push(uid.clone());
             }
             Err(e) => {
                 error!("Failed to persist email to DB: {e}");
+                // Do NOT mark as \Seen — retry on the next poll cycle
             }
         }
-
-        uids_to_mark.push(uid.clone());
     }
 
     // Mark all processed emails as \Seen
