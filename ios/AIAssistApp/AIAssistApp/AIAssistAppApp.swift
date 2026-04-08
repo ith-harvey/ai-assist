@@ -10,17 +10,15 @@ import AIAssistClientLib
 
 @main
 struct AIAssistAppApp: App {
-    // TODO: Re-enable onboarding once dev-mode server config is implemented
-    // @AppStorage("ai_assist_onboarding_complete") private var onboarded = false
+    @AppStorage("ai_assist_onboarding_complete") private var onboarded = false
 
     var body: some Scene {
         WindowGroup {
-            // TODO: Re-enable onboarding gate
-            // if onboarded {
-            AIAssistClientLib.MainTabView()
-            // } else {
-            //     AIAssistClientLib.OnboardingView()
-            // }
+            if onboarded {
+                AIAssistClientLib.MainTabView()
+            } else {
+                AIAssistClientLib.OnboardingView()
+            }
         }
     }
 }
