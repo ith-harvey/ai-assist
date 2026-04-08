@@ -186,7 +186,7 @@ async fn handle_client_action(text: &str, ctx: &Arc<AppContext>) -> Option<TodoW
                                 format!("Do you want me to start on {}?", todo_title),
                                 todo_desc,
                                 CardSilo::Todos,
-                                60,
+                                ctx.card_expire_min,
                             )
                             .with_todo_id(todo_id);
                             ctx.card_queue.push(card).await;
@@ -512,7 +512,7 @@ async fn create_test_todo(
                     format!("Do you want me to start on {}?", todo_title),
                     todo_desc,
                     CardSilo::Todos,
-                    60,
+                    ctx.card_expire_min,
                 )
                 .with_todo_id(todo_id);
                 ctx.card_queue.push(card).await;

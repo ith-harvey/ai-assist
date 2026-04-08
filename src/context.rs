@@ -54,6 +54,7 @@ pub struct AppContext {
     pub email_config: Option<EmailConfig>,
     pub reply_drafter: Arc<ReplyDrafter>,
     pub oauth_config: Option<GoogleOAuthConfig>,
+    pub card_expire_min: u32,
 
     // ── Agent queue (set after construction via OnceLock) ──
     pub agent_queue: OnceLock<Arc<AgentQueue>>,

@@ -278,6 +278,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         email_config: email_config_for_cards,
         reply_drafter: reply_drafter.clone(),
         oauth_config: google_oauth_config.clone(),
+        card_expire_min,
         agent_queue: std::sync::OnceLock::new(),
     });
 
