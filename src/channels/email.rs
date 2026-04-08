@@ -683,7 +683,7 @@ type ThreadData = (Vec<ThreadMessage>, Vec<EmailMessage>);
 /// Each message body is truncated to 500 chars max.
 ///
 /// Returns both `ThreadMessage` (generic) and `EmailMessage` (with full headers).
-fn fetch_thread_by_subject(
+pub(crate) fn fetch_thread_by_subject(
     config: &EmailConfig,
     subject: &str,
     limit: usize,

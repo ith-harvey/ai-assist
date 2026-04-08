@@ -15,8 +15,9 @@ use chrono::Utc;
 use tokio::task::JoinHandle;
 use tracing::{debug, error, info, warn};
 
+use crate::channels::email::EmailConfig;
 use crate::pipeline::processor::MessageProcessor;
-use crate::pipeline::types::{InboundMessage, PriorityHints};
+use crate::pipeline::types::{InboundMessage, PriorityHints, ThreadMessage};
 use crate::store::traits::{MessageStatus, StoredMessage};
 use crate::store::Database;
 
@@ -35,6 +36,7 @@ const DEFAULT_PROCESS_INTERVAL_SECS: u64 = 7200;
 pub fn spawn_email_processor(
     db: Arc<dyn Database>,
     processor: Arc<MessageProcessor>,
+    email_config: EmailConfig,
     interval_secs: Option<u64>,
 ) -> (JoinHandle<()>, Arc<AtomicBool>) {
     let shutdown = Arc::new(AtomicBool::new(false));
@@ -61,7 +63,7 @@ pub fn spawn_email_processor(
                 return;
             }
 
-            process_pending_emails(&db, &processor).await;
+            process_pending_emails(&db, &processor, &email_config).await;
         }
     });
 
@@ -69,7 +71,11 @@ pub fn spawn_email_processor(
 }
 
 /// Process all pending email messages through the pipeline.
-async fn process_pending_emails(db: &Arc<dyn Database>, processor: &Arc<MessageProcessor>) {
+async fn process_pending_emails(
+    db: &Arc<dyn Database>,
+    processor: &Arc<MessageProcessor>,
+    email_config: &EmailConfig,
+) {
     let pending = match db.get_pending_messages().await {
         Ok(msgs) => msgs,
         Err(e) => {
@@ -91,7 +97,9 @@ async fn process_pending_emails(db: &Arc<dyn Database>, processor: &Arc<MessageP
     info!("Processing {} pending email(s)", email_messages.len());
 
     for stored in email_messages {
-        let inbound = stored_to_inbound(stored);
+        let thread_context = fetch_thread_context(email_config, stored.subject.as_deref()).await;
+        let mut inbound = stored_to_inbound(stored);
+        inbound.thread_context = thread_context;
 
         match processor.process(inbound).await {
             Ok(processed) => {
@@ -113,6 +121,48 @@ async fn process_pending_emails(db: &Arc<dyn Database>, processor: &Arc<MessageP
                 error!(id = %stored.id, error = %e, "Failed to process email");
                 // Leave as pending — will be retried on next tick
             }
+        }
+    }
+}
+
+/// Fetch thread context from IMAP for a given email subject.
+///
+/// Runs the blocking IMAP call on a dedicated thread via `spawn_blocking`.
+/// Returns an empty vec on failure or missing subject — email processing
+/// continues without thread context rather than failing entirely.
+async fn fetch_thread_context(
+    config: &EmailConfig,
+    subject: Option<&str>,
+) -> Vec<ThreadMessage> {
+    let subject = match subject {
+        Some(s) if !s.is_empty() => s.to_string(),
+        _ => return Vec::new(),
+    };
+
+    let config = config.clone();
+    match tokio::task::spawn_blocking(move || {
+        crate::channels::email::fetch_thread_by_subject(&config, &subject, 5)
+    })
+    .await
+    {
+        Ok(Ok((thread_msgs, _email_msgs))) => {
+            // Convert cards::model::ThreadMessage → pipeline::types::ThreadMessage
+            thread_msgs
+                .into_iter()
+                .map(|m| ThreadMessage {
+                    sender: m.sender,
+                    content: m.content,
+                    timestamp: m.timestamp,
+                })
+                .collect()
+        }
+        Ok(Err(e)) => {
+            warn!("Failed to fetch thread context from IMAP: {e}");
+            Vec::new()
+        }
+        Err(e) => {
+            warn!("Thread context fetch task panicked: {e}");
+            Vec::new()
         }
     }
 }
