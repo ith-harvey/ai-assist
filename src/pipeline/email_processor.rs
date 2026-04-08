@@ -20,8 +20,8 @@ use crate::pipeline::types::{InboundMessage, PriorityHints};
 use crate::store::traits::{MessageStatus, StoredMessage};
 use crate::store::Database;
 
-/// Default processing interval: 2 hours.
-const DEFAULT_PROCESS_INTERVAL_SECS: u64 = 7200;
+/// Default processing interval: 30 seconds.
+const DEFAULT_PROCESS_INTERVAL_SECS: u64 = 30;
 
 /// Spawn a background task that processes pending emails through the pipeline.
 ///
