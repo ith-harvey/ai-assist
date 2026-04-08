@@ -53,6 +53,48 @@ public final class CalendarAPI: @unchecked Sendable {
         return try decoder.decode(CalendarStatus.self, from: data)
     }
 
+    /// Fetch household events for a single date (aggregates all members).
+    public func fetchHouseholdEvents(date: String) async throws -> [CalendarEvent] {
+        guard let url = URL(string: "\(baseURLString)/api/calendar/household/events?date=\(date)") else {
+            throw URLError(.badURL)
+        }
+        let (data, response) = try await URLSession.shared.data(from: url)
+        guard let http = response as? HTTPURLResponse else {
+            throw URLError(.badServerResponse)
+        }
+        if http.statusCode == 401 {
+            throw CalendarAPIError.notConnected
+        }
+        // Fall back to regular events if household endpoint not available
+        if http.statusCode == 404 {
+            return try await fetchEvents(date: date)
+        }
+        guard http.statusCode == 200 else {
+            throw URLError(.badServerResponse)
+        }
+        let eventsResponse = try decoder.decode(CalendarEventsResponse.self, from: data)
+        return eventsResponse.events
+    }
+
+    /// Fetch household members.
+    public func fetchHouseholdMembers() async throws -> [HouseholdMember] {
+        guard let url = URL(string: "\(baseURLString)/api/calendar/household/members") else {
+            throw URLError(.badURL)
+        }
+        let (data, response) = try await URLSession.shared.data(from: url)
+        guard let http = response as? HTTPURLResponse else {
+            throw URLError(.badServerResponse)
+        }
+        // Return empty if endpoint not available yet
+        if http.statusCode == 404 {
+            return []
+        }
+        guard http.statusCode == 200 else {
+            throw URLError(.badServerResponse)
+        }
+        return try decoder.decode([HouseholdMember].self, from: data)
+    }
+
     /// Disconnect the calendar.
     public func disconnect() async throws {
         guard let url = URL(string: "\(baseURLString)/api/calendar/connection") else {

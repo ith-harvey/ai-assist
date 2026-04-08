@@ -6,6 +6,7 @@ struct CalendarTimelineView: View {
     let events: [CalendarEvent]
     let date: Date
     let isToday: Bool
+    var members: [HouseholdMember]
 
     /// Height per hour slot.
     private let hourHeight: CGFloat = CalendarEventBlock.hourHeight
@@ -14,10 +15,11 @@ struct CalendarTimelineView: View {
     /// Total timeline height (24 hours).
     private var totalHeight: CGFloat { 24 * hourHeight }
 
-    init(events: [CalendarEvent], date: Date) {
+    init(events: [CalendarEvent], date: Date, members: [HouseholdMember] = []) {
         self.events = events
         self.date = date
         self.isToday = Calendar.current.isDateInToday(date)
+        self.members = members
     }
 
     var body: some View {
@@ -74,8 +76,9 @@ struct CalendarTimelineView: View {
 
     private var eventBlocks: some View {
         ForEach(events.filter { !$0.allDay }) { event in
-            CalendarEventBlock(event: event)
-                .frame(height: CalendarEventBlock(event: event).blockHeight)
+            let block = CalendarEventBlock(event: event, members: members)
+            block
+                .frame(height: block.blockHeight)
                 .padding(.leading, timeColumnWidth + 8)
                 .padding(.trailing, 12)
                 .offset(y: CalendarEventBlock.yOffset(for: event.start))
@@ -127,6 +130,7 @@ struct CalendarTimelineView: View {
 #Preview {
     CalendarTimelineView(
         events: CalendarEvent.samples,
-        date: Date()
+        date: Date(),
+        members: HouseholdMember.samples
     )
 }
