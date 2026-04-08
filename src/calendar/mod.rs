@@ -264,6 +264,7 @@ pub async fn get_valid_access_token(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
 
     #[test]
     fn test_build_consent_url_contains_required_params() {
@@ -296,5 +297,126 @@ mod tests {
 
         // Spaces should be percent-encoded (reqwest::Url uses + for form encoding)
         assert!(!url.contains("id with spaces"));
+    }
+
+    #[test]
+    fn test_build_consent_url_includes_all_scopes() {
+        let config = GoogleOAuthConfig {
+            client_id: "cid".to_string(),
+            client_secret: secrecy::SecretString::from("sec".to_string()),
+            redirect_uri: "http://localhost/cb".to_string(),
+        };
+        let url = build_consent_url(&config, "s");
+        // All three scopes must be present
+        assert!(url.contains("auth%2Fcalendar"));
+        assert!(url.contains("calendar.events"));
+        assert!(url.contains("userinfo.email"));
+    }
+
+    #[tokio::test]
+    async fn test_store_tokens_persists_all_fields() {
+        let db: Arc<dyn Database> =
+            Arc::new(crate::store::LibSqlBackend::new_memory().await.unwrap());
+
+        store_tokens(db.as_ref(), "u1", "access-tok", "refresh-tok", 3600, "a@b.com")
+            .await
+            .unwrap();
+
+        let access = db.get_setting("u1", GCAL_ACCESS_TOKEN).await.unwrap().unwrap();
+        assert_eq!(access.as_str().unwrap(), "access-tok");
+
+        let refresh = db.get_setting("u1", GCAL_REFRESH_TOKEN).await.unwrap().unwrap();
+        assert_eq!(refresh.as_str().unwrap(), "refresh-tok");
+
+        let email = db.get_setting("u1", GCAL_EMAIL).await.unwrap().unwrap();
+        assert_eq!(email.as_str().unwrap(), "a@b.com");
+
+        let expiry = db.get_setting("u1", GCAL_TOKEN_EXPIRY).await.unwrap().unwrap();
+        // Expiry should be a valid RFC3339 timestamp
+        let expiry_str = expiry.as_str().unwrap();
+        assert!(expiry_str.parse::<DateTime<Utc>>().is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_store_tokens_expiry_has_buffer() {
+        let db: Arc<dyn Database> =
+            Arc::new(crate::store::LibSqlBackend::new_memory().await.unwrap());
+
+        let before = Utc::now();
+        store_tokens(db.as_ref(), "u1", "at", "rt", 3600, "e@x.com")
+            .await
+            .unwrap();
+
+        let expiry_val = db.get_setting("u1", GCAL_TOKEN_EXPIRY).await.unwrap().unwrap();
+        let expiry: DateTime<Utc> = expiry_val.as_str().unwrap().parse().unwrap();
+
+        // With 60s buffer: expiry ≈ now + 3540s
+        let expected_min = before + chrono::Duration::seconds(3500);
+        let expected_max = before + chrono::Duration::seconds(3600);
+        assert!(expiry > expected_min && expiry < expected_max,
+            "expiry should be ~3540s from now (60s buffer), got {:?}", expiry);
+    }
+
+    #[tokio::test]
+    async fn test_delete_tokens_removes_all_keys() {
+        let db: Arc<dyn Database> =
+            Arc::new(crate::store::LibSqlBackend::new_memory().await.unwrap());
+
+        store_tokens(db.as_ref(), "u1", "at", "rt", 3600, "e@x.com")
+            .await
+            .unwrap();
+        // Also store an OAuth state
+        db.set_setting("u1", GCAL_OAUTH_STATE, &serde_json::json!("state123"))
+            .await
+            .unwrap();
+
+        delete_tokens(db.as_ref(), "u1").await.unwrap();
+
+        assert!(db.get_setting("u1", GCAL_ACCESS_TOKEN).await.unwrap().is_none());
+        assert!(db.get_setting("u1", GCAL_REFRESH_TOKEN).await.unwrap().is_none());
+        assert!(db.get_setting("u1", GCAL_TOKEN_EXPIRY).await.unwrap().is_none());
+        assert!(db.get_setting("u1", GCAL_EMAIL).await.unwrap().is_none());
+        assert!(db.get_setting("u1", GCAL_OAUTH_STATE).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_delete_tokens_succeeds_when_no_tokens() {
+        let db: Arc<dyn Database> =
+            Arc::new(crate::store::LibSqlBackend::new_memory().await.unwrap());
+        // Should not error even if nothing is stored
+        delete_tokens(db.as_ref(), "u1").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_get_valid_access_token_returns_none_when_not_connected() {
+        let db: Arc<dyn Database> =
+            Arc::new(crate::store::LibSqlBackend::new_memory().await.unwrap());
+        let config = GoogleOAuthConfig {
+            client_id: "cid".to_string(),
+            client_secret: secrecy::SecretString::from("sec".to_string()),
+            redirect_uri: "http://localhost/cb".to_string(),
+        };
+
+        let result = get_valid_access_token(db.as_ref(), "u1", &config).await.unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_get_valid_access_token_returns_token_when_not_expired() {
+        let db: Arc<dyn Database> =
+            Arc::new(crate::store::LibSqlBackend::new_memory().await.unwrap());
+        let config = GoogleOAuthConfig {
+            client_id: "cid".to_string(),
+            client_secret: secrecy::SecretString::from("sec".to_string()),
+            redirect_uri: "http://localhost/cb".to_string(),
+        };
+
+        // Store tokens with a future expiry
+        store_tokens(db.as_ref(), "u1", "my-access-token", "my-refresh", 7200, "e@x.com")
+            .await
+            .unwrap();
+
+        let result = get_valid_access_token(db.as_ref(), "u1", &config).await.unwrap();
+        assert_eq!(result, Some("my-access-token".to_string()));
     }
 }

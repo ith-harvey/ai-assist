@@ -572,4 +572,155 @@ mod tests {
         let json = serde_json::to_value(&event).unwrap();
         assert!(!json.as_object().unwrap().contains_key("reminder_minutes"));
     }
+
+    #[test]
+    fn parse_missing_datetime_field_errors() {
+        let result = parse_google_datetime(None, "start");
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("start"), "error should mention field name");
+    }
+
+    #[test]
+    fn parse_empty_datetime_neither_format_errors() {
+        let dt = GoogleDateTime {
+            date_time: None,
+            date: None,
+        };
+        let result = parse_google_datetime(Some(&dt), "end");
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("neither dateTime nor date"));
+    }
+
+    #[test]
+    fn parse_invalid_rfc3339_errors() {
+        let dt = GoogleDateTime {
+            date_time: Some("not-a-date".to_string()),
+            date: None,
+        };
+        let result = parse_google_datetime(Some(&dt), "start");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_invalid_date_format_errors() {
+        let dt = GoogleDateTime {
+            date_time: None,
+            date: Some("21-03-2026".to_string()), // wrong format
+        };
+        let result = parse_google_datetime(Some(&dt), "start");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn convert_google_event_all_day() {
+        let ge = GoogleEvent {
+            id: "day1".to_string(),
+            summary: Some("Vacation".to_string()),
+            start: Some(GoogleDateTime {
+                date_time: None,
+                date: Some("2026-07-04".to_string()),
+            }),
+            end: Some(GoogleDateTime {
+                date_time: None,
+                date: Some("2026-07-05".to_string()),
+            }),
+            location: None,
+            description: None,
+            attendees: None,
+            color_id: None,
+        };
+
+        let event = convert_google_event(ge).unwrap();
+        assert!(event.all_day);
+        assert_eq!(event.title, "Vacation");
+        assert_eq!(event.start.date_naive().to_string(), "2026-07-04");
+    }
+
+    #[test]
+    fn convert_google_event_multiple_attendees() {
+        let ge = GoogleEvent {
+            id: "meet1".to_string(),
+            summary: Some("Planning".to_string()),
+            start: Some(GoogleDateTime {
+                date_time: Some("2026-03-21T09:00:00Z".to_string()),
+                date: None,
+            }),
+            end: Some(GoogleDateTime {
+                date_time: Some("2026-03-21T10:00:00Z".to_string()),
+                date: None,
+            }),
+            location: Some("Room 42".to_string()),
+            description: Some("Q2 planning".to_string()),
+            attendees: Some(vec![
+                GoogleAttendee { email: "alice@x.com".to_string() },
+                GoogleAttendee { email: "bob@x.com".to_string() },
+                GoogleAttendee { email: "carol@x.com".to_string() },
+            ]),
+            color_id: None,
+        };
+
+        let event = convert_google_event(ge).unwrap();
+        assert_eq!(event.attendees.len(), 3);
+        assert_eq!(event.attendees[0], "alice@x.com");
+        assert_eq!(event.location, Some("Room 42".to_string()));
+        assert_eq!(event.description, Some("Q2 planning".to_string()));
+    }
+
+    #[test]
+    fn convert_google_event_missing_start_errors() {
+        let ge = GoogleEvent {
+            id: "err1".to_string(),
+            summary: Some("Bad event".to_string()),
+            start: None,
+            end: Some(GoogleDateTime {
+                date_time: Some("2026-03-21T10:00:00Z".to_string()),
+                date: None,
+            }),
+            location: None,
+            description: None,
+            attendees: None,
+            color_id: None,
+        };
+
+        assert!(convert_google_event(ge).is_err());
+    }
+
+    #[test]
+    fn parse_timed_event_preserves_utc_offset() {
+        // +05:30 offset should convert correctly to UTC
+        let dt = GoogleDateTime {
+            date_time: Some("2026-03-21T18:30:00+05:30".to_string()),
+            date: None,
+        };
+        let (parsed, all_day) = parse_google_datetime(Some(&dt), "start").unwrap();
+        assert!(!all_day);
+        assert_eq!(parsed.hour(), 13); // 18:30 +05:30 = 13:00 UTC
+        assert_eq!(parsed.minute(), 0);
+    }
+
+    #[test]
+    fn calendar_event_serialization_roundtrip() {
+        let event = CalendarEvent {
+            id: "ev1".to_string(),
+            title: "Test".to_string(),
+            start: Utc::now(),
+            end: Utc::now(),
+            all_day: false,
+            location: None,
+            description: None,
+            attendees: vec![],
+            color_id: None,
+        };
+
+        let json = serde_json::to_string(&event).unwrap();
+        let deserialized: CalendarEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.id, "ev1");
+        assert_eq!(deserialized.title, "Test");
+        // Optional None fields should be omitted
+        assert!(!json.contains("location"));
+        assert!(!json.contains("description"));
+        assert!(!json.contains("color_id"));
+    }
 }
