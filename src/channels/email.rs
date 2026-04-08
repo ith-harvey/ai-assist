@@ -155,6 +155,55 @@ fn extract_sender(parsed: &mail_parser::Message) -> String {
         .unwrap_or_else(|| "unknown".into())
 }
 
+/// Information about attachments found in an email.
+struct AttachmentInfo {
+    /// Total number of non-inline attachments.
+    count: usize,
+    /// Names of the attachments (e.g. "report.pdf", "photo.jpg").
+    names: Vec<String>,
+}
+
+/// Extract attachment metadata from a parsed email.
+///
+/// Counts non-text-body attachments and collects their filenames.
+/// Text parts that serve as the email body are excluded.
+fn extract_attachment_info(parsed: &mail_parser::Message) -> AttachmentInfo {
+    let mut names = Vec::new();
+    for part in parsed.attachments() {
+        let part: &mail_parser::MessagePart = part;
+        let name = MimeHeaders::attachment_name(part)
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| {
+                // Derive a name from content-type if no filename
+                MimeHeaders::content_type(part)
+                    .map(|ct| {
+                        let sub = ct.subtype().unwrap_or("unknown");
+                        format!("{}/{}", ct.ctype(), sub)
+                    })
+                    .unwrap_or_else(|| "unnamed".to_string())
+            });
+        names.push(name);
+    }
+    AttachmentInfo {
+        count: names.len(),
+        names,
+    }
+}
+
+/// Build a human-readable attachment note for appending to email content.
+fn attachment_note(info: &AttachmentInfo) -> Option<String> {
+    if info.count == 0 {
+        return None;
+    }
+    let names_display = info.names.join(", ");
+    Some(format!(
+        "\n\n[This email has {} attachment{}: {}]",
+        info.count,
+        if info.count == 1 { "" } else { "s" },
+        names_display
+    ))
+}
+
 /// Extract readable text from a parsed email.
 fn extract_text(parsed: &mail_parser::Message) -> String {
     if let Some(text) = parsed.body_text(0) {
@@ -297,15 +346,30 @@ pub(crate) fn fetch_unseen_imap(config: &EmailConfig) -> Result<Vec<FetchedEmail
             let subject = parsed.subject().unwrap_or("(no subject)").to_string();
             let body = extract_text(&parsed);
             let cleaned_body = email_types::strip_quoted_text(&body);
-            let content = format!("Subject: {subject}\n\n{cleaned_body}");
+
+            // Extract attachment metadata
+            let attachments = extract_attachment_info(&parsed);
+            let mut content = format!("Subject: {subject}\n\n{cleaned_body}");
+            if let Some(note) = attachment_note(&attachments) {
+                content.push_str(&note);
+            }
+
             let msg_id = parsed
                 .message_id()
                 .map(|s| s.to_string())
                 .unwrap_or_else(|| format!("gen-{}", Uuid::new_v4()));
 
             // Build reply_metadata for reply-all send
-            let reply_metadata =
+            let mut reply_metadata =
                 build_reply_metadata(&parsed, &sender, &subject, &msg_id, &config.from_address);
+
+            // Include attachment metadata so cards can surface it
+            if attachments.count > 0 {
+                reply_metadata["attachment_count"] =
+                    serde_json::Value::Number(attachments.count.into());
+                reply_metadata["attachment_names"] =
+                    serde_json::json!(attachments.names);
+            }
 
             #[allow(clippy::cast_sign_loss)]
             let ts = parsed
