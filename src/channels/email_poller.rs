@@ -52,22 +52,104 @@ pub fn spawn_email_poller(
     (handle, shutdown_flag)
 }
 
+/// Maximum number of retry attempts for IMAP operations.
+const MAX_RETRIES: u32 = 3;
+
+/// Initial backoff duration for retries (doubles each attempt).
+const INITIAL_BACKOFF: Duration = Duration::from_secs(2);
+
+/// Retry an IMAP fetch with exponential backoff.
+async fn fetch_with_retry(config: &EmailConfig) -> Result<Vec<super::email::FetchedEmail>, String> {
+    let mut last_err = String::new();
+
+    for attempt in 0..MAX_RETRIES {
+        let cfg = config.clone();
+        let fetch_result =
+            tokio::task::spawn_blocking(move || super::email::fetch_unseen_imap(&cfg)).await;
+
+        match fetch_result {
+            Ok(Ok(msgs)) => {
+                if attempt > 0 {
+                    info!(attempt = attempt + 1, "IMAP fetch succeeded after retry");
+                }
+                return Ok(msgs);
+            }
+            Ok(Err(e)) => {
+                last_err = e.to_string();
+                if attempt + 1 < MAX_RETRIES {
+                    let backoff = INITIAL_BACKOFF * 2_u32.pow(attempt);
+                    warn!(
+                        attempt = attempt + 1,
+                        max_retries = MAX_RETRIES,
+                        backoff_secs = backoff.as_secs(),
+                        error = %last_err,
+                        "IMAP fetch failed, retrying"
+                    );
+                    tokio::time::sleep(backoff).await;
+                }
+            }
+            Err(e) => {
+                // spawn_blocking panicked — not retriable
+                error!("Email poll task panicked: {e}");
+                return Err(e.to_string());
+            }
+        }
+    }
+
+    Err(last_err)
+}
+
+/// Retry marking UIDs as seen with exponential backoff.
+async fn mark_seen_with_retry(config: &EmailConfig, uids: &[String]) {
+    if uids.is_empty() {
+        return;
+    }
+
+    for attempt in 0..MAX_RETRIES {
+        let cfg = config.clone();
+        let uids_clone = uids.to_vec();
+        let result = tokio::task::spawn_blocking(move || {
+            super::email::mark_seen_imap(&cfg, &uids_clone)
+        })
+        .await
+        .unwrap_or_else(|e| Err(e.to_string().into()));
+
+        match result {
+            Ok(()) => {
+                if attempt > 0 {
+                    info!(attempt = attempt + 1, "IMAP mark-seen succeeded after retry");
+                }
+                return;
+            }
+            Err(e) => {
+                if attempt + 1 < MAX_RETRIES {
+                    let backoff = INITIAL_BACKOFF * 2_u32.pow(attempt);
+                    warn!(
+                        attempt = attempt + 1,
+                        max_retries = MAX_RETRIES,
+                        backoff_secs = backoff.as_secs(),
+                        error = %e,
+                        "IMAP mark-seen failed, retrying"
+                    );
+                    tokio::time::sleep(backoff).await;
+                } else {
+                    warn!(
+                        error = %e,
+                        uid_count = uids.len(),
+                        "Failed to mark emails as seen after {MAX_RETRIES} attempts"
+                    );
+                }
+            }
+        }
+    }
+}
+
 /// Run a single poll cycle: fetch unseen → persist → mark \Seen.
 async fn poll_once(config: &EmailConfig, db: &Arc<dyn Database>) {
-    let cfg = config.clone();
-    let fetch_result = tokio::task::spawn_blocking(move || {
-        super::email::fetch_unseen_imap(&cfg)
-    })
-    .await;
-
-    let messages = match fetch_result {
-        Ok(Ok(msgs)) => msgs,
-        Ok(Err(e)) => {
-            error!("Email poll failed: {e}");
-            return;
-        }
+    let messages = match fetch_with_retry(config).await {
+        Ok(msgs) => msgs,
         Err(e) => {
-            error!("Email poll task panicked: {e}");
+            error!("Email poll failed after {MAX_RETRIES} attempts: {e}");
             return;
         }
     };
@@ -130,19 +212,8 @@ async fn poll_once(config: &EmailConfig, db: &Arc<dyn Database>) {
         uids_to_mark.push(uid.clone());
     }
 
-    // Mark all processed emails as \Seen
-    if !uids_to_mark.is_empty() {
-        let cfg = config.clone();
-        let uids = uids_to_mark;
-        if let Err(e) = tokio::task::spawn_blocking(move || {
-            super::email::mark_seen_imap(&cfg, &uids)
-        })
-        .await
-        .unwrap_or_else(|e| Err(e.to_string().into()))
-        {
-            warn!("Failed to mark emails as seen: {e}");
-        }
-    }
+    // Mark all processed emails as \Seen (with retry)
+    mark_seen_with_retry(config, &uids_to_mark).await;
 }
 
 #[cfg(test)]
