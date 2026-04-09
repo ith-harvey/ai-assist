@@ -30,6 +30,43 @@ On completion, remind the user they can clean up with:
 `git worktree remove .claude/worktrees/<name>`
 Or list active worktrees with: `git worktree list`
 
+## iOS Testing (Required)
+
+After ANY code change that touches the iOS client (`ios/` directory), you MUST run the Swift test suite:
+
+```bash
+cd ios && swift test
+```
+
+This runs all unit tests in `ios/Tests/AIAssistClientTests/` via Swift Package Manager. The test suite covers:
+- **Model serialization**: JSON encode/decode for all models (TodoItem, CalendarEvent, Document, ActivityMessage, ApprovalCard, etc.)
+- **Enum properties**: Labels, icons, colors, and computed properties for all enum types
+- **WebSocket state**: Card and todo WebSocket message parsing, action encoding, state management
+- **UX logic**: Card queue progression, approval flows, deliverable item routing
+
+### When writing new iOS code
+
+- **New models/enums**: Add corresponding tests in `ios/Tests/AIAssistClientTests/` covering JSON decode, computed properties, and edge cases
+- **Modified models**: Update existing tests to cover the changes and verify nothing regresses
+- **WebSocket changes**: Test message decoding and action encoding
+- Follow TDD: write the test first, then implement
+
+### Test runner script
+
+Use `./test-ios.sh` for comprehensive testing:
+```bash
+./test-ios.sh              # SPM unit tests only (fast)
+./test-ios.sh --ui         # Unit tests + UI tests in simulator
+./test-ios.sh --all        # Unit + UI tests + build validation
+```
+
+### UI Tests
+
+XCUITest scaffolding lives in `ios/AIAssistApp/AIAssistAppUITests/`. To activate:
+1. Open `AIAssistApp.xcodeproj` in Xcode
+2. File → New → Target → UI Testing Bundle → name it `AIAssistAppUITests`
+3. The test files auto-sync from the `AIAssistAppUITests/` directory
+
 ## Visual Testing
 
 After any code change that touches iOS UI, you MUST visually verify the changes:
