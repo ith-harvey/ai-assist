@@ -22,6 +22,7 @@ use uuid::Uuid;
 use crate::channels::{Channel, IncomingMessage, MessageStream, OutgoingResponse, StatusUpdate};
 use crate::error::ChannelError;
 use crate::store::Database;
+use crate::util::rate_limit::RateLimiter;
 
 // ── JSON Protocol ───────────────────────────────────────────────────────
 
@@ -301,6 +302,7 @@ async fn handle_chat_socket(mut socket: WebSocket, inner: Arc<IosChannelInner>) 
 
     // Subscribe to outgoing broadcast (responses + status updates)
     let mut outgoing_rx = inner.outgoing_tx.subscribe();
+    let mut rate_limiter = RateLimiter::per_second(10);
 
     loop {
         tokio::select! {
@@ -329,6 +331,10 @@ async fn handle_chat_socket(mut socket: WebSocket, inner: Arc<IosChannelInner>) 
             result = socket.recv() => {
                 match result {
                     Some(Ok(Message::Text(text))) => {
+                        if !rate_limiter.check() {
+                            warn!("iOS chat WS rate limited — dropping message");
+                            continue;
+                        }
                         match serde_json::from_str::<ClientMessage>(&text) {
                             Ok(ClientMessage::Message { content, thread_id }) => {
                                 let content = content.trim().to_string();
